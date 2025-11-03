@@ -1,0 +1,15 @@
+[package]
+name = "co2c"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+ast-utils = { version = "0.1.0", path = "../../azhdaha/ast-utils" }
+clap = { version = "4.5.49", features = ["derive"] }
+compile_commands = "0.3.0"
+env_logger = "0.11.8"
+itertools = "0.14.0"
+repr = { version = "0.1.0", path = "../../azhdaha/repr" }
+tempfile = "3.23.0"
+xshell = "0.2.7"
