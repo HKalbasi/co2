@@ -6,7 +6,7 @@ use itertools::Itertools;
 use repr::{
     hir::{TyKind, resolver::SymbolKind},
     la_arena::Idx,
-    mir::{Body, LocalDecl, LocalKind, MirCtx, Operand, Place, Rvalue},
+    mir::{Body, LocalDecl, LocalKind, MirCtx, Operand, Place, RETURN_LOCAL, Rvalue},
 };
 use std::fmt::Write;
 use tempfile::TempDir;
@@ -32,7 +32,7 @@ fn convert_type_to_rust_type(ty: &TyKind) -> String {
     match &ty {
         TyKind::PrimTy(prim_ty_kind) => match prim_ty_kind {
             repr::hir::PrimTyKind::Bool => "u8",
-            repr::hir::PrimTyKind::Char => "u8",
+            repr::hir::PrimTyKind::Char => "i8",
             repr::hir::PrimTyKind::Int => "i32",
             repr::hir::PrimTyKind::Float => "f32",
             repr::hir::PrimTyKind::Double => "f64",
@@ -40,14 +40,15 @@ fn convert_type_to_rust_type(ty: &TyKind) -> String {
         }
         .to_owned(),
         TyKind::TyDef(idx) => todo!(),
-        TyKind::Struct(ident) => todo!(),
-        TyKind::Union(ident) => todo!(),
-        TyKind::Enum(ident) => todo!(),
+        TyKind::Struct(id) => format!("Struct{}", id.into_raw().into_u32()),
+        TyKind::Union(ident) | TyKind::Enum(ident) => ident.name.clone(),
         TyKind::Ptr { kind, quals: _ } => format!("*mut ({})", convert_type_to_rust_type(&kind)),
         TyKind::Array { kind, size } => {
             format!("[{}; 101]", convert_type_to_rust_type(kind))
         }
-        TyKind::Func { sig } => todo!(),
+        TyKind::Func { sig } => {
+            format!("fn() -> {}", convert_type_to_rust_type(&sig.ret_ty.kind))
+        }
     }
 }
 
@@ -55,7 +56,9 @@ fn convert_place_to_rust_expr(p: &Place, body: &Body) -> String {
     let mut result = render_local(p.local, body);
     for proj in &p.projections {
         match proj {
-            repr::mir::PlaceElem::Field(_) => todo!(),
+            repr::mir::PlaceElem::Field(f) => {
+                result = format!("({result}).{f}");
+            }
             repr::mir::PlaceElem::Index(place) => {
                 result = format!(
                     "({result}).offset(({}) as isize)",
@@ -76,9 +79,9 @@ fn convert_operand_to_rust_expr(o: &Operand, body: &Body) -> String {
         Operand::Const(c) => match c {
             repr::mir::Const::Lit(lit) => match &lit.kind {
                 repr::hir::LitKind::Str(s) => {
-                    format!(r#"c"{s}".as_ptr()"#)
+                    format!(r#"(c"{s}".as_ptr() as *mut i8)"#)
                 }
-                repr::hir::LitKind::Char(_) => todo!(),
+                repr::hir::LitKind::Char(c) => format!("{}", *c as u32),
                 repr::hir::LitKind::Int(i) => i.to_string(),
                 repr::hir::LitKind::Float(f) => f.to_string(),
             },
@@ -129,7 +132,15 @@ fn convert_rvalue_to_rust_expr(rv: &Rvalue, body: &Body) -> String {
                 repr::hir::UnOp::Deref => format!("*({operand})"),
             }
         }
-        Rvalue::Call(operand, operands) => todo!(),
+        Rvalue::Call(func, args) => {
+            let func = convert_operand_to_rust_expr(func, body);
+            format!(
+                "({func}({}))",
+                args.iter()
+                    .map(|op| convert_operand_to_rust_expr(op, body))
+                    .join(", ")
+            )
+        }
         Rvalue::Cast {
             value,
             from_type,
@@ -198,9 +209,9 @@ fn main() -> anyhow::Result<()> {
     dbg!(&ast.tree);
 
     let hir_ctx = repr::hir::HirCtx::new(&ast);
-    let hir = hir_ctx.lower_to_hir();
+    let (hir, global_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
 
-    let mut rust_src = "".to_owned();
+    let mut rust_src = "#![no_main]".to_owned();
 
     writeln!(rust_src, r#"unsafe extern "C" {{"#)?;
     writeln!(rust_src, r#"fn printf(...);"#)?;
@@ -213,6 +224,23 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
 }    
     "#;
 
+    for (idx, data) in type_tag_resolver.arena {
+        match data {
+            repr::hir::resolver::CompoundTypeData::Struct { fields } => {
+                writeln!(rust_src, "struct Struct{} {{", idx.into_raw().into_u32())?;
+                for (field_name, ty) in fields {
+                    writeln!(
+                        rust_src,
+                        "{}: {},",
+                        &field_name.name,
+                        convert_type_to_rust_type(&ty.kind)
+                    )?;
+                }
+                writeln!(rust_src, "}}")?;
+            }
+        }
+    }
+
     for item in hir {
         match item.kind {
             repr::hir::ItemKind::Func(func_def) => {
@@ -220,11 +248,8 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                 else {
                     unreachable!();
                 };
-                writeln!(
-                    rust_src,
-                    "fn {}() {{ let mut bb = 0i32;",
-                    func_decl.ident.name
-                )?;
+                let args_count = func_decl.sig.params.len();
+
                 let mir_ctx = MirCtx::new(
                     &func_def.symbol_resolver,
                     &func_def.label_resolver,
@@ -232,9 +257,33 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                 );
                 let mir = mir_ctx.lower_to_mir(&func_def)?;
 
+                writeln!(
+                    rust_src,
+                    "#[unsafe(no_mangle)] fn {}({}) -> {} {{ let mut bb = 0i32;",
+                    func_decl.ident.name,
+                    mir.local_decls
+                        .iter()
+                        .skip(1)
+                        .take(args_count)
+                        .map(|(local, data)| {
+                            format!(
+                                "{}: {}",
+                                render_local(local, &mir),
+                                convert_type_to_rust_type(&data.ty.kind),
+                            )
+                        })
+                        .join(", "),
+                    convert_type_to_rust_type(&func_decl.sig.ret_ty.kind),
+                )?;
+
                 eprintln!("{mir}");
 
-                for (local, data) in mir.local_decls.iter() {
+                for (local, data) in mir
+                    .local_decls
+                    .iter()
+                    .take(1)
+                    .chain(mir.local_decls.iter().skip(args_count + 1))
+                {
                     let ty = &data.ty;
                     writeln!(
                         rust_src,
@@ -285,15 +334,36 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                             writeln!(rust_src, "}} continue;")?;
                         }
                         repr::mir::TerminatorKind::Return => {
-                            writeln!(rust_src, "return;")?;
+                            writeln!(rust_src, "return {};", render_local(RETURN_LOCAL, &mir))?;
                         }
                     }
                     writeln!(rust_src, "}}")?;
                 }
                 writeln!(rust_src, "_ => unreachable!(), }} }} }} }}")?;
             }
-            repr::hir::ItemKind::Decl(items) => {}
+            repr::hir::ItemKind::Decl(items) => {
+                for symbol in &items {
+                    let decl = &global_resolver.arena[*symbol];
+                    match decl {
+                        SymbolKind::Var(var_decl) => {
+                            if var_decl.ty.kind.is_fn() {
+                                continue;
+                            }
+                            writeln!(
+                                rust_src,
+                                "static mut {}: {ty} = unsafe {{ ::std::mem::zeroed::<{ty}>() }};",
+                                var_decl.ident.name,
+                                ty = convert_type_to_rust_type(&var_decl.ty.kind)
+                            )?;
+                        }
+                        SymbolKind::Func(func_decl) => todo!(),
+                        SymbolKind::Param(param_decl) => todo!(),
+                        SymbolKind::TyDef(ty) => todo!(),
+                    }
+                }
+            }
             repr::hir::ItemKind::TyDef(idx) => (),
+            repr::hir::ItemKind::TaggedTypeSpecifier(_) => (),
         }
     }
 
@@ -310,7 +380,17 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
     std::fs::copy(&rust_file_path, "../co2c/src/exp.rs")
         .context("fail to copy temporary rust code")?;
 
-    cmd!(sh, "rustc --edition=2024 {rust_file_path} -o {out_file}").run()?;
+    let emit = if args.compile_only {
+        &["--emit=obj"] as &[&str]
+    } else {
+        &[]
+    };
+
+    cmd!(
+        sh,
+        "rustc {emit...} --edition=2024 {rust_file_path} -o {out_file}"
+    )
+    .run()?;
 
     Ok(())
 }

@@ -63,6 +63,10 @@ pub struct CcFlags {
     #[arg(short = 'g', action = ArgAction::SetTrue)]
     pub debug: bool,
 
+    /// Emit object file (`-c`)
+    #[arg(short = 'c', action = ArgAction::SetTrue)]
+    pub compile_only: bool,
+
     /// Extra unrecognized flags (e.g. `-pthread`, `-fno-exceptions`)
     #[arg(
         value_name = "EXTRA_FLAGS",
