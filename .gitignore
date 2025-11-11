@@ -3,4 +3,4 @@ a.out
 last_err.txt
 salam.dot
 salam.svg
-/test
+*.o
