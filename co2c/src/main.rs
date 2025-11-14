@@ -11,7 +11,6 @@ use repr::{
     mir::{Body, IntUnOp, LocalDecl, LocalKind, MirCtx, Operand, Place, RETURN_LOCAL, Rvalue},
 };
 use std::{collections::HashMap, fmt::Write};
-use tempfile::TempDir;
 use xshell::{Shell, cmd};
 
 use crate::args::CcFlags;
@@ -37,10 +36,23 @@ fn create_zeroed_object(ty: &TyKind) -> String {
     )
 }
 
+fn convert_sig_to_rust_sig(sig: &FuncSig) -> String {
+    format!(
+        "({}) -> {}",
+        sig.params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("arg{i}: {}", convert_type_to_rust_type(&p.ty.kind)))
+            .chain(sig.variadic_param.then(|| "...".to_owned()))
+            .join(", "),
+        convert_type_to_rust_type(&sig.ret_ty.kind),
+    )
+}
+
 fn convert_type_to_rust_type(ty: &TyKind) -> String {
     match &ty {
         TyKind::PrimTy(prim_ty_kind) => match prim_ty_kind {
-            repr::hir::PrimTyKind::Bool => "u8",
+            repr::hir::PrimTyKind::Bool => "i32",
             repr::hir::PrimTyKind::Char => "i8",
             repr::hir::PrimTyKind::Int => "i32",
             repr::hir::PrimTyKind::Float => "f32",
@@ -50,12 +62,21 @@ fn convert_type_to_rust_type(ty: &TyKind) -> String {
         .to_owned(),
         TyKind::Struct(id) => format!("Struct{}", id.into_raw().into_u32()),
         TyKind::Union(id) => format!("Union{}", id.into_raw().into_u32()),
-        TyKind::Ptr { kind, quals: _ } => format!("*mut ({})", convert_type_to_rust_type(&kind)),
-        TyKind::Array { kind, size } => {
+        TyKind::Ptr { kind, quals: _ } => {
+            if let TyKind::Func { sig } = &**kind {
+                format!(
+                    "RawFnPtr::<extern \"C\" fn{}>",
+                    convert_sig_to_rust_sig(&sig)
+                )
+            } else {
+                format!("*mut ({})", convert_type_to_rust_type(&kind))
+            }
+        }
+        TyKind::Array { kind, size: _ } => {
             format!("[{}; 101]", convert_type_to_rust_type(kind))
         }
-        TyKind::Func { sig } => {
-            format!("fn() -> {}", convert_type_to_rust_type(&sig.ret_ty.kind))
+        TyKind::Func { sig: _ } => {
+            panic!("Functions as a type do not have Rust equivalent.");
         }
     }
 }
@@ -94,7 +115,10 @@ fn convert_operand_to_rust_expr(o: &Operand, body: &Body) -> String {
                 repr::hir::LitKind::Float(f) => f.to_string(),
             },
             repr::mir::Const::Symbol(idx) => convert_symbol_to_rust_symbol(*idx, body),
-            repr::mir::Const::Sizeof => format!("512404"),
+            repr::mir::Const::Sizeof(ty) => format!(
+                "(::std::mem::size_of::<{}>() as i32)",
+                convert_type_to_rust_type(&ty.kind),
+            ),
         },
     }
 }
@@ -161,7 +185,11 @@ fn convert_rvalue_to_rust_expr(
             format!("&raw mut ({symbol})")
         }
         Rvalue::Call(func, args) => {
-            let func = convert_operand_to_rust_expr(func, body);
+            let is_fn_ptr = body.type_of_operand(func).is_fn_ptr();
+            let mut func = convert_operand_to_rust_expr(func, body);
+            if is_fn_ptr {
+                func = format!("({func}).materialize()");
+            }
             format!(
                 "({func}({}))",
                 args.iter()
@@ -174,7 +202,33 @@ fn convert_rvalue_to_rust_expr(
             from_type,
             to_type,
         } => {
-            if from_type.is_array() && to_type.is_ptr() {
+            if to_type.is_fn_ptr() {
+                if from_type.is_fn_ptr() {
+                    format!(
+                        "{}::from_raw(({}).data)",
+                        convert_type_to_rust_type(to_type),
+                        convert_operand_to_rust_expr(value, body),
+                    )
+                } else if from_type.is_fn() {
+                    format!(
+                        "{}::build({})",
+                        convert_type_to_rust_type(to_type),
+                        convert_operand_to_rust_expr(value, body),
+                    )
+                } else {
+                    format!(
+                        "{}::from_raw(({}) as *mut ())",
+                        convert_type_to_rust_type(to_type),
+                        convert_operand_to_rust_expr(value, body),
+                    )
+                }
+            } else if from_type.is_fn_ptr() {
+                format!(
+                    "({}).data as ({})",
+                    convert_operand_to_rust_expr(value, body),
+                    convert_type_to_rust_type(to_type),
+                )
+            } else if from_type.is_array() && to_type.is_ptr() {
                 format!(
                     "({}).as_mut_ptr()",
                     convert_operand_to_rust_expr(value, body),
@@ -208,10 +262,10 @@ fn convert_rvalue_to_rust_expr(
                         .join(", "),
                 )
             }
-            CompoundTypeData::Union { fields } => todo!(),
+            CompoundTypeData::Union { fields: _ } => todo!(),
             CompoundTypeData::Enum | CompoundTypeData::DeclaredOnly => todo!(),
         },
-        Rvalue::List(operands) => format!("[0i32; 101]"),
+        Rvalue::List(_) => format!("[505404i32; 101]"),
         Rvalue::PtrDiff(l, r) => {
             let l = convert_operand_to_rust_expr(l, body);
             let r = convert_operand_to_rust_expr(r, body);
@@ -219,237 +273,6 @@ fn convert_rvalue_to_rust_expr(
         }
         Rvalue::Empty => todo!(),
     }
-}
-
-fn main() -> anyhow::Result<()> {
-    env_logger::init();
-
-    let args = CcFlags::parse();
-    dbg!(&args);
-
-    let mut compile_db = vec![];
-
-    for source_path in &args.sources {
-        dbg!(source_path);
-        let source = std::fs::read_to_string(source_path)?;
-        eprintln!("{source}");
-        compile_db.push(CompileCommand {
-            directory: std::env::current_dir()?,
-            file: compile_commands::SourceFile::File(source_path.into()),
-            arguments: Some(compile_commands::CompileArgs::Arguments(vec![
-                "cc".to_owned(),
-                source_path.to_owned(),
-            ])),
-            command: None,
-            output: None,
-        });
-    }
-
-    let mut ast = AstRepr::construct(&compile_db)?;
-
-    assert_eq!(ast.len(), 1);
-
-    let ast = ast.pop().unwrap();
-
-    dbg!(ast.source_info.code.len());
-    eprintln!(
-        "{}",
-        String::from_utf8(ast.source_info.code.clone()).unwrap()
-    );
-
-    ast.create_dot_graph("../salam.dot")?;
-    dbg!(&ast.tree);
-
-    let hir_ctx = repr::hir::HirCtx::new(&ast);
-    let (hir, global_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
-
-    let mut rust_src = "#![no_main]".to_owned();
-
-    writeln!(rust_src, r#"unsafe extern "C" {{"#)?;
-    writeln!(rust_src, r#"fn printf(...);"#)?;
-    writeln!(rust_src, r#"fn scanf(...);"#)?;
-    rust_src += r#"}
-fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_char) {
-    unsafe {
-        assert_eq!(x, y, "failed: {:?}", std::ffi::CStr::from_ptr(msg));
-    }
-}    
-    "#;
-
-    for (idx, data) in type_tag_resolver.arena.iter() {
-        match data {
-            CompoundTypeData::Struct { fields } => {
-                writeln!(rust_src, "struct Struct{} {{", idx.into_raw().into_u32())?;
-                for field in fields {
-                    writeln!(
-                        rust_src,
-                        "{}: {},",
-                        &field.ident.name,
-                        convert_type_to_rust_type(&field.ty.kind)
-                    )?;
-                }
-                writeln!(rust_src, "}}")?;
-            }
-            CompoundTypeData::Union { fields } => {
-                writeln!(rust_src, "union Union{} {{", idx.into_raw().into_u32())?;
-                for field in fields {
-                    writeln!(
-                        rust_src,
-                        "{}: {},",
-                        &field.ident.name,
-                        convert_type_to_rust_type(&field.ty.kind)
-                    )?;
-                }
-                writeln!(rust_src, "}}")?;
-            }
-            CompoundTypeData::Enum => (),
-            CompoundTypeData::DeclaredOnly => panic!("Declared only struct/union."),
-        }
-    }
-
-    let mut function_declarations = HashMap::<String, Option<FuncSig>>::new();
-
-    for item in hir {
-        match item.kind {
-            repr::hir::ItemKind::Func(func_def) => {
-                let SymbolKind::Func(func_decl) = &func_def.symbol_resolver.arena[func_def.symbol]
-                else {
-                    unreachable!();
-                };
-                function_declarations.insert(func_decl.ident.name.clone(), None);
-                let args_count = func_decl.sig.params.len();
-
-                let mir_ctx = MirCtx::new(
-                    &func_def.symbol_resolver,
-                    &func_def.label_resolver,
-                    &type_tag_resolver,
-                    func_def.span,
-                );
-                let mir = mir_ctx.lower_to_mir(&func_def)?;
-
-                eprintln!("{mir}");
-
-                writeln!(
-                    rust_src,
-                    "#[unsafe(no_mangle)] fn {}({}) -> {}",
-                    func_decl.ident.name,
-                    mir.local_decls
-                        .iter()
-                        .skip(1)
-                        .take(args_count)
-                        .map(|(local, data)| {
-                            format!(
-                                "{}: {}",
-                                render_local(local, &mir),
-                                convert_type_to_rust_type(&data.ty.kind),
-                            )
-                        })
-                        .join(", "),
-                    convert_type_to_rust_type(&func_decl.sig.ret_ty.kind),
-                )?;
-
-                eprintln!("{mir}");
-
-                lower_mir_body_to_rust_block(&mut rust_src, args_count, mir, &type_tag_resolver)?;
-            }
-            repr::hir::ItemKind::Decl(items) => {
-                for symbol in &items {
-                    let decl = &global_resolver.arena[*symbol];
-                    match decl {
-                        SymbolKind::Var(var_decl) => {
-                            if let TyKind::Func { sig } = &var_decl.ty.kind {
-                                function_declarations
-                                    .entry(var_decl.ident.name.clone())
-                                    .or_insert(Some((**sig).clone()));
-                            } else {
-                                write!(
-                                    rust_src,
-                                    "static mut static_{}: {ty} = ",
-                                    var_decl.ident.name,
-                                    ty = convert_type_to_rust_type(&var_decl.ty.kind)
-                                )?;
-                                match &var_decl.init {
-                                    Some(_) => {
-                                        let label_resolver = Resolver::new();
-                                        let mir_ctx = MirCtx::new(
-                                            &global_resolver,
-                                            &label_resolver,
-                                            &type_tag_resolver,
-                                            var_decl.span,
-                                        );
-                                        let mir = mir_ctx.lower_static_to_mir(&var_decl)?;
-
-                                        lower_mir_body_to_rust_block(
-                                            &mut rust_src,
-                                            0,
-                                            mir,
-                                            &type_tag_resolver,
-                                        )?;
-
-                                        writeln!(rust_src, ";")?;
-                                    }
-                                    None => writeln!(
-                                        rust_src,
-                                        "{};",
-                                        create_zeroed_object(&var_decl.ty.kind)
-                                    )?,
-                                }
-                            }
-                        }
-                        SymbolKind::Func(func_decl) => todo!(),
-                        SymbolKind::Param(param_decl) => todo!(),
-                        SymbolKind::TyDef(ty) => todo!(),
-                        SymbolKind::EnumVariant { .. } => unreachable!(),
-                    }
-                }
-            }
-            repr::hir::ItemKind::TyDef(idx) => (),
-            repr::hir::ItemKind::TaggedTypeSpecifier(_) | repr::hir::ItemKind::Empty => (),
-        }
-    }
-
-    for (name, sig) in function_declarations
-        .iter()
-        .filter_map(|x| Some((x.0, x.1.as_ref()?)))
-    {
-        writeln!(
-            rust_src,
-            "unsafe extern \"C\" {{ fn {name}({}) -> {}; }}",
-            sig.params
-                .iter()
-                .enumerate()
-                .map(|(i, p)| format!("arg{i}: {}", convert_type_to_rust_type(&p.ty.kind)))
-                .join(", "),
-            convert_type_to_rust_type(&sig.ret_ty.kind),
-        )?;
-    }
-
-    let out_file = args.output.unwrap_or_else(|| "a.out".to_owned());
-
-    let sh = Shell::new()?;
-
-    let temp_dir = TempDir::new()?;
-
-    eprintln!("{rust_src}");
-
-    let rust_file_path = temp_dir.path().join("rust.rs");
-    std::fs::write(&rust_file_path, rust_src)?;
-    // std::fs::copy(&rust_file_path, "../co2c/src/exp.rs")
-    //     .context("fail to copy temporary rust code")?;
-
-    let emit = if args.compile_only {
-        &["--emit=obj"] as &[&str]
-    } else {
-        &[]
-    };
-
-    cmd!(
-        sh,
-        "rustc {emit...} --edition=2024 {rust_file_path} -o {out_file}"
-    )
-    .run()?;
-
-    Ok(())
 }
 
 fn lower_mir_body_to_rust_block(
@@ -513,15 +336,276 @@ fn lower_mir_body_to_rust_block(
                 writeln!(rust_src, "bb = {};", t2.get_id())?;
                 writeln!(rust_src, "}} continue;")?;
             }
-            Some(repr::mir::TerminatorKind::Return) => {
+            None | Some(repr::mir::TerminatorKind::Return) => {
                 writeln!(rust_src, "break {};", render_local(RETURN_LOCAL, &mir))?;
-            }
-            None => {
-                writeln!(rust_src, "unreachable!();")?;
             }
         }
         writeln!(rust_src, "}}")?;
     }
     writeln!(rust_src, "_ => unreachable!(), }} }} }} }}")?;
+    Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    env_logger::init();
+
+    let args = CcFlags::parse();
+    dbg!(&args);
+
+    let mut compile_db = vec![];
+
+    for source_path in &args.sources {
+        dbg!(source_path);
+        let source = std::fs::read_to_string(source_path)?;
+        eprintln!("{source}");
+        compile_db.push(CompileCommand {
+            directory: std::env::current_dir()?,
+            file: compile_commands::SourceFile::File(source_path.into()),
+            arguments: Some(compile_commands::CompileArgs::Arguments(vec![
+                "cc".to_owned(),
+                source_path.to_owned(),
+            ])),
+            command: None,
+            output: None,
+        });
+    }
+
+    let mut ast = AstRepr::construct(&compile_db)?;
+
+    assert_eq!(ast.len(), 1);
+
+    let ast = ast.pop().unwrap();
+
+    dbg!(ast.source_info.code.len());
+    eprintln!(
+        "{}",
+        String::from_utf8(ast.source_info.code.clone()).unwrap()
+    );
+
+    ast.create_dot_graph("../salam.dot")?;
+    dbg!(&ast.tree);
+
+    let hir_ctx = repr::hir::HirCtx::new(&ast);
+    let (hir, global_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
+
+    let mut rust_src = "#![no_main]\n#![allow(unused)]\n#![allow(non_snake_case)]\n#![allow(non_upper_case_globals)]".to_owned();
+
+    writeln!(rust_src, r#"unsafe extern "C" {{"#)?;
+    rust_src += r#"}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct RawFnPtr<F: Copy> {
+    data: *mut (),
+    _p: ::std::marker::PhantomData<F>,
+}
+
+impl<F: Copy> RawFnPtr<F> {
+    unsafe fn materialize(self) -> F {
+        unsafe { *::std::mem::transmute::<_, &F>(&self.data) }
+    }
+
+    const fn build(f: F) -> Self {
+        Self {
+            data: unsafe { *::std::mem::transmute::<_, &*mut ()>(&f) },
+            _p: ::std::marker::PhantomData,
+        }
+    }
+
+    const fn from_raw(data: *mut ()) -> Self {
+        Self {
+            data,
+            _p: ::std::marker::PhantomData,
+        }
+    }
+}
+
+fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_char) {
+    unsafe {
+        assert_eq!(x, y, "failed: {:?}", std::ffi::CStr::from_ptr(msg));
+    }
+}    
+    "#;
+
+    for (idx, data) in type_tag_resolver.arena.iter() {
+        match data {
+            CompoundTypeData::Struct { fields } => {
+                writeln!(
+                    rust_src,
+                    "#[repr(C)] struct Struct{} {{",
+                    idx.into_raw().into_u32()
+                )?;
+                for field in fields {
+                    writeln!(
+                        rust_src,
+                        "{}: {},",
+                        &field.ident.name,
+                        convert_type_to_rust_type(&field.ty.kind)
+                    )?;
+                }
+                writeln!(rust_src, "}}")?;
+            }
+            CompoundTypeData::Union { fields } => {
+                writeln!(
+                    rust_src,
+                    "#[repr(C)] union Union{} {{",
+                    idx.into_raw().into_u32()
+                )?;
+                for field in fields {
+                    writeln!(
+                        rust_src,
+                        "{}: {},",
+                        &field.ident.name,
+                        convert_type_to_rust_type(&field.ty.kind)
+                    )?;
+                }
+                writeln!(rust_src, "}}")?;
+            }
+            CompoundTypeData::Enum => (),
+            CompoundTypeData::DeclaredOnly => {
+                writeln!(
+                    rust_src,
+                    "#[repr(C)] struct Struct{} {{ _dummy: i8 }}",
+                    idx.into_raw().into_u32()
+                )?;
+            }
+        }
+    }
+
+    let mut function_declarations = HashMap::<String, Option<FuncSig>>::new();
+
+    for item in hir {
+        match item.kind {
+            repr::hir::ItemKind::Func(func_def) => {
+                let SymbolKind::Func(func_decl) = &func_def.symbol_resolver.arena[func_def.symbol]
+                else {
+                    unreachable!();
+                };
+                function_declarations.insert(func_decl.ident.name.clone(), None);
+                let args_count = func_decl.sig.params.len();
+
+                let mir_ctx = MirCtx::new(
+                    &func_def.symbol_resolver,
+                    &func_def.label_resolver,
+                    &type_tag_resolver,
+                    func_def.span,
+                );
+                let mir = mir_ctx.lower_to_mir(&func_def)?;
+
+                eprintln!("{mir}");
+
+                writeln!(
+                    rust_src,
+                    "#[unsafe(no_mangle)] extern \"C\" fn {}({}) -> {}",
+                    func_decl.ident.name,
+                    mir.local_decls
+                        .iter()
+                        .skip(1)
+                        .take(args_count)
+                        .map(|(local, data)| {
+                            format!(
+                                "mut {}: {}",
+                                render_local(local, &mir),
+                                convert_type_to_rust_type(&data.ty.kind),
+                            )
+                        })
+                        .join(", "),
+                    convert_type_to_rust_type(&func_decl.sig.ret_ty.kind),
+                )?;
+
+                eprintln!("{mir}");
+
+                lower_mir_body_to_rust_block(&mut rust_src, args_count, mir, &type_tag_resolver)?;
+            }
+            repr::hir::ItemKind::Decl(items) => {
+                for symbol in &items {
+                    let decl = &global_resolver.arena[*symbol];
+                    match decl {
+                        SymbolKind::Var(var_decl) => {
+                            if let TyKind::Func { sig } = &var_decl.ty.kind {
+                                function_declarations
+                                    .entry(var_decl.ident.name.clone())
+                                    .or_insert(Some((**sig).clone()));
+                            } else {
+                                write!(
+                                    rust_src,
+                                    "static mut static_{}: {ty} = ",
+                                    var_decl.ident.name,
+                                    ty = convert_type_to_rust_type(&var_decl.ty.kind)
+                                )?;
+                                match &var_decl.init {
+                                    Some(_) => {
+                                        let label_resolver = Resolver::new();
+                                        let mir_ctx = MirCtx::new(
+                                            &global_resolver,
+                                            &label_resolver,
+                                            &type_tag_resolver,
+                                            var_decl.span,
+                                        );
+                                        let mir = mir_ctx.lower_static_to_mir(&var_decl)?;
+
+                                        lower_mir_body_to_rust_block(
+                                            &mut rust_src,
+                                            0,
+                                            mir,
+                                            &type_tag_resolver,
+                                        )?;
+
+                                        writeln!(rust_src, ";")?;
+                                    }
+                                    None => writeln!(
+                                        rust_src,
+                                        "{};",
+                                        create_zeroed_object(&var_decl.ty.kind)
+                                    )?,
+                                }
+                            }
+                        }
+                        SymbolKind::Func(_)
+                        | SymbolKind::Param(_)
+                        | SymbolKind::TyDef(_)
+                        | SymbolKind::EnumVariant { .. } => unreachable!(),
+                    }
+                }
+            }
+            repr::hir::ItemKind::TyDef(_) => (),
+            repr::hir::ItemKind::TaggedTypeSpecifier(_) | repr::hir::ItemKind::Empty => (),
+        }
+    }
+
+    for (name, sig) in function_declarations
+        .iter()
+        .filter_map(|x| Some((x.0, x.1.as_ref()?)))
+    {
+        writeln!(
+            rust_src,
+            "unsafe extern \"C\" {{ fn {name}{}; }}",
+            convert_sig_to_rust_sig(&sig),
+        )?;
+    }
+
+    let out_file = args.output.unwrap_or_else(|| "a.out".to_owned());
+
+    let sh = Shell::new()?;
+
+    eprintln!("{rust_src}");
+
+    let rust_file_path = "/tmp/co2_rust.rs";
+
+    std::fs::write(rust_file_path, rust_src)?;
+    // std::fs::copy(rust_file_path, "../co2c/src/exp.rs")?;
+
+    let emit = if args.compile_only {
+        &["--emit=obj"] as &[&str]
+    } else {
+        &[]
+    };
+
+    cmd!(
+        sh,
+        "rustc {emit...} -g --edition=2024 /tmp/co2_rust.rs -o {out_file}"
+    )
+    .run()?;
+
     Ok(())
 }
