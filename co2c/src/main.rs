@@ -112,7 +112,7 @@ fn convert_operand_to_rust_expr(o: &Operand, body: &Body) -> String {
                 }
                 repr::hir::LitKind::Char(c) => format!("{}", *c as u32),
                 repr::hir::LitKind::Int(i) => i.to_string(),
-                repr::hir::LitKind::Float(f) => f.to_string(),
+                repr::hir::LitKind::Float(f) => format!("{f}_f64"),
             },
             repr::mir::Const::Symbol(idx) => convert_symbol_to_rust_symbol(*idx, body),
             repr::mir::Const::Sizeof(ty) => format!(

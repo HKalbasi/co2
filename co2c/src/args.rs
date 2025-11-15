@@ -67,15 +67,6 @@ pub struct CcFlags {
     #[arg(short = 'c', action = ArgAction::SetTrue)]
     pub compile_only: bool,
 
-    /// Extra unrecognized flags (e.g. `-pthread`, `-fno-exceptions`)
-    #[arg(
-        value_name = "EXTRA_FLAGS",
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        num_args = 0..
-    )]
-    pub extra_flags: Vec<String>,
-
     /// Input source files
     #[arg(value_name = "SOURCE", num_args = 1..)]
     pub sources: Vec<String>,
