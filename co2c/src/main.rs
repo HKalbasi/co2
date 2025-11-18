@@ -386,7 +386,7 @@ fn main() -> anyhow::Result<()> {
     dbg!(&ast.tree);
 
     let hir_ctx = repr::hir::HirCtx::new(&ast);
-    let (hir, global_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
+    let (hir, symbol_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
 
     let mut rust_src = "#![no_main]\n#![allow(unused)]\n#![allow(non_snake_case)]\n#![allow(non_upper_case_globals)]".to_owned();
 
@@ -432,7 +432,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
             CompoundTypeData::Struct { fields } => {
                 writeln!(
                     rust_src,
-                    "#[repr(C)] struct Struct{} {{",
+                    "#[repr(C)] #[derive(Clone, Copy)] struct Struct{} {{",
                     idx.into_raw().into_u32()
                 )?;
                 for field in fields {
@@ -448,7 +448,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
             CompoundTypeData::Union { fields } => {
                 writeln!(
                     rust_src,
-                    "#[repr(C)] union Union{} {{",
+                    "#[repr(C)] #[derive(Clone, Copy)] union Union{} {{",
                     idx.into_raw().into_u32()
                 )?;
                 for field in fields {
@@ -465,7 +465,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
             CompoundTypeData::DeclaredOnly => {
                 writeln!(
                     rust_src,
-                    "#[repr(C)] struct Struct{} {{ _dummy: i8 }}",
+                    "#[repr(C)] #[derive(Clone, Copy)] struct Struct{} {{ _dummy: i8 }}",
                     idx.into_raw().into_u32()
                 )?;
             }
@@ -477,15 +477,14 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
     for item in hir {
         match item.kind {
             repr::hir::ItemKind::Func(func_def) => {
-                let SymbolKind::Func(func_decl) = &func_def.symbol_resolver.arena[func_def.symbol]
-                else {
+                let SymbolKind::Func(func_decl) = &symbol_resolver.arena[func_def.symbol] else {
                     unreachable!();
                 };
                 function_declarations.insert(func_decl.ident.name.clone(), None);
                 let args_count = func_decl.sig.params.len();
 
                 let mir_ctx = MirCtx::new(
-                    &func_def.symbol_resolver,
+                    &symbol_resolver,
                     &func_def.label_resolver,
                     &type_tag_resolver,
                     func_def.span,
@@ -519,7 +518,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
             }
             repr::hir::ItemKind::Decl(items) => {
                 for symbol in &items {
-                    let decl = &global_resolver.arena[*symbol];
+                    let decl = &symbol_resolver.arena[*symbol];
                     match decl {
                         SymbolKind::Var(var_decl) => {
                             if let TyKind::Func { sig } = &var_decl.ty.kind {
@@ -537,7 +536,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                                     Some(_) => {
                                         let label_resolver = Resolver::new();
                                         let mir_ctx = MirCtx::new(
-                                            &global_resolver,
+                                            &symbol_resolver,
                                             &label_resolver,
                                             &type_tag_resolver,
                                             var_decl.span,
