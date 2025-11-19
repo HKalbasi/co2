@@ -86,7 +86,7 @@ fn convert_place_to_rust_expr(p: &Place, body: &Body) -> String {
     for proj in &p.projections {
         match proj {
             repr::mir::PlaceElem::Field(f) => {
-                result = format!("({result}).{f}");
+                result = format!("({result}).r#{f}");
             }
             repr::mir::PlaceElem::Index(place) => {
                 result = format!(
@@ -258,7 +258,7 @@ fn convert_rvalue_to_rust_expr(
                         .enumerate()
                         .map(|(i, f)| {
                             format!(
-                                "{}: {}",
+                                "r#{}: {}",
                                 f.ident.name,
                                 match args.get(i) {
                                     Some(op) => convert_operand_to_rust_expr(op, body),
@@ -445,7 +445,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                 for field in fields {
                     writeln!(
                         rust_src,
-                        "{}: {},",
+                        "r#{}: {},",
                         &field.ident.name,
                         convert_type_to_rust_type(&field.ty.kind)
                     )?;
@@ -461,7 +461,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                 for field in fields {
                     writeln!(
                         rust_src,
-                        "{}: {},",
+                        "r#{}: {},",
                         &field.ident.name,
                         convert_type_to_rust_type(&field.ty.kind)
                     )?;
