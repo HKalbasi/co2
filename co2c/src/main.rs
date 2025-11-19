@@ -108,7 +108,14 @@ fn convert_operand_to_rust_expr(o: &Operand, body: &Body) -> String {
         Operand::Const(c) => match c {
             repr::mir::Const::Lit(lit) => match &lit.kind {
                 repr::hir::LitKind::Str(s) => {
-                    format!(r#"(c"{s}".as_ptr() as *mut i8)"#)
+                    format!(
+                        r#"(c"{}".as_ptr() as *mut i8)"#,
+                        s.as_bytes()
+                            .iter()
+                            .copied()
+                            .map(core::ascii::escape_default)
+                            .join("")
+                    )
                 }
                 repr::hir::LitKind::Char(c) => format!("{}", *c as u32),
                 repr::hir::LitKind::Int(i) => i.to_string(),
