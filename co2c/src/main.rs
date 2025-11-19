@@ -189,6 +189,9 @@ fn convert_rvalue_to_rust_expr(
         }
         Rvalue::AddrOfStatic(idx) => {
             let symbol = convert_symbol_to_rust_symbol(*idx, body);
+            if matches!(&body.symbol_resolver.arena[*idx], SymbolKind::Func(..)) {
+                panic!("Invalid MIR: AddrOfStatic is not valid for functions.");
+            }
             format!("&raw mut ({symbol})")
         }
         Rvalue::Call(func, args) => {
