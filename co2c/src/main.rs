@@ -5,10 +5,13 @@ use itertools::Itertools;
 use repr::{
     hir::{
         FuncSig, TyKind,
-        resolver::{CompoundTypeData, Resolver, SymbolKind},
+        resolver::{CompoundTypeData, Resolver, Symbol, SymbolKind},
     },
     la_arena::Idx,
-    mir::{Body, IntUnOp, LocalDecl, LocalKind, MirCtx, Operand, Place, RETURN_LOCAL, Rvalue},
+    mir::{
+        Body, InitializerTree, IntUnOp, LocalDecl, LocalKind, MirCtx, Operand, Place, RETURN_LOCAL,
+        Rvalue,
+    },
 };
 use std::{collections::HashMap, fmt::Write};
 use xshell::{Shell, cmd};
@@ -52,20 +55,18 @@ fn convert_sig_to_rust_sig(sig: &FuncSig) -> String {
 fn convert_type_to_rust_type(ty: &TyKind) -> String {
     match &ty {
         TyKind::PrimTy(prim_ty_kind) => match prim_ty_kind {
-            repr::hir::PrimTyKind::Bool => "i32",
-            repr::hir::PrimTyKind::Char => "i8",
-            repr::hir::PrimTyKind::Int => "i32",
-            repr::hir::PrimTyKind::Float => "f32",
-            repr::hir::PrimTyKind::Double => "f64",
-            repr::hir::PrimTyKind::Void => "()",
-        }
-        .to_owned(),
+            repr::hir::PrimTyKind::Bool => "i32".to_owned(),
+            repr::hir::PrimTyKind::Char => "i8".to_owned(),
+            repr::hir::PrimTyKind::Int(n) => format!("i{}", *n * 8),
+            repr::hir::PrimTyKind::Float(n) => format!("f{}", *n * 8),
+            repr::hir::PrimTyKind::Void => "()".to_owned(),
+        },
         TyKind::Struct(id) => format!("Struct{}", id.into_raw().into_u32()),
         TyKind::Union(id) => format!("Union{}", id.into_raw().into_u32()),
         TyKind::Ptr { kind, quals: _ } => {
             if let TyKind::Func { sig } = &**kind {
                 format!(
-                    "RawFnPtr::<extern \"C\" fn{}>",
+                    "RawFnPtr::<unsafe extern \"C\" fn{}>",
                     convert_sig_to_rust_sig(&sig)
                 )
             } else {
@@ -77,6 +78,9 @@ fn convert_type_to_rust_type(ty: &TyKind) -> String {
         }
         TyKind::Func { sig: _ } => {
             panic!("Functions as a type do not have Rust equivalent.");
+        }
+        TyKind::InitializerList => {
+            panic!("Initializer lists should not become a materialized type.");
         }
     }
 }
@@ -123,7 +127,7 @@ fn convert_operand_to_rust_expr(o: &Operand, body: &Body) -> String {
             },
             repr::mir::Const::Symbol(idx) => convert_symbol_to_rust_symbol(*idx, body),
             repr::mir::Const::Sizeof(ty) => format!(
-                "(::std::mem::size_of::<{}>() as i32)",
+                "(::std::mem::size_of::<{}>() as i64)",
                 convert_type_to_rust_type(&ty.kind),
             ),
         },
@@ -194,19 +198,7 @@ fn convert_rvalue_to_rust_expr(
             }
             format!("&raw mut ({symbol})")
         }
-        Rvalue::Call(func, args) => {
-            let is_fn_ptr = body.type_of_operand(func).is_fn_ptr();
-            let mut func = convert_operand_to_rust_expr(func, body);
-            if is_fn_ptr {
-                func = format!("({func}).materialize()");
-            }
-            format!(
-                "({func}({}))",
-                args.iter()
-                    .map(|op| convert_operand_to_rust_expr(op, body))
-                    .join(", ")
-            )
-        }
+        Rvalue::Call(func, args) => convert_call_to_rust_expr(body, func, args),
         Rvalue::Cast {
             value,
             from_type,
@@ -240,8 +232,9 @@ fn convert_rvalue_to_rust_expr(
                 )
             } else if from_type.is_array() && to_type.is_ptr() {
                 format!(
-                    "({}).as_mut_ptr()",
+                    "(&raw mut (({})[0])) as ({})",
                     convert_operand_to_rust_expr(value, body),
+                    convert_type_to_rust_type(to_type),
                 )
             } else {
                 format!(
@@ -251,7 +244,49 @@ fn convert_rvalue_to_rust_expr(
                 )
             }
         }
-        Rvalue::StructInitializing(idx, args) => match type_tag_resolver.get_data_by_res(idx) {
+        Rvalue::CompoundInitializing(ty, args) => {
+            convert_initializer_tree_to_rust_expression(body, type_tag_resolver, ty, args)
+        }
+        Rvalue::PtrDiff(l, r) => {
+            let l = convert_operand_to_rust_expr(l, body);
+            let r = convert_operand_to_rust_expr(r, body);
+            format!("({l}).offset_from({r}) as i64")
+        }
+        Rvalue::Empty => todo!(),
+    }
+}
+
+fn convert_call_to_rust_expr(body: &Body<'_>, func: &Operand, args: &Vec<Operand>) -> String {
+    let is_fn_ptr = body.type_of_operand(func).is_fn_ptr();
+    let mut func = convert_operand_to_rust_expr(func, body);
+    if is_fn_ptr {
+        func = format!("({func}).materialize()");
+    }
+    format!(
+        "({func}({}))",
+        args.iter()
+            .map(|op| convert_operand_to_rust_expr(op, body))
+            .join(", ")
+    )
+}
+
+fn convert_initializer_tree_to_rust_expression(
+    body: &Body<'_>,
+    type_tag_resolver: &Resolver<CompoundTypeData>,
+    ty: &TyKind,
+    args: &InitializerTree,
+) -> String {
+    let children = match args {
+        InitializerTree::Middle { children } => children,
+        InitializerTree::Leaf(operand) => {
+            return convert_operand_to_rust_expr(operand, body);
+        }
+        InitializerTree::Zeroed => {
+            return create_zeroed_object(ty);
+        }
+    };
+    match ty {
+        TyKind::Struct(idx) | TyKind::Union(idx) => match type_tag_resolver.get_data_by_res(idx) {
             CompoundTypeData::Struct { fields } => {
                 format!(
                     "Struct{} {{ {} }}",
@@ -263,8 +298,13 @@ fn convert_rvalue_to_rust_expr(
                             format!(
                                 "r#{}: {}",
                                 f.ident.name,
-                                match args.get(i) {
-                                    Some(op) => convert_operand_to_rust_expr(op, body),
+                                match children.get(i) {
+                                    Some(tree) => convert_initializer_tree_to_rust_expression(
+                                        body,
+                                        type_tag_resolver,
+                                        &f.ty.kind,
+                                        tree,
+                                    ),
                                     None => create_zeroed_object(&f.ty.kind),
                                 }
                             )
@@ -272,16 +312,49 @@ fn convert_rvalue_to_rust_expr(
                         .join(", "),
                 )
             }
-            CompoundTypeData::Union { fields: _ } => todo!(),
+            CompoundTypeData::Union { fields } => {
+                let Some((field_index, data)) = children
+                    .iter()
+                    .enumerate()
+                    .find(|x| !matches!(*x.1, InitializerTree::Zeroed))
+                else {
+                    dbg!(fields, children);
+                    panic!("Invalid children for initializing union.");
+                };
+                let target_field = &fields[field_index];
+                format!(
+                    "Union{} {{ r#{}: {} }}",
+                    idx.into_raw().into_u32(),
+                    target_field.ident.name,
+                    convert_initializer_tree_to_rust_expression(
+                        body,
+                        type_tag_resolver,
+                        &target_field.ty.kind,
+                        data,
+                    ),
+                )
+            }
             CompoundTypeData::Enum | CompoundTypeData::DeclaredOnly => todo!(),
         },
-        Rvalue::List(_) => format!("[505404i32; 101]"),
-        Rvalue::PtrDiff(l, r) => {
-            let l = convert_operand_to_rust_expr(l, body);
-            let r = convert_operand_to_rust_expr(r, body);
-            format!("({l}).offset_from({r}) as i32")
+        TyKind::Array { kind, size: _ } => {
+            format!(
+                "[{}]",
+                (0..101)
+                    .map(|i| {
+                        match children.get(i) {
+                            Some(tree) => convert_initializer_tree_to_rust_expression(
+                                body,
+                                type_tag_resolver,
+                                &kind,
+                                tree,
+                            ),
+                            None => create_zeroed_object(&kind),
+                        }
+                    })
+                    .join(", ")
+            )
         }
-        Rvalue::Empty => todo!(),
+        ty => panic!("Invalid type {ty:?} for Compound initialize."),
     }
 }
 
@@ -319,16 +392,8 @@ fn lower_mir_body_to_rust_block(
                         convert_rvalue_to_rust_expr(rvalue, &mir, type_tag_resolver)
                     )?;
                 }
-                repr::mir::StatementKind::Call(operand, operands) => {
-                    writeln!(
-                        rust_src,
-                        "{}({});",
-                        convert_operand_to_rust_expr(&operand, &mir),
-                        operands
-                            .iter()
-                            .map(|o| convert_operand_to_rust_expr(o, &mir))
-                            .join(", "),
-                    )?;
+                repr::mir::StatementKind::Call(func, args) => {
+                    writeln!(rust_src, "{};", convert_call_to_rust_expr(&mir, func, args),)?;
                 }
             }
         }
@@ -483,6 +548,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
     }
 
     let mut function_declarations = HashMap::<String, Option<FuncSig>>::new();
+    let mut static_declarations = HashMap::<String, Symbol>::new();
 
     for item in hir {
         match item.kind {
@@ -500,8 +566,6 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                     func_def.span,
                 );
                 let mir = mir_ctx.lower_to_mir(&func_def)?;
-
-                eprintln!("{mir}");
 
                 writeln!(
                     rust_src,
@@ -536,37 +600,17 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                                     .entry(var_decl.ident.name.clone())
                                     .or_insert(Some((**sig).clone()));
                             } else {
-                                write!(
-                                    rust_src,
-                                    "static mut static_{}: {ty} = ",
-                                    var_decl.ident.name,
-                                    ty = convert_type_to_rust_type(&var_decl.ty.kind)
-                                )?;
-                                match &var_decl.init {
-                                    Some(_) => {
-                                        let label_resolver = Resolver::new();
-                                        let mir_ctx = MirCtx::new(
-                                            &symbol_resolver,
-                                            &label_resolver,
-                                            &type_tag_resolver,
-                                            var_decl.span,
-                                        );
-                                        let mir = mir_ctx.lower_static_to_mir(&var_decl)?;
-
-                                        lower_mir_body_to_rust_block(
-                                            &mut rust_src,
-                                            0,
-                                            mir,
-                                            &type_tag_resolver,
-                                        )?;
-
-                                        writeln!(rust_src, ";")?;
-                                    }
-                                    None => writeln!(
-                                        rust_src,
-                                        "{};",
-                                        create_zeroed_object(&var_decl.ty.kind)
-                                    )?,
+                                let entry = static_declarations
+                                    .entry(var_decl.ident.name.clone())
+                                    .or_insert(*symbol);
+                                let SymbolKind::Var(old_var_decl) = &symbol_resolver.arena[*entry]
+                                else {
+                                    unreachable!();
+                                };
+                                if var_decl.init.is_some()
+                                    || old_var_decl.storage == Some(repr::hir::Storage::Extern)
+                                {
+                                    *entry = *symbol;
                                 }
                             }
                         }
@@ -593,11 +637,47 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
         )?;
     }
 
+    for (_, symbol) in static_declarations {
+        let SymbolKind::Var(var_decl) = &symbol_resolver.arena[symbol] else {
+            unreachable!();
+        };
+        if var_decl.storage == Some(repr::hir::Storage::Extern) {
+            writeln!(
+                rust_src,
+                "unsafe extern \"C\" {{ #[link_name = \"{name}\"] static mut static_{name}: {ty}; }}",
+                name = var_decl.ident.name,
+                ty = convert_type_to_rust_type(&var_decl.ty.kind),
+            )?;
+            continue;
+        }
+        write!(
+            rust_src,
+            "static mut static_{}: {ty} = ",
+            var_decl.ident.name,
+            ty = convert_type_to_rust_type(&var_decl.ty.kind)
+        )?;
+        match &var_decl.init {
+            Some(_) => {
+                let label_resolver = Resolver::new();
+                let mir_ctx = MirCtx::new(
+                    &symbol_resolver,
+                    &label_resolver,
+                    &type_tag_resolver,
+                    var_decl.span,
+                );
+                let mir = mir_ctx.lower_static_to_mir(&var_decl)?;
+
+                lower_mir_body_to_rust_block(&mut rust_src, 0, mir, &type_tag_resolver)?;
+
+                writeln!(rust_src, ";")?;
+            }
+            None => writeln!(rust_src, "{};", create_zeroed_object(&var_decl.ty.kind))?,
+        }
+    }
+
     let out_file = args.output.unwrap_or_else(|| "a.out".to_owned());
 
     let sh = Shell::new()?;
-
-    eprintln!("{rust_src}");
 
     let rust_file_path = "/tmp/co2_rust.rs";
 

@@ -1,5 +1,7 @@
 int main() {
-   // float a = 12.34 + 56.78;
-   float x = 1.2;
-   x += 3.4;
+   short x = sizeof(short);
+   int x = sizeof(int);
+   long x = sizeof(long);
+   long int x = sizeof(long int);
+   long long x = sizeof(long long);
 }
