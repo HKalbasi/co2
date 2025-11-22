@@ -9,8 +9,8 @@ use repr::{
     },
     la_arena::Idx,
     mir::{
-        Body, InitializerTree, IntUnOp, LocalDecl, LocalKind, MirCtx, Operand, Place, RETURN_LOCAL,
-        Rvalue,
+        Body, IntUnOp, LocalDecl, LocalKind, MirCtx, MirInitializerTree, Operand, Place,
+        RETURN_LOCAL, Rvalue,
     },
 };
 use std::{collections::HashMap, fmt::Write};
@@ -73,8 +73,12 @@ fn convert_type_to_rust_type(ty: &TyKind) -> String {
                 format!("*mut ({})", convert_type_to_rust_type(&kind))
             }
         }
-        TyKind::Array { kind, size: _ } => {
-            format!("[{}; 101]", convert_type_to_rust_type(kind))
+        TyKind::Array { kind, size } => {
+            format!(
+                "[{}; {}]",
+                convert_type_to_rust_type(kind),
+                size.expect("Array with no size do not have Rust equivalent.")
+            )
         }
         TyKind::Func { sig: _ } => {
             panic!("Functions as a type do not have Rust equivalent.");
@@ -90,7 +94,7 @@ fn convert_place_to_rust_expr(p: &Place, body: &Body) -> String {
     for proj in &p.projections {
         match proj {
             repr::mir::PlaceElem::Field(f) => {
-                result = format!("({result}).r#{f}");
+                result = format!("({result}).f_{f}");
             }
             repr::mir::PlaceElem::Index(place) => {
                 result = format!(
@@ -274,14 +278,14 @@ fn convert_initializer_tree_to_rust_expression(
     body: &Body<'_>,
     type_tag_resolver: &Resolver<CompoundTypeData>,
     ty: &TyKind,
-    args: &InitializerTree,
+    args: &MirInitializerTree,
 ) -> String {
     let children = match args {
-        InitializerTree::Middle { children } => children,
-        InitializerTree::Leaf(operand) => {
+        MirInitializerTree::Middle { children } => children,
+        MirInitializerTree::Leaf(operand) => {
             return convert_operand_to_rust_expr(operand, body);
         }
-        InitializerTree::Zeroed => {
+        MirInitializerTree::Zeroed => {
             return create_zeroed_object(ty);
         }
     };
@@ -292,20 +296,20 @@ fn convert_initializer_tree_to_rust_expression(
                     "Struct{} {{ {} }}",
                     idx.into_raw().into_u32(),
                     fields
+                        .by_index
                         .iter()
                         .enumerate()
-                        .map(|(i, f)| {
+                        .map(|(i, ty)| {
                             format!(
-                                "r#{}: {}",
-                                f.ident.name,
+                                "f_{i}: {}",
                                 match children.get(i) {
                                     Some(tree) => convert_initializer_tree_to_rust_expression(
                                         body,
                                         type_tag_resolver,
-                                        &f.ty.kind,
+                                        &ty.kind,
                                         tree,
                                     ),
-                                    None => create_zeroed_object(&f.ty.kind),
+                                    None => create_zeroed_object(&ty.kind),
                                 }
                             )
                         })
@@ -316,30 +320,29 @@ fn convert_initializer_tree_to_rust_expression(
                 let Some((field_index, data)) = children
                     .iter()
                     .enumerate()
-                    .find(|x| !matches!(*x.1, InitializerTree::Zeroed))
+                    .find(|x| !matches!(*x.1, MirInitializerTree::Zeroed))
                 else {
                     dbg!(fields, children);
                     panic!("Invalid children for initializing union.");
                 };
-                let target_field = &fields[field_index];
+                let field_ty = &fields.by_index[field_index];
                 format!(
-                    "Union{} {{ r#{}: {} }}",
+                    "Union{} {{ f_{field_index}: {} }}",
                     idx.into_raw().into_u32(),
-                    target_field.ident.name,
                     convert_initializer_tree_to_rust_expression(
                         body,
                         type_tag_resolver,
-                        &target_field.ty.kind,
+                        &field_ty.kind,
                         data,
                     ),
                 )
             }
             CompoundTypeData::Enum | CompoundTypeData::DeclaredOnly => todo!(),
         },
-        TyKind::Array { kind, size: _ } => {
+        TyKind::Array { kind, size } => {
             format!(
                 "[{}]",
-                (0..101)
+                (0..size.expect("Array with no size can not be initialized."))
                     .map(|i| {
                         match children.get(i) {
                             Some(tree) => convert_initializer_tree_to_rust_expression(
@@ -510,12 +513,11 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                     "#[repr(C)] #[derive(Clone, Copy)] struct Struct{} {{",
                     idx.into_raw().into_u32()
                 )?;
-                for field in fields {
+                for (index, ty) in fields.by_index.iter().enumerate() {
                     writeln!(
                         rust_src,
-                        "r#{}: {},",
-                        &field.ident.name,
-                        convert_type_to_rust_type(&field.ty.kind)
+                        "f_{index}: {},",
+                        convert_type_to_rust_type(&ty.kind)
                     )?;
                 }
                 writeln!(rust_src, "}}")?;
@@ -526,12 +528,11 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                     "#[repr(C)] #[derive(Clone, Copy)] union Union{} {{",
                     idx.into_raw().into_u32()
                 )?;
-                for field in fields {
+                for (index, ty) in fields.by_index.iter().enumerate() {
                     writeln!(
                         rust_src,
-                        "r#{}: {},",
-                        &field.ident.name,
-                        convert_type_to_rust_type(&field.ty.kind)
+                        "f_{index}: {},",
+                        convert_type_to_rust_type(&ty.kind)
                     )?;
                 }
                 writeln!(rust_src, "}}")?;
