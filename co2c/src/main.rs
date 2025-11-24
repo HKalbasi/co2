@@ -1,5 +1,4 @@
 use ast_utils::AstRepr;
-use clap::Parser;
 use compile_commands::CompileCommand;
 use itertools::Itertools;
 use repr::{
@@ -13,10 +12,10 @@ use repr::{
         RETURN_LOCAL, Rvalue,
     },
 };
-use std::{collections::HashMap, fmt::Write};
+use std::{collections::HashMap, fmt::Write, path::PathBuf};
 use xshell::{Shell, cmd};
 
-use crate::args::CcFlags;
+use crate::args::CliOptions;
 
 mod args;
 mod exp;
@@ -427,12 +426,12 @@ fn lower_mir_body_to_rust_block(
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let args = CcFlags::parse();
+    let args = CliOptions::parse().unwrap();
     dbg!(&args);
 
     let mut compile_db = vec![];
 
-    for source_path in &args.sources {
+    for source_path in &args.files {
         dbg!(source_path);
         let source = std::fs::read_to_string(source_path)?;
         eprintln!("{source}");
@@ -441,7 +440,7 @@ fn main() -> anyhow::Result<()> {
             file: compile_commands::SourceFile::File(source_path.into()),
             arguments: Some(compile_commands::CompileArgs::Arguments(vec![
                 "cc".to_owned(),
-                source_path.to_owned(),
+                source_path.to_string_lossy().into_owned(),
             ])),
             command: None,
             output: None,
@@ -566,7 +565,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                     &type_tag_resolver,
                     func_def.span,
                 );
-                let mir = mir_ctx.lower_to_mir(&func_def)?;
+                let mir = mir_ctx.lower_to_mir(&func_def).unwrap();
 
                 writeln!(
                     rust_src,
@@ -666,7 +665,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
                     &type_tag_resolver,
                     var_decl.span,
                 );
-                let mir = mir_ctx.lower_static_to_mir(&var_decl)?;
+                let mir = mir_ctx.lower_static_to_mir(&var_decl).unwrap();
 
                 lower_mir_body_to_rust_block(&mut rust_src, 0, mir, &type_tag_resolver)?;
 
@@ -676,7 +675,7 @@ fn assert<T: PartialEq + std::fmt::Debug>(x: T, y: T, msg: *const std::ffi::c_ch
         }
     }
 
-    let out_file = args.output.unwrap_or_else(|| "a.out".to_owned());
+    let out_file = args.output_path.unwrap_or_else(|| PathBuf::from("a.out"));
 
     let sh = Shell::new()?;
 
