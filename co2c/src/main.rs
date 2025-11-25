@@ -12,7 +12,7 @@ use repr::{
         RETURN_LOCAL, Rvalue,
     },
 };
-use std::{collections::HashMap, fmt::Write, path::PathBuf};
+use std::{collections::HashMap, fmt::Write, path::PathBuf, process::exit};
 use xshell::{Shell, cmd};
 
 use crate::args::CliOptions;
@@ -463,7 +463,12 @@ fn main() -> anyhow::Result<()> {
     dbg!(&ast.tree);
 
     let hir_ctx = repr::hir::HirCtx::new(&ast);
-    let (hir, symbol_resolver, type_tag_resolver) = hir_ctx.lower_to_hir();
+    let (hir, symbol_resolver, type_tag_resolver, had_errors) = hir_ctx.lower_to_hir();
+
+    if had_errors {
+        eprintln!("HIR lowering of the C code failed. Compilation terminated.");
+        exit(1);
+    }
 
     let mut rust_src = "#![no_main]\n#![allow(unused)]\n#![allow(non_snake_case)]\n#![allow(non_upper_case_globals)]".to_owned();
 
