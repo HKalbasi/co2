@@ -21,11 +21,12 @@ extern crate rustc_public_bridge;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::cell::RefCell;
+use std::sync::{Condvar, OnceLock};
 
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId, LocalDefIdMap, LocalModDefId, CRATE_DEF_ID};
+use rustc_hir::definitions::{DefPathData, DisambiguatorState, Definitions};
 use rustc_hir::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use rustc_index::{Idx, IndexVec};
 use rustc_middle::hir::ModuleItems;
@@ -42,6 +43,7 @@ use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::steal::Steal;
 use rustc_ast::{IntTy, UintTy};
+use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 
 /// Context passed to the user callback. Used for allocating new IDs and
 /// registering custom source files.
@@ -218,7 +220,7 @@ pub enum MirTerminator {
 /// Run rustc_driver but emit a synthetic crate described by the callback.
 pub fn generate<F>(callback: F)
 where
-    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send,
+    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send + 'static,
 {
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
@@ -237,13 +239,22 @@ where
 struct GenerateCallbacks<F> {
     callback: Option<F>,
     context: Context,
-    state: Arc<Mutex<GenerateState>>,
+    gate: Arc<GenerateGate>,
 }
 
 #[derive(Default)]
 struct GenerateState {
     generated: Option<GeneratedCrate>,
     original: Option<OriginalProviders>,
+    callback: Option<Box<dyn FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send>>,
+    context: Option<Context>,
+    building: bool,
+    building_thread: Option<std::thread::ThreadId>,
+}
+
+struct GenerateGate {
+    state: Mutex<GenerateState>,
+    cvar: Condvar,
 }
 
 #[derive(Copy, Clone)]
@@ -258,6 +269,7 @@ struct OriginalProviders {
     def_kind: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> DefKind,
     def_span: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> RustcSpan,
     def_ident_span: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> Option<RustcSpan>,
+    visibility: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> ty::Visibility<DefId>,
     generics_of: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> ty::Generics,
     type_of: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> ty::EarlyBinder<'tcx, ty::Ty<'tcx>>,
     fn_sig: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> ty::EarlyBinder<'tcx, ty::PolyFnSig<'tcx>>,
@@ -272,66 +284,105 @@ struct OriginalProviders {
     optimized_mir: for<'tcx> fn(TyCtxt<'tcx>, LocalDefId) -> &'tcx rustc_middle::mir::Body<'tcx>,
 }
 
-thread_local! {
-    static GENERATE_STATE: RefCell<Option<Arc<Mutex<GenerateState>>>> = RefCell::new(None);
+static GENERATE_STATE: OnceLock<Arc<GenerateGate>> = OnceLock::new();
+
+fn with_generated_and_original<'tcx, R>(
+    tcx: TyCtxt<'tcx>,
+    f: impl FnOnce(Option<&GeneratedCrate>, OriginalProviders) -> R,
+) -> R {
+    let state = GENERATE_STATE.get().cloned().expect("generate state missing");
+    ensure_generated(tcx, &state);
+    let (generated_ptr, original) = {
+        let guard = state.state.lock().unwrap();
+        let original = guard.original.expect("original providers missing");
+        let generated_ptr = guard.generated.as_ref().map(|g| g as *const GeneratedCrate);
+        (generated_ptr, original)
+    };
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!(
+            "with_generated_and_original: generated={}",
+            if generated_ptr.is_some() { "some" } else { "none" }
+        );
+    }
+    let generated: Option<&GeneratedCrate> = generated_ptr.map(|ptr| unsafe { &*ptr });
+    f(generated, original)
 }
 
-fn with_generated_and_original<R>(f: impl FnOnce(Option<&GeneratedCrate>, OriginalProviders) -> R) -> R {
-    GENERATE_STATE.with(|cell| {
-        let state = cell.borrow().as_ref().cloned().expect("generate state missing");
-        let (generated_ptr, original) = {
-            let guard = state.lock().unwrap();
-            let original = guard.original.expect("original providers missing");
-            let generated_ptr = guard.generated.as_ref().map(|g| g as *const GeneratedCrate);
-            (generated_ptr, original)
-        };
-        let generated = generated_ptr.map(|ptr| unsafe { &*ptr });
-        f(generated, original)
-    })
+fn ensure_generated<'tcx>(tcx: TyCtxt<'tcx>, gate: &Arc<GenerateGate>) {
+    let mut guard = gate.state.lock().unwrap();
+    if guard.generated.is_some() {
+        return;
+    }
+    if guard.building {
+        if guard.building_thread == Some(std::thread::current().id()) {
+            return;
+        }
+        while guard.generated.is_none() {
+            guard = gate.cvar.wait(guard).unwrap();
+        }
+        return;
+    }
+    guard.building = true;
+    guard.building_thread = Some(std::thread::current().id());
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!(
+            "ensure_generated: callback is {}",
+            if guard.callback.is_some() { "some" } else { "none" }
+        );
+    }
+    let callback = guard.callback.take().expect("callback missing");
+    let context = guard.context.clone().expect("context missing");
+    drop(guard);
+
+    let dependency_info = collect_dependency_info(tcx);
+    let crate_info = callback(context.clone(), dependency_info);
+    let generated = GeneratedCrate::build(tcx, &context, crate_info);
+
+    let mut guard = gate.state.lock().unwrap();
+    guard.generated = Some(generated);
+    guard.building = false;
+    guard.building_thread = None;
+    gate.cvar.notify_all();
 }
 
 impl<F> GenerateCallbacks<F>
 where
-    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send,
+    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send + 'static,
 {
     fn new(callback: F) -> Self {
         Self {
             callback: Some(callback),
             context: Context::new(),
-            state: Arc::new(Mutex::new(GenerateState::default())),
+            gate: Arc::new(GenerateGate {
+                state: Mutex::new(GenerateState::default()),
+                cvar: Condvar::new(),
+            }),
         }
     }
 }
 
 impl<F> rustc_driver::Callbacks for GenerateCallbacks<F>
 where
-    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send,
+    F: FnOnce(Context, DependencyInfo) -> CurrentCrateInfo + Send + 'static,
 {
     fn config(&mut self, config: &mut rustc_interface::Config) {
         let callback = self.callback.take().expect("callback already used");
-        let state = self.state.clone();
 
-        GENERATE_STATE.with(|cell| {
-            *cell.borrow_mut() = Some(state.clone());
-        });
+        if std::env::var("GEN_DEBUG").is_ok() {
+            eprintln!("callbacks.config");
+        }
+        let _ = GENERATE_STATE.set(self.gate.clone());
 
         config.override_queries = Some(override_queries);
 
-        self.callback = Some(callback);
-    }
-
-    fn after_analysis<'tcx>(
-        &mut self,
-        _compiler: &rustc_interface::interface::Compiler,
-        tcx: TyCtxt<'tcx>,
-    ) -> rustc_driver::Compilation {
-        let callback = self.callback.take().expect("callback already used");
-        let dependency_info = collect_dependency_info(tcx);
-        let crate_info = callback(self.context.clone(), dependency_info);
-        let generated = GeneratedCrate::build(tcx, &self.context, crate_info);
-        let mut guard = self.state.lock().unwrap();
-        guard.generated = Some(generated);
-        rustc_driver::Compilation::Continue
+        if let Some(gate) = GENERATE_STATE.get() {
+            let mut guard = gate.state.lock().unwrap();
+            if std::env::var("GEN_DEBUG").is_ok() {
+                eprintln!("callbacks.config: storing callback");
+            }
+            guard.callback = Some(Box::new(callback));
+            guard.context = Some(self.context.clone());
+        }
     }
 }
 
@@ -348,15 +399,18 @@ fn collect_dependency_info<'tcx>(tcx: rustc_middle::ty::TyCtxt<'tcx>) -> Depende
 }
 
 fn override_queries(_sess: &rustc_session::Session, providers: &mut UtilProviders) {
-    GENERATE_STATE.with(|cell| {
-        if let Some(state) = cell.borrow().as_ref() {
-            override_providers(&mut providers.queries, state.clone());
-        }
-    });
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("override_queries");
+    }
+    if let Some(gate) = GENERATE_STATE.get() {
+        override_providers(&mut providers.queries, gate.clone());
+    } else if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("override_queries: no state");
+    }
 }
 
-fn override_providers(providers: &mut QueryProviders, state: Arc<Mutex<GenerateState>>) {
-    let mut guard = state.lock().unwrap();
+fn override_providers(providers: &mut QueryProviders, gate: Arc<GenerateGate>) {
+    let mut guard = gate.state.lock().unwrap();
     if guard.original.is_none() {
         guard.original = Some(OriginalProviders {
             hir_crate: providers.hir_crate,
@@ -368,6 +422,7 @@ fn override_providers(providers: &mut QueryProviders, state: Arc<Mutex<GenerateS
             def_kind: providers.def_kind,
             def_span: providers.def_span,
             def_ident_span: providers.def_ident_span,
+            visibility: providers.visibility,
             generics_of: providers.generics_of,
             type_of: providers.type_of,
             fn_sig: providers.fn_sig,
@@ -383,14 +438,14 @@ fn override_providers(providers: &mut QueryProviders, state: Arc<Mutex<GenerateS
     drop(guard);
 
     providers.hir_crate = generated_hir_crate;
-    providers.hir_crate_items = generated_hir_crate_items;
-    providers.hir_module_items = generated_hir_module_items;
+    // Leave hir_crate_items/hir_module_items to the original providers.
     providers.opt_hir_owner_nodes = generated_opt_hir_owner_nodes;
     providers.hir_owner_parent_q = generated_hir_owner_parent_q;
     providers.entry_fn = generated_entry_fn;
     providers.def_kind = generated_def_kind;
     providers.def_span = generated_def_span;
     providers.def_ident_span = generated_def_ident_span;
+    providers.visibility = generated_visibility;
     providers.generics_of = generated_generics_of;
     providers.type_of = generated_type_of;
     providers.fn_sig = generated_fn_sig;
@@ -404,7 +459,10 @@ fn override_providers(providers: &mut QueryProviders, state: Arc<Mutex<GenerateS
 }
 
 fn generated_hir_crate<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> hir::Crate<'tcx> {
-    with_generated_and_original(|generated, original| {
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("generated_hir_crate");
+    }
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             return gen.hir_crate(tcx, key);
         }
@@ -413,7 +471,10 @@ fn generated_hir_crate<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> hir::Crate<'tcx> {
 }
 
 fn generated_hir_crate_items<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> ModuleItems {
-    with_generated_and_original(|generated, original| {
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("generated_hir_crate_items");
+    }
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             return gen.hir_crate_items(tcx, key);
         }
@@ -422,7 +483,7 @@ fn generated_hir_crate_items<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> ModuleItems {
 }
 
 fn generated_hir_module_items<'tcx>(tcx: TyCtxt<'tcx>, key: LocalModDefId) -> ModuleItems {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             return gen.hir_module_items(tcx, key);
         }
@@ -434,16 +495,24 @@ fn generated_opt_hir_owner_nodes<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> Option<&'tcx hir::OwnerNodes<'tcx>> {
-    with_generated_and_original(|generated, original| {
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("generated_opt_hir_owner_nodes {:?}", key);
+    }
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
-            return gen.opt_hir_owner_nodes(tcx, key);
+            if let Some(nodes) = gen.opt_hir_owner_nodes(tcx, key) {
+                return Some(nodes);
+            }
+            if std::env::var("GEN_DEBUG").is_ok() {
+                eprintln!("generated_opt_hir_owner_nodes: fallback to original {:?}", key);
+            }
         }
         (original.opt_hir_owner_nodes)(tcx, key)
     })
 }
 
 fn generated_hir_owner_parent_q<'tcx>(tcx: TyCtxt<'tcx>, key: OwnerId) -> HirId {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             return gen.hir_owner_parent_q(tcx, key);
         }
@@ -452,7 +521,7 @@ fn generated_hir_owner_parent_q<'tcx>(tcx: TyCtxt<'tcx>, key: OwnerId) -> HirId 
 }
 
 fn generated_entry_fn<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> Option<(DefId, EntryFnType)> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             return gen.entry_fn(tcx, key);
         }
@@ -461,7 +530,10 @@ fn generated_entry_fn<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> Option<(DefId, EntryF
 }
 
 fn generated_def_kind<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> DefKind {
-    with_generated_and_original(|generated, original| {
+    if std::env::var("GEN_DEBUG").is_ok() {
+        eprintln!("generated_def_kind {:?}", key);
+    }
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(kind) = gen.def_kind(key) {
                 return kind;
@@ -472,7 +544,7 @@ fn generated_def_kind<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> DefKind {
 }
 
 fn generated_def_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> RustcSpan {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(span) = gen.def_span(key) {
                 return span;
@@ -483,7 +555,7 @@ fn generated_def_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> RustcSpan {
 }
 
 fn generated_def_ident_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> Option<RustcSpan> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(span) = gen.def_span(key) {
                 return Some(span);
@@ -493,8 +565,19 @@ fn generated_def_ident_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> Option<
     })
 }
 
+fn generated_visibility<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> ty::Visibility<DefId> {
+    with_generated_and_original(tcx, |generated, original| {
+        if let Some(gen) = generated {
+            if gen.def_kinds.contains_key(&key) {
+                return ty::Visibility::Public;
+            }
+        }
+        (original.visibility)(tcx, key)
+    })
+}
+
 fn generated_generics_of<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> ty::Generics {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(generics) = gen.generics_of(tcx, key) {
                 return generics;
@@ -508,7 +591,7 @@ fn generated_type_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> ty::EarlyBinder<'tcx, ty::Ty<'tcx>> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(ty) = gen.type_of(tcx, key) {
                 return ty;
@@ -522,7 +605,7 @@ fn generated_fn_sig<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> ty::EarlyBinder<'tcx, ty::PolyFnSig<'tcx>> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(sig) = gen.fn_sig(tcx, key) {
                 return sig;
@@ -536,7 +619,7 @@ fn generated_predicates_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: DefId,
 ) -> ty::GenericPredicates<'tcx> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(preds) = gen.predicates_of(tcx, key) {
                 return preds;
@@ -550,7 +633,7 @@ fn generated_explicit_predicates_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> ty::GenericPredicates<'tcx> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(preds) = gen.explicit_predicates_of(tcx, key) {
                 return preds;
@@ -564,7 +647,7 @@ fn generated_codegen_fn_attrs<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(attrs) = gen.codegen_fn_attrs(tcx, key) {
                 return attrs;
@@ -578,7 +661,7 @@ fn generated_mir_built<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> &'tcx Steal<rustc_middle::mir::Body<'tcx>> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(body) = gen.mir_built(tcx, key) {
                 return body;
@@ -592,7 +675,7 @@ fn generated_mir_for_ctfe<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> &'tcx rustc_middle::mir::Body<'tcx> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(body) = gen.mir_for_ctfe(tcx, key) {
                 return body;
@@ -606,7 +689,7 @@ fn generated_mir_drops_elaborated_and_const_checked<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> &'tcx Steal<rustc_middle::mir::Body<'tcx>> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(body) = gen.mir_drops_elaborated_and_const_checked(tcx, key) {
                 return body;
@@ -620,7 +703,7 @@ fn generated_optimized_mir<'tcx>(
     tcx: TyCtxt<'tcx>,
     key: LocalDefId,
 ) -> &'tcx rustc_middle::mir::Body<'tcx> {
-    with_generated_and_original(|generated, original| {
+    with_generated_and_original(tcx, |generated, original| {
         if let Some(gen) = generated {
             if let Some(body) = gen.optimized_mir(tcx, key) {
                 return body;
@@ -630,22 +713,44 @@ fn generated_optimized_mir<'tcx>(
     })
 }
 
+#[allow(invalid_reference_casting)]
+fn allocate_def_ids<'tcx>(tcx: TyCtxt<'tcx>) -> (LocalDefId, LocalDefId, LocalDefId) {
+    let defs_guard = tcx.definitions_untracked();
+    let defs_mut = unsafe { &mut *(&*defs_guard as *const Definitions as *mut Definitions) };
+    let mut disamb = DisambiguatorState::with(
+        CRATE_DEF_ID,
+        DefPathData::ValueNs(Symbol::intern("main")),
+        1,
+    );
+    let foreign_mod = defs_mut.create_def(CRATE_DEF_ID, DefPathData::ForeignMod, &mut disamb);
+    let foreign_fn =
+        defs_mut.create_def(foreign_mod, DefPathData::ValueNs(Symbol::intern("write")), &mut disamb);
+    let main_def =
+        defs_mut.create_def(CRATE_DEF_ID, DefPathData::ValueNs(Symbol::intern("main")), &mut disamb);
+    (foreign_mod, foreign_fn, main_def)
+}
+
 struct GeneratedCrate {
     #[allow(dead_code)]
     crate_name: Symbol,
+    context: Context,
     owners: IndexVec<LocalDefId, Option<&'static hir::OwnerInfo<'static>>>,
     crate_items: ModuleItemsSpec,
     module_items: LocalDefIdMap<ModuleItemsSpec>,
     owner_parents: LocalDefIdMap<HirId>,
     def_kinds: LocalDefIdMap<DefKind>,
     def_spans: LocalDefIdMap<RustcSpan>,
-    function_mir: LocalDefIdMap<rustc_middle::mir::Body<'static>>,
+    function_infos: LocalDefIdMap<FunctionInfo>,
+    function_mir: Mutex<LocalDefIdMap<&'static Steal<rustc_middle::mir::Body<'static>>>>,
     foreign_fn: Option<LocalDefId>,
     entry_fn: Option<LocalDefId>,
 }
 
 impl GeneratedCrate {
     fn build<'tcx>(tcx: TyCtxt<'tcx>, context: &Context, info: CurrentCrateInfo) -> Self {
+        if std::env::var("GEN_DEBUG").is_ok() {
+            eprintln!("GeneratedCrate::build");
+        }
         let crate_name = if info.crate_name.is_empty() {
             Symbol::intern("synthetic")
         } else {
@@ -656,12 +761,10 @@ impl GeneratedCrate {
         let mut owner_parents: LocalDefIdMap<HirId> = LocalDefIdMap::default();
         let mut def_kinds: LocalDefIdMap<DefKind> = LocalDefIdMap::default();
         let mut def_spans: LocalDefIdMap<RustcSpan> = LocalDefIdMap::default();
-        let mut function_mir: LocalDefIdMap<rustc_middle::mir::Body<'static>> = LocalDefIdMap::default();
+        let mut function_infos: LocalDefIdMap<FunctionInfo> = LocalDefIdMap::default();
 
         let crate_def = CRATE_DEF_ID;
-        let foreign_mod_def = LocalDefId::new(1);
-        let foreign_fn_def = LocalDefId::new(2);
-        let main_def = LocalDefId::new(3);
+        let (foreign_mod_def, foreign_fn_def, main_def) = allocate_def_ids(tcx);
 
         def_kinds.insert(crate_def, DefKind::Mod);
         def_kinds.insert(foreign_mod_def, DefKind::ForeignMod);
@@ -786,19 +889,19 @@ impl GeneratedCrate {
         });
 
         let crate_owner_nodes = build_owner_nodes_for_crate(root_mod);
-        owners.push(Some(leak(make_owner_info(crate_owner_nodes))));
+        insert_owner(&mut owners, crate_def, leak(make_owner_info(crate_owner_nodes)));
         owner_parents.insert(crate_def, HirId::make_owner(crate_def));
 
         let foreign_mod_nodes = build_owner_nodes_for_item(foreign_mod_item);
-        owners.push(Some(leak(make_owner_info(foreign_mod_nodes))));
+        insert_owner(&mut owners, foreign_mod_def, leak(make_owner_info(foreign_mod_nodes)));
         owner_parents.insert(foreign_mod_def, HirId::make_owner(crate_def));
 
         let foreign_fn_nodes = build_owner_nodes_for_foreign_item(write_foreign_item);
-        owners.push(Some(leak(make_owner_info(foreign_fn_nodes))));
+        insert_owner(&mut owners, foreign_fn_def, leak(make_owner_info(foreign_fn_nodes)));
         owner_parents.insert(foreign_fn_def, HirId::make_owner(foreign_mod_def));
 
         let main_nodes = build_owner_nodes_for_fn(main_item, main_body, main_body_expr);
-        owners.push(Some(leak(make_owner_info(main_nodes))));
+        insert_owner(&mut owners, main_def, leak(make_owner_info(main_nodes)));
         owner_parents.insert(main_def, HirId::make_owner(crate_def));
 
         let crate_items = ModuleItemsSpec {
@@ -827,19 +930,24 @@ impl GeneratedCrate {
         module_items.insert(crate_def, module_items_for_root.clone());
 
         if let Some(first) = info.functions.first() {
-            let mir = build_mir_body(tcx, context, first, foreign_fn_def, main_def);
-            function_mir.insert(main_def, mir);
+            function_infos.insert(main_def, first.clone());
+        }
+
+        if std::env::var("GEN_DEBUG").is_ok() {
+            eprintln!("GeneratedCrate::build: owners len {}", owners.len());
         }
 
         Self {
             crate_name,
+            context: context.clone(),
             owners,
             crate_items,
             module_items,
             owner_parents,
             def_kinds,
             def_spans,
-            function_mir,
+            function_infos,
+            function_mir: Mutex::new(LocalDefIdMap::default()),
             foreign_fn: Some(foreign_fn_def),
             entry_fn: Some(main_def),
         }
@@ -887,7 +995,20 @@ impl GeneratedCrate {
             .get(key)
             .and_then(|opt| *opt)
             .map(|info| unsafe {
+                if std::env::var("GEN_DEBUG").is_ok() {
+                    eprintln!("gen.opt_hir_owner_nodes {:?} => {:?}", key, info.nodes.node());
+                }
                 std::mem::transmute::<&hir::OwnerNodes<'static>, &'tcx hir::OwnerNodes<'tcx>>(&info.nodes)
+            })
+            .or_else(|| {
+                if std::env::var("GEN_DEBUG").is_ok() {
+                    eprintln!(
+                        "gen.opt_hir_owner_nodes {:?} => None (len {})",
+                        key,
+                        self.owners.len()
+                    );
+                }
+                None
             })
     }
 
@@ -1000,7 +1121,12 @@ impl GeneratedCrate {
         def_id: LocalDefId,
     ) -> Option<rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs> {
         if self.def_kinds.contains_key(&def_id) {
-            return Some(rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs::new());
+            let mut attrs = rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs::new();
+            if Some(def_id) == self.foreign_fn {
+                attrs.flags.insert(CodegenFnAttrFlags::NO_MANGLE);
+                attrs.symbol_name = Some(Symbol::intern("write"));
+            }
+            return Some(attrs);
         }
         None
     }
@@ -1010,27 +1136,47 @@ impl GeneratedCrate {
         tcx: TyCtxt<'tcx>,
         def_id: LocalDefId,
     ) -> Option<&'tcx Steal<rustc_middle::mir::Body<'tcx>>> {
-        self.function_mir
-            .get(&def_id)
-            .map(|body| {
-                let owned = unsafe {
-                    std::mem::transmute::<rustc_middle::mir::Body<'static>, rustc_middle::mir::Body<'tcx>>(body.clone())
-                };
-                let steal = tcx.arena.alloc(Steal::new(owned));
-                &*steal
-            })
+        {
+            let guard = self.function_mir.lock().unwrap();
+            if let Some(body) = guard.get(&def_id) {
+                return Some(unsafe {
+                    std::mem::transmute::<
+                        &'static Steal<rustc_middle::mir::Body<'static>>,
+                        &'tcx Steal<rustc_middle::mir::Body<'tcx>>,
+                    >(*body)
+                });
+            }
+        }
+
+        let info = self.function_infos.get(&def_id)?;
+        let foreign = self.foreign_fn?;
+        let body = build_mir_body(tcx, &self.context, info, foreign, def_id);
+        let steal = leak(Steal::new(body));
+
+        let mut guard = self.function_mir.lock().unwrap();
+        guard.insert(def_id, steal);
+        Some(unsafe {
+            std::mem::transmute::<
+                &'static Steal<rustc_middle::mir::Body<'static>>,
+                &'tcx Steal<rustc_middle::mir::Body<'tcx>>,
+            >(steal)
+        })
     }
 
     fn mir_for_ctfe<'tcx>(
         &self,
-        _tcx: TyCtxt<'tcx>,
+        tcx: TyCtxt<'tcx>,
         def_id: LocalDefId,
     ) -> Option<&'tcx rustc_middle::mir::Body<'tcx>> {
-        self.function_mir
-            .get(&def_id)
-            .map(|body| unsafe {
-                std::mem::transmute::<&rustc_middle::mir::Body<'static>, &'tcx rustc_middle::mir::Body<'tcx>>(body)
-            })
+        let info = self.function_infos.get(&def_id)?;
+        let foreign = self.foreign_fn?;
+        let mut body = build_mir_body(tcx, &self.context, info, foreign, def_id);
+        body.set_required_consts(Vec::new());
+        body.set_mentioned_items(Vec::new());
+        let owned = unsafe {
+            std::mem::transmute::<rustc_middle::mir::Body<'static>, rustc_middle::mir::Body<'tcx>>(body)
+        };
+        Some(tcx.arena.alloc(owned))
     }
 
     fn mir_drops_elaborated_and_const_checked<'tcx>(
@@ -1129,7 +1275,11 @@ fn build_mir_body<'tcx>(
         parent_scope: None,
         inlined: None,
         inlined_parent_scope: None,
-        local_data: rustc_middle::mir::ClearCrossCrate::Clear,
+        local_data: rustc_middle::mir::ClearCrossCrate::Set(
+            rustc_middle::mir::SourceScopeLocalData {
+                lint_root: HirId::make_owner(owner),
+            },
+        ),
     }]);
 
     let locals: Vec<rustc_middle::mir::LocalDecl<'tcx>> = func
@@ -1141,7 +1291,9 @@ fn build_mir_body<'tcx>(
                 MirMutability::Not => rustc_middle::mir::Mutability::Not,
                 MirMutability::Mut => rustc_middle::mir::Mutability::Mut,
             },
-            local_info: rustc_middle::mir::ClearCrossCrate::Clear,
+            local_info: rustc_middle::mir::ClearCrossCrate::Set(Box::new(
+                rustc_middle::mir::LocalInfo::Boring,
+            )),
             ty: mir_ty_to_rustc(tcx, foreign_write, &local.ty),
             user_ty: None,
             source_info: rustc_middle::mir::SourceInfo { span, scope: source_scope },
@@ -1404,6 +1556,17 @@ fn make_module_items(spec: ModuleItemsSpec) -> ModuleItems {
     };
 
     unsafe { std::mem::transmute::<ModuleItemsRepr, ModuleItems>(repr) }
+}
+
+fn insert_owner(
+    owners: &mut IndexVec<LocalDefId, Option<&'static hir::OwnerInfo<'static>>>,
+    def_id: LocalDefId,
+    info: &'static hir::OwnerInfo<'static>,
+) {
+    if def_id.index() >= owners.len() {
+        owners.resize(def_id.index() + 1, None);
+    }
+    owners[def_id] = Some(info);
 }
 
 fn make_prim_ty(owner: LocalDefId, prim: hir::PrimTy) -> hir::Ty<'static> {

@@ -27,13 +27,23 @@ fn main() {
                 gen::MirBasicBlock {
                     statements: vec![],
                     terminator: gen::MirTerminator::Call {
-                        func: gen::MirOperand::Const(gen::MirConst::Fn { name: "write".to_string() }),
+                        func: gen::MirOperand::Const(gen::MirConst::Fn {
+                            name: "write".to_string(),
+                        }),
                         args: vec![
                             gen::MirOperand::Const(gen::MirConst::I32(1)),
-                            gen::MirOperand::Const(gen::MirConst::ByteStr(b"Hello world\n".to_vec())),
-                            gen::MirOperand::Const(gen::MirConst::Usize(12)),
+                            gen::MirOperand::Const(gen::MirConst::ByteStr(
+                                b"Hello ggg world\n".to_vec(),
+                            )),
+                            gen::MirOperand::Const(gen::MirConst::Usize(16)),
                         ],
-                        destination: Some((gen::MirPlace { local: 1, projection: vec![] }, 1)),
+                        destination: Some((
+                            gen::MirPlace {
+                                local: 1,
+                                projection: vec![],
+                            },
+                            1,
+                        )),
                     },
                 },
                 gen::MirBasicBlock {
@@ -46,7 +56,10 @@ fn main() {
 
         gen::CurrentCrateInfo {
             crate_name: "fake_hello_world".to_string(),
-            functions: vec![gen::FunctionInfo { name: "main".to_string(), body }],
+            functions: vec![gen::FunctionInfo {
+                name: "main".to_string(),
+                body,
+            }],
         }
     });
 }
