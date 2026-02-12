@@ -1,8 +1,8 @@
-use std::{collections::HashMap, fmt::Debug};
+use std::fmt::Debug;
 
 use la_arena::{Arena, Idx};
 
-use crate::{Span, parser::LazyCompoundStatement};
+use crate::Span;
 
 #[derive(Debug)]
 pub struct Stmt<C: HirCtxInterface> {
@@ -11,6 +11,7 @@ pub struct Stmt<C: HirCtxInterface> {
 }
 
 pub struct LocalData<C: HirCtxInterface> {
+    #[allow(dead_code)]
     ty: C::Ty,
 }
 
@@ -105,6 +106,7 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    #[allow(dead_code)]
     const COMPARISONS: &[Self] = &[
         BinOp::Eq,
         BinOp::Le,
@@ -113,8 +115,10 @@ impl BinOp {
         BinOp::Lt,
         BinOp::Ne,
     ];
+    #[allow(dead_code)]
     const SHORT_CIRCUITS: &[Self] = &[BinOp::And, BinOp::Or];
 
+    #[allow(dead_code)]
     fn to_un_op(self) -> Option<UnOp> {
         match self {
             BinOp::Add => Some(UnOp::Pos),

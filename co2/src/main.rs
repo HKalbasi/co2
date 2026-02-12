@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use rustc_ast::{Attribute, MetaItemKind};
 use rustc_driver::{Callbacks, Compilation};
 
-use rustc_public_generative as gen;
+use rustc_public_generative as rustc_gen;
 
 use co2_hir_mir::{
     parse_and_lower, Callee as HirCallee, Function as HirFunction, LocalDecl as HirLocalDecl,
@@ -137,11 +137,11 @@ fn run_co2_compiler(co2_file: PathBuf) {
             .expect("failed to parse and lower co2");
     let module_for_items = module.clone();
 
-    let file_id_cell: Arc<Mutex<Option<gen::FileId>>> = Arc::new(Mutex::new(None));
+    let file_id_cell: Arc<Mutex<Option<rustc_gen::FileId>>> = Arc::new(Mutex::new(None));
     let co2_path = co2_file.clone();
     let co2_src_for_ctx = leaked;
 
-    gen::generate(
+    rustc_gen::generate(
         {
             let file_id_cell = file_id_cell.clone();
             move |ctx, deps| {
@@ -180,7 +180,7 @@ fn run_co2_compiler(co2_file: PathBuf) {
                 let mut bodies = Vec::new();
                 for func in &module.functions {
                     let body = build_mir(func, &module, &deps, &defined, &ctx, file_id);
-                    bodies.push(gen::ItemMirInfo {
+                    bodies.push(rustc_gen::ItemMirInfo {
                         id: func_item_id(func.name.as_str()),
                         body,
                     });
@@ -191,15 +191,15 @@ fn run_co2_compiler(co2_file: PathBuf) {
     );
 }
 
-fn func_item_id(name: &str) -> gen::ItemId {
+fn func_item_id(name: &str) -> rustc_gen::ItemId {
     let mut hash = 0u64;
     for b in name.as_bytes() {
         hash = hash.wrapping_mul(131).wrapping_add(*b as u64);
     }
-    gen::ItemId::new(hash.max(1))
+    rustc_gen::ItemId::new(hash.max(1))
 }
 
-fn build_items(module: &MirModule, deps: gen::DependencyInfo) -> gen::CurrentCrateInfo {
+fn build_items(module: &MirModule, deps: rustc_gen::DependencyInfo) -> rustc_gen::CurrentCrateInfo {
     let mut items = Vec::new();
     let mut entry = None;
 
@@ -208,21 +208,21 @@ fn build_items(module: &MirModule, deps: gen::DependencyInfo) -> gen::CurrentCra
         if func.name == "main" {
             entry = Some(id);
         }
-        items.push(gen::ItemInfo {
+        items.push(rustc_gen::ItemInfo {
             id,
             name: func.name.clone(),
             parent: None,
-            kind: gen::ItemKind::Function,
+            kind: rustc_gen::ItemKind::Function,
         });
     }
 
     for ext in &module.externs {
         let id = func_item_id(&ext.name);
-        items.push(gen::ItemInfo {
+        items.push(rustc_gen::ItemInfo {
             id,
             name: ext.name.clone(),
             parent: None,
-            kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+            kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                 inputs: ext
                     .sig
                     .params
@@ -230,13 +230,13 @@ fn build_items(module: &MirModule, deps: gen::DependencyInfo) -> gen::CurrentCra
                     .map(|t| mir_ty_from_type(t, Some(module), &deps))
                     .collect(),
                 output: mir_ty_from_type(&ext.sig.ret, Some(module), &deps),
-                abi: gen::FunctionAbi::C,
+                abi: rustc_gen::FunctionAbi::C,
                 is_unsafe: true,
             }),
         });
     }
 
-    gen::CurrentCrateInfo {
+    rustc_gen::CurrentCrateInfo {
         crate_name: "co2".to_owned(),
         entry,
         items,
@@ -246,17 +246,17 @@ fn build_items(module: &MirModule, deps: gen::DependencyInfo) -> gen::CurrentCra
 fn mir_ty_from_type(
     ty: &HirType,
     module: Option<&MirModule>,
-    deps: &gen::DependencyInfo,
-) -> gen::MirTy {
+    deps: &rustc_gen::DependencyInfo,
+) -> rustc_gen::MirTy {
     match ty {
-        HirType::Void => gen::MirTy::new_tuple(&[]),
-        HirType::Int => gen::MirTy::signed_ty(gen::PublicIntTy::I32),
-        HirType::Char => gen::MirTy::signed_ty(gen::PublicIntTy::I8),
+        HirType::Void => rustc_gen::MirTy::new_tuple(&[]),
+        HirType::Int => rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I32),
+        HirType::Char => rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8),
         HirType::Ptr(inner) => {
-            gen::MirTy::new_ptr(mir_ty_from_type(inner, module, deps), gen::MirMutability::Mut)
+            rustc_gen::MirTy::new_ptr(mir_ty_from_type(inner, module, deps), rustc_gen::MirMutability::Mut)
         }
         HirType::Array(inner) => {
-            gen::MirTy::new_ptr(mir_ty_from_type(inner, module, deps), gen::MirMutability::Mut)
+            rustc_gen::MirTy::new_ptr(mir_ty_from_type(inner, module, deps), rustc_gen::MirMutability::Mut)
         }
         HirType::RustPath(path) => mir_ty_from_rust_path(path, module, deps),
     }
@@ -265,8 +265,8 @@ fn mir_ty_from_type(
 fn mir_ty_from_rust_path(
     path: &co2_parser::RustPath,
     module: Option<&MirModule>,
-    deps: &gen::DependencyInfo,
-) -> gen::MirTy {
+    deps: &rustc_gen::DependencyInfo,
+) -> rustc_gen::MirTy {
     let base = rust_path_base_string(path);
     if let Some(prim) = primitive_mir_ty(&base) {
         return prim;
@@ -276,18 +276,18 @@ fn mir_ty_from_rust_path(
     let mut generic_args = rust_path_generic_args(path)
         .into_iter()
         .map(|arg| {
-            gen::GenericArgKind::Type(mir_ty_from_rust_path(&arg, module, deps))
+            rustc_gen::GenericArgKind::Type(mir_ty_from_rust_path(&arg, module, deps))
         })
         .collect::<Vec<_>>();
     if (base == "std::vec::Vec" || base == "alloc::vec::Vec" || base.ends_with("::Vec"))
         && generic_args.len() == 1
     {
         let global = dep_adt_any(deps, &["alloc::alloc::Global", "std::alloc::Global"]);
-        generic_args.push(gen::GenericArgKind::Type(gen::MirTy::from_rigid_kind(
-            gen::RigidTy::Adt(global, gen::GenericArgs(vec![])),
+        generic_args.push(rustc_gen::GenericArgKind::Type(rustc_gen::MirTy::from_rigid_kind(
+            rustc_gen::RigidTy::Adt(global, rustc_gen::GenericArgs(vec![])),
         )));
     }
-    gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(adt, gen::GenericArgs(generic_args)))
+    rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(adt, rustc_gen::GenericArgs(generic_args)))
 }
 
 fn rust_path_base_string(path: &co2_parser::RustPath) -> String {
@@ -310,19 +310,19 @@ fn rust_path_generic_args(path: &co2_parser::RustPath) -> Vec<co2_parser::RustPa
     Vec::new()
 }
 
-fn primitive_mir_ty(name: &str) -> Option<gen::MirTy> {
+fn primitive_mir_ty(name: &str) -> Option<rustc_gen::MirTy> {
     match name {
-        "u8" => Some(gen::MirTy::unsigned_ty(gen::PublicUintTy::U8)),
-        "i8" => Some(gen::MirTy::signed_ty(gen::PublicIntTy::I8)),
-        "u32" => Some(gen::MirTy::unsigned_ty(gen::PublicUintTy::U32)),
-        "i32" => Some(gen::MirTy::signed_ty(gen::PublicIntTy::I32)),
-        "usize" => Some(gen::MirTy::usize_ty()),
-        "isize" => Some(gen::MirTy::signed_ty(gen::PublicIntTy::Isize)),
+        "u8" => Some(rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U8)),
+        "i8" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8)),
+        "u32" => Some(rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U32)),
+        "i32" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I32)),
+        "usize" => Some(rustc_gen::MirTy::usize_ty()),
+        "isize" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::Isize)),
         _ => None,
     }
 }
 
-fn dep_fn(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef {
+fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
     if let Some(found) = find_dep_fn(deps, path) {
         if std::env::var("CO2_DEBUG_DEP").is_ok() {
             eprintln!("dep_fn resolved: {path}");
@@ -347,7 +347,7 @@ fn dep_fn(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef {
     panic!("missing dependency function: {path}");
 }
 
-fn dep_fn_any(deps: &gen::DependencyInfo, paths: &[&str]) -> gen::FnDef {
+fn dep_fn_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> rustc_gen::FnDef {
     for path in paths {
         if let Some(found) = find_dep_fn(deps, path) {
             return found;
@@ -396,7 +396,7 @@ fn dep_fn_any(deps: &gen::DependencyInfo, paths: &[&str]) -> gen::FnDef {
     );
 }
 
-fn find_dep_fn(deps: &gen::DependencyInfo, path: &str) -> Option<gen::FnDef> {
+fn find_dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> Option<rustc_gen::FnDef> {
     if let Some(found) = deps
         .functions
         .iter()
@@ -444,7 +444,7 @@ fn find_dep_fn(deps: &gen::DependencyInfo, path: &str) -> Option<gen::FnDef> {
     None
 }
 
-fn dep_adt(deps: &gen::DependencyInfo, path: &str) -> gen::AdtDef {
+fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::AdtDef {
     if let Some(found) = deps.types.iter().find(|t| t.path == path).map(|t| t.adt) {
         return found;
     }
@@ -472,7 +472,7 @@ fn dep_adt(deps: &gen::DependencyInfo, path: &str) -> gen::AdtDef {
     panic!("missing dependency type: {path}");
 }
 
-fn dep_adt_any(deps: &gen::DependencyInfo, paths: &[&str]) -> gen::AdtDef {
+fn dep_adt_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> rustc_gen::AdtDef {
     for path in paths {
         if let Some(found) = deps.types.iter().find(|t| t.path == *path).map(|t| t.adt) {
             return found;
@@ -492,31 +492,31 @@ fn dep_adt_any(deps: &gen::DependencyInfo, paths: &[&str]) -> gen::AdtDef {
 fn build_mir(
     func: &HirFunction,
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-    defined: &gen::DefinedCrateInfo,
-    ctx: &gen::Context,
-    file_id: gen::FileId,
-) -> gen::MirBody {
+    deps: &rustc_gen::DependencyInfo,
+    defined: &rustc_gen::DefinedCrateInfo,
+    ctx: &rustc_gen::Context,
+    file_id: rustc_gen::FileId,
+) -> rustc_gen::MirBody {
     let span = ctx.span_in_file(file_id, 0, 0);
 
     let mut locals = Vec::new();
     for local in &func.locals {
-        locals.push(gen::MirLocalDecl {
+        locals.push(rustc_gen::MirLocalDecl {
             ty: mir_ty_from_type(&local.ty, Some(module), deps),
             span,
-            mutability: gen::MirMutability::Mut,
+            mutability: rustc_gen::MirMutability::Mut,
         });
     }
 
     let mut blocks = Vec::new();
     let mut stmts = Vec::new();
 
-    let mut extra_locals: Vec<gen::MirLocalDecl> = Vec::new();
+    let mut extra_locals: Vec<rustc_gen::MirLocalDecl> = Vec::new();
 
     for op in &func.ops {
         match op {
             HirOp::Assign { dst, src } => {
-                let rvalue = gen::MirRvalue::Use(lower_operand(
+                let rvalue = rustc_gen::MirRvalue::Use(lower_operand(
                     src,
                     &locals,
                     &mut extra_locals,
@@ -527,8 +527,8 @@ fn build_mir(
                     ctx,
                     file_id,
                 ));
-                stmts.push(gen::MirStatement {
-                    kind: gen::MirStatementKind::Assign(place(*dst), rvalue),
+                stmts.push(rustc_gen::MirStatement {
+                    kind: rustc_gen::MirStatementKind::Assign(place(*dst), rvalue),
                     span,
                 });
             }
@@ -553,10 +553,10 @@ fn build_mir(
                     .unwrap_or_else(|| {
                         let idx = locals.len() + extra_locals.len();
                         let ret_ty = call_return_ty(callee, module, deps);
-                        extra_locals.push(gen::MirLocalDecl {
+                        extra_locals.push(rustc_gen::MirLocalDecl {
                             ty: ret_ty,
                             span,
-                            mutability: gen::MirMutability::Mut,
+                            mutability: rustc_gen::MirMutability::Mut,
                         });
                         place(idx)
                     });
@@ -570,10 +570,10 @@ fn build_mir(
                 );
             }
             HirOp::Return => {
-                blocks.push(gen::MirBasicBlock {
+                blocks.push(rustc_gen::MirBasicBlock {
                     statements: std::mem::take(&mut stmts),
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Return,
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Return,
                         span,
                     },
                 });
@@ -582,10 +582,10 @@ fn build_mir(
     }
 
     if !stmts.is_empty() {
-        blocks.push(gen::MirBasicBlock {
+        blocks.push(rustc_gen::MirBasicBlock {
             statements: std::mem::take(&mut stmts),
-            terminator: gen::MirTerminator {
-                kind: gen::MirTerminatorKind::Return,
+            terminator: rustc_gen::MirTerminator {
+                kind: rustc_gen::MirTerminatorKind::Return,
                 span,
             },
         });
@@ -593,34 +593,34 @@ fn build_mir(
 
     locals.extend(extra_locals);
 
-    gen::MirBody::new(blocks, locals, 0, vec![], None, span)
+    rustc_gen::MirBody::new(blocks, locals, 0, vec![], None, span)
 }
 
-fn place(local: usize) -> gen::MirPlace {
-    gen::MirPlace {
+fn place(local: usize) -> rustc_gen::MirPlace {
+    rustc_gen::MirPlace {
         local,
         projection: vec![],
     }
 }
 
 fn emit_call_block(
-    blocks: &mut Vec<gen::MirBasicBlock>,
-    stmts: &mut Vec<gen::MirStatement>,
-    span: gen::PublicSpan,
-    func: gen::MirOperand,
-    args: Vec<gen::MirOperand>,
-    destination: gen::MirPlace,
+    blocks: &mut Vec<rustc_gen::MirBasicBlock>,
+    stmts: &mut Vec<rustc_gen::MirStatement>,
+    span: rustc_gen::PublicSpan,
+    func: rustc_gen::MirOperand,
+    args: Vec<rustc_gen::MirOperand>,
+    destination: rustc_gen::MirPlace,
 ) {
     let next = blocks.len() + 1;
-    blocks.push(gen::MirBasicBlock {
+    blocks.push(rustc_gen::MirBasicBlock {
         statements: std::mem::take(stmts),
-        terminator: gen::MirTerminator {
-            kind: gen::MirTerminatorKind::Call {
+        terminator: rustc_gen::MirTerminator {
+            kind: rustc_gen::MirTerminatorKind::Call {
                 func,
                 args,
                 destination,
                 target: Some(next),
-                unwind: gen::MirUnwindAction::Continue,
+                unwind: rustc_gen::MirUnwindAction::Continue,
             },
             span,
         },
@@ -632,8 +632,8 @@ fn infer_generic_args_for_call(
     args: &[HirOperand],
     hir_locals: &[HirLocalDecl],
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-) -> Vec<gen::GenericArgKind> {
+    deps: &rustc_gen::DependencyInfo,
+) -> Vec<rustc_gen::GenericArgKind> {
     if path.ends_with("::Option::unwrap") || path.ends_with("::option::Option::unwrap") {
         if let Some(arg_ty) = hir_operand_type(args.get(0), hir_locals) {
             return generic_args_from_type(arg_ty, module, deps);
@@ -648,7 +648,7 @@ fn infer_generic_args_for_call(
 
     if path.ends_with("::Iterator::nth") || path.ends_with("::Iterator::next") {
         if let Some(arg_ty) = hir_operand_type(args.get(0), hir_locals) {
-            return vec![gen::GenericArgKind::Type(mir_ty_from_type(
+            return vec![rustc_gen::GenericArgKind::Type(mir_ty_from_type(
                 arg_ty,
                 Some(module),
                 deps,
@@ -658,7 +658,7 @@ fn infer_generic_args_for_call(
 
     if path.ends_with("::CString::new") {
         if let Some(arg_ty) = hir_operand_type(args.get(0), hir_locals) {
-            return vec![gen::GenericArgKind::Type(mir_ty_from_type(
+            return vec![rustc_gen::GenericArgKind::Type(mir_ty_from_type(
                 arg_ty,
                 Some(module),
                 deps,
@@ -668,7 +668,7 @@ fn infer_generic_args_for_call(
 
     if path.ends_with("::fs::read") || path.ends_with("::std::fs::read") {
         if let Some(arg_ty) = hir_operand_type(args.get(0), hir_locals) {
-            return vec![gen::GenericArgKind::Type(mir_ty_from_type(
+            return vec![rustc_gen::GenericArgKind::Type(mir_ty_from_type(
                 arg_ty,
                 Some(module),
                 deps,
@@ -701,30 +701,30 @@ fn hir_operand_type<'a>(
 fn generic_args_from_type(
     ty: &HirType,
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-) -> Vec<gen::GenericArgKind> {
+    deps: &rustc_gen::DependencyInfo,
+) -> Vec<rustc_gen::GenericArgKind> {
     let HirType::RustPath(path) = ty else {
         return Vec::new();
     };
     rust_path_generic_args(path)
         .into_iter()
-        .map(|arg| gen::GenericArgKind::Type(mir_ty_from_rust_path(&arg, Some(module), deps)))
+        .map(|arg| rustc_gen::GenericArgKind::Type(mir_ty_from_rust_path(&arg, Some(module), deps)))
         .collect()
 }
 
 fn vec_method_generic_args(
     ty: &HirType,
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-) -> Vec<gen::GenericArgKind> {
+    deps: &rustc_gen::DependencyInfo,
+) -> Vec<rustc_gen::GenericArgKind> {
     let mut args = generic_args_from_type(ty, module, deps);
     if args.len() == 1 {
         let global = dep_adt_any(deps, &["alloc::alloc::Global", "std::alloc::Global"]);
-        let global_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+        let global_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
             global,
-            gen::GenericArgs(vec![]),
+            rustc_gen::GenericArgs(vec![]),
         ));
-        args.push(gen::GenericArgKind::Type(global_ty));
+        args.push(rustc_gen::GenericArgKind::Type(global_ty));
     }
     args
 }
@@ -760,13 +760,13 @@ fn autoref_call_arg(
     arg_index: usize,
     arg: &HirOperand,
     hir_locals: &[HirLocalDecl],
-    locals: &[gen::MirLocalDecl],
-    extra_locals: &mut Vec<gen::MirLocalDecl>,
+    locals: &[rustc_gen::MirLocalDecl],
+    extra_locals: &mut Vec<rustc_gen::MirLocalDecl>,
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-    stmts: &mut Vec<gen::MirStatement>,
-    span: gen::PublicSpan,
-) -> Option<gen::MirOperand> {
+    deps: &rustc_gen::DependencyInfo,
+    stmts: &mut Vec<rustc_gen::MirStatement>,
+    span: rustc_gen::PublicSpan,
+) -> Option<rustc_gen::MirOperand> {
     if arg_index != 0 {
         return None;
     }
@@ -778,41 +778,41 @@ fn autoref_call_arg(
     let base_ty = mir_ty_from_type(hir_ty, Some(module), deps);
     let (ref_ty, borrow_kind) = match kind {
         AutorefKind::Shared => (
-            gen::MirTy::new_ref(
-                gen::Region {
-                    kind: gen::RegionKind::ReErased,
+            rustc_gen::MirTy::new_ref(
+                rustc_gen::Region {
+                    kind: rustc_gen::RegionKind::ReErased,
                 },
                 base_ty,
-                gen::MirMutability::Not,
+                rustc_gen::MirMutability::Not,
             ),
-            gen::MirBorrowKind::Shared,
+            rustc_gen::MirBorrowKind::Shared,
         ),
         AutorefKind::Mut => (
-            gen::MirTy::new_ref(
-                gen::Region {
-                    kind: gen::RegionKind::ReErased,
+            rustc_gen::MirTy::new_ref(
+                rustc_gen::Region {
+                    kind: rustc_gen::RegionKind::ReErased,
                 },
                 base_ty,
-                gen::MirMutability::Mut,
+                rustc_gen::MirMutability::Mut,
             ),
-            gen::MirBorrowKind::Mut {
-                kind: gen::MirMutBorrowKind::Default,
+            rustc_gen::MirBorrowKind::Mut {
+                kind: rustc_gen::MirMutBorrowKind::Default,
             },
         ),
     };
 
     let ref_local = locals.len() + extra_locals.len();
-    extra_locals.push(gen::MirLocalDecl {
+    extra_locals.push(rustc_gen::MirLocalDecl {
         ty: ref_ty,
         span,
-        mutability: gen::MirMutability::Not,
+        mutability: rustc_gen::MirMutability::Not,
     });
-    stmts.push(gen::MirStatement {
-        kind: gen::MirStatementKind::Assign(
+    stmts.push(rustc_gen::MirStatement {
+        kind: rustc_gen::MirStatementKind::Assign(
             place(ref_local),
-            gen::MirRvalue::Ref(
-                gen::Region {
-                    kind: gen::RegionKind::ReErased,
+            rustc_gen::MirRvalue::Ref(
+                rustc_gen::Region {
+                    kind: rustc_gen::RegionKind::ReErased,
                 },
                 borrow_kind,
                 place(*local),
@@ -820,24 +820,24 @@ fn autoref_call_arg(
         ),
         span,
     });
-    Some(gen::MirOperand::Move(place(ref_local)))
+    Some(rustc_gen::MirOperand::Move(place(ref_local)))
 }
 
 fn lower_call(
     callee: &HirCallee,
     args: &[HirOperand],
     hir_locals: &[HirLocalDecl],
-    locals: &[gen::MirLocalDecl],
-    extra_locals: &mut Vec<gen::MirLocalDecl>,
-    deps: &gen::DependencyInfo,
+    locals: &[rustc_gen::MirLocalDecl],
+    extra_locals: &mut Vec<rustc_gen::MirLocalDecl>,
+    deps: &rustc_gen::DependencyInfo,
     module: &MirModule,
-    blocks: &mut Vec<gen::MirBasicBlock>,
-    stmts: &mut Vec<gen::MirStatement>,
-    ctx: &gen::Context,
-    file_id: gen::FileId,
-    span: gen::PublicSpan,
-    defined: &gen::DefinedCrateInfo,
-) -> (gen::MirOperand, Vec<gen::MirOperand>) {
+    blocks: &mut Vec<rustc_gen::MirBasicBlock>,
+    stmts: &mut Vec<rustc_gen::MirStatement>,
+    ctx: &rustc_gen::Context,
+    file_id: rustc_gen::FileId,
+    span: rustc_gen::PublicSpan,
+    defined: &rustc_gen::DefinedCrateInfo,
+) -> (rustc_gen::MirOperand, Vec<rustc_gen::MirOperand>) {
     let (func_def, path) = match callee {
         HirCallee::Path(path) => {
             if let Some(item) = defined.items.iter().find(|i| i.name == *path) {
@@ -861,9 +861,9 @@ fn lower_call(
         if path.ends_with("::Iterator::nth") && idx == 1 {
             if let HirOperand::ConstInt(v, sp) = arg {
                 let arg_span = ctx.span_in_file(file_id, sp.start as u32, sp.end as u32);
-                let c = gen::PublicMirConst::try_from_uint(*v as u128, gen::PublicUintTy::Usize)
+                let c = rustc_gen::PublicMirConst::try_from_uint(*v as u128, rustc_gen::PublicUintTy::Usize)
                     .expect("failed to build usize const");
-                arg_ops.push(gen::MirOperand::Constant(gen::MirConst {
+                arg_ops.push(rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
                     span: arg_span,
                     user_ty: None,
                     const_: c,
@@ -887,7 +887,7 @@ fn lower_call(
             continue;
         }
         if let HirOperand::Local(local) = arg {
-            arg_ops.push(gen::MirOperand::Move(place(*local)));
+            arg_ops.push(rustc_gen::MirOperand::Move(place(*local)));
             continue;
         }
         arg_ops.push(lower_operand(
@@ -906,7 +906,7 @@ fn lower_call(
     (func_op, arg_ops)
 }
 
-fn resolve_dep_fn_for_path(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef {
+fn resolve_dep_fn_for_path(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
     if path.ends_with("::Option::unwrap") || path.ends_with("::option::Option::unwrap") {
         return dep_fn_any(
             deps,
@@ -937,8 +937,8 @@ fn resolve_dep_fn_for_path(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef
 fn call_return_ty(
     callee: &HirCallee,
     module: &MirModule,
-    deps: &gen::DependencyInfo,
-) -> gen::MirTy {
+    deps: &rustc_gen::DependencyInfo,
+) -> rustc_gen::MirTy {
     match callee {
         HirCallee::Path(path) => {
             if let Some(f) = module.functions.iter().find(|f| f.name == *path) {
@@ -947,48 +947,48 @@ fn call_return_ty(
             if let Some(f) = module.externs.iter().find(|f| f.name == *path) {
                 return mir_ty_from_type(&f.sig.ret, Some(module), deps);
             }
-            gen::MirTy::new_tuple(&[])
+            rustc_gen::MirTy::new_tuple(&[])
         }
     }
 }
 
 fn lower_operand(
     operand: &HirOperand,
-    locals: &[gen::MirLocalDecl],
-    extra_locals: &mut Vec<gen::MirLocalDecl>,
-    deps: &gen::DependencyInfo,
+    locals: &[rustc_gen::MirLocalDecl],
+    extra_locals: &mut Vec<rustc_gen::MirLocalDecl>,
+    deps: &rustc_gen::DependencyInfo,
     _module: &MirModule,
-    blocks: &mut Vec<gen::MirBasicBlock>,
-    stmts: &mut Vec<gen::MirStatement>,
-    ctx: &gen::Context,
-    file_id: gen::FileId,
-) -> gen::MirOperand {
+    blocks: &mut Vec<rustc_gen::MirBasicBlock>,
+    stmts: &mut Vec<rustc_gen::MirStatement>,
+    ctx: &rustc_gen::Context,
+    file_id: rustc_gen::FileId,
+) -> rustc_gen::MirOperand {
     match operand {
-        HirOperand::Local(l) => gen::MirOperand::Copy(place(*l)),
+        HirOperand::Local(l) => rustc_gen::MirOperand::Copy(place(*l)),
         HirOperand::ConstInt(v, sp) => {
             let span = ctx.span_in_file(file_id, sp.start as u32, sp.end as u32);
-            let c = gen::PublicMirConst::try_from_uint(*v as u128, gen::PublicUintTy::U32)
+            let c = rustc_gen::PublicMirConst::try_from_uint(*v as u128, rustc_gen::PublicUintTy::U32)
                 .expect("failed to build int const");
-            let const_op = gen::MirOperand::Constant(gen::MirConst {
+            let const_op = rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
                 span,
                 user_ty: None,
                 const_: c,
             });
             let tmp_local = locals.len() + extra_locals.len();
-            let i32_ty = gen::MirTy::signed_ty(gen::PublicIntTy::I32);
-            extra_locals.push(gen::MirLocalDecl {
+            let i32_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I32);
+            extra_locals.push(rustc_gen::MirLocalDecl {
                 ty: i32_ty,
                 span,
-                mutability: gen::MirMutability::Mut,
+                mutability: rustc_gen::MirMutability::Mut,
             });
-            stmts.push(gen::MirStatement {
-                kind: gen::MirStatementKind::Assign(
+            stmts.push(rustc_gen::MirStatement {
+                kind: rustc_gen::MirStatementKind::Assign(
                     place(tmp_local),
-                    gen::MirRvalue::Cast(gen::MirCastKind::IntToInt, const_op, i32_ty),
+                    rustc_gen::MirRvalue::Cast(rustc_gen::MirCastKind::IntToInt, const_op, i32_ty),
                 ),
                 span,
             });
-            gen::MirOperand::Copy(place(tmp_local))
+            rustc_gen::MirOperand::Copy(place(tmp_local))
         }
         HirOperand::ConstStr(s, sp) => {
             let span = ctx.span_in_file(file_id, sp.start as u32, sp.end as u32);
@@ -996,19 +996,19 @@ fn lower_operand(
             if !value.ends_with('\0') {
                 value.push('\0');
             }
-            let str_const = gen::MirOperand::Constant(gen::MirConst {
+            let str_const = rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
                 span,
                 user_ty: None,
-                const_: gen::PublicMirConst::from_str(&value),
+                const_: rustc_gen::PublicMirConst::from_str(&value),
             });
             let as_ptr = dep_fn_any(deps, &["core::str::as_ptr", "std::str::as_ptr"]);
-            let u8_ty = gen::MirTy::unsigned_ty(gen::PublicUintTy::U8);
-            let ptr_u8_ty = gen::MirTy::new_ptr(u8_ty, gen::MirMutability::Not);
+            let u8_ty = rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U8);
+            let ptr_u8_ty = rustc_gen::MirTy::new_ptr(u8_ty, rustc_gen::MirMutability::Not);
             let ptr_u8_local = locals.len() + extra_locals.len();
-            extra_locals.push(gen::MirLocalDecl {
+            extra_locals.push(rustc_gen::MirLocalDecl {
                 ty: ptr_u8_ty,
                 span,
-                mutability: gen::MirMutability::Mut,
+                mutability: rustc_gen::MirMutability::Mut,
             });
             emit_call_block(
                 blocks,
@@ -1019,40 +1019,40 @@ fn lower_operand(
                 place(ptr_u8_local),
             );
 
-            let i8_ty = gen::MirTy::signed_ty(gen::PublicIntTy::I8);
-            let ptr_i8_ty = gen::MirTy::new_ptr(i8_ty, gen::MirMutability::Mut);
+            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
+            let ptr_i8_ty = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
             let ptr_i8_local = locals.len() + extra_locals.len();
-            extra_locals.push(gen::MirLocalDecl {
+            extra_locals.push(rustc_gen::MirLocalDecl {
                 ty: ptr_i8_ty,
                 span,
-                mutability: gen::MirMutability::Mut,
+                mutability: rustc_gen::MirMutability::Mut,
             });
-            stmts.push(gen::MirStatement {
-                kind: gen::MirStatementKind::Assign(
+            stmts.push(rustc_gen::MirStatement {
+                kind: rustc_gen::MirStatementKind::Assign(
                     place(ptr_i8_local),
-                    gen::MirRvalue::Cast(
-                        gen::MirCastKind::PtrToPtr,
-                        gen::MirOperand::Copy(place(ptr_u8_local)),
+                    rustc_gen::MirRvalue::Cast(
+                        rustc_gen::MirCastKind::PtrToPtr,
+                        rustc_gen::MirOperand::Copy(place(ptr_u8_local)),
                         ptr_i8_ty,
                     ),
                 ),
                 span,
             });
 
-            gen::MirOperand::Copy(place(ptr_i8_local))
+            rustc_gen::MirOperand::Copy(place(ptr_i8_local))
         }
     }
 }
 
 fn fn_const_operand(
-    fn_def: gen::FnDef,
-    generic_args: Vec<gen::GenericArgKind>,
-    span: gen::PublicSpan,
-) -> gen::MirOperand {
+    fn_def: rustc_gen::FnDef,
+    generic_args: Vec<rustc_gen::GenericArgKind>,
+    span: rustc_gen::PublicSpan,
+) -> rustc_gen::MirOperand {
     let fn_ty =
-        gen::MirTy::from_rigid_kind(gen::RigidTy::FnDef(fn_def, gen::GenericArgs(generic_args)));
-    let c = gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
-    gen::MirOperand::Constant(gen::MirConst {
+        rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::FnDef(fn_def, rustc_gen::GenericArgs(generic_args)));
+    let c = rustc_gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
+    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
         span,
         user_ty: None,
         const_: c,

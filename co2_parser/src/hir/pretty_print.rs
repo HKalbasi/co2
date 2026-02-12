@@ -13,25 +13,25 @@ fn indent(x: String) -> String {
 }
 
 impl<C: HirCtxInterface> HirPrint<C> for Expr<C> {
-    fn print(&self, ctx: &HirBody<C>) -> String {
+    fn print(&self, _ctx: &HirBody<C>) -> String {
         match &self.kind {
-            ExprKind::Lit(lit) => todo!(),
+            ExprKind::Lit(_) => todo!(),
             ExprKind::Local(_) => todo!(),
-            ExprKind::Call(expr, exprs) => todo!(),
-            ExprKind::Binary(bin_op, expr, expr1) => todo!(),
-            ExprKind::Unary(un_op, expr) => todo!(),
-            ExprKind::Assign(expr, expr1) => todo!(),
-            ExprKind::AssignWithBinOp(expr, expr1, bin_op, _, return_semantic) => todo!(),
-            ExprKind::Field(expr, _) => todo!(),
-            ExprKind::PtrOffset(expr, expr1) => todo!(),
-            ExprKind::PtrDiff(expr, expr1) => todo!(),
-            ExprKind::AssignPtrOffset(expr, expr1, return_semantic) => todo!(),
-            ExprKind::Cast(expr) => todo!(),
-            ExprKind::InitializerList(initializer_tree) => todo!(),
-            ExprKind::Comma(exprs) => todo!(),
+            ExprKind::Call(_, _) => todo!(),
+            ExprKind::Binary(_, _, _) => todo!(),
+            ExprKind::Unary(_, _) => todo!(),
+            ExprKind::Assign(_, _) => todo!(),
+            ExprKind::AssignWithBinOp(_, _, _, _, _) => todo!(),
+            ExprKind::Field(_, _) => todo!(),
+            ExprKind::PtrOffset(_, _) => todo!(),
+            ExprKind::PtrDiff(_, _) => todo!(),
+            ExprKind::AssignPtrOffset(_, _, _) => todo!(),
+            ExprKind::Cast(_) => todo!(),
+            ExprKind::InitializerList(_) => todo!(),
+            ExprKind::Comma(_) => todo!(),
             ExprKind::OffsetOf => todo!(),
-            ExprKind::Cond(expr, expr1, expr2) => todo!(),
-            ExprKind::GnuBlock(block) => todo!(),
+            ExprKind::Cond(_, _, _) => todo!(),
+            ExprKind::GnuBlock(_) => todo!(),
             ExprKind::Empty => todo!(),
         }
     }
@@ -42,11 +42,11 @@ impl<C: HirCtxInterface> HirPrint<C> for Stmt<C> {
         match &self.kind {
             StmtKind::Block(block) => block.print(ctx),
             StmtKind::Expr(expr) => format!("{};", expr.print(ctx)),
-            StmtKind::Decl(items) => todo!(),
-            StmtKind::Ret(expr) => todo!(),
-            StmtKind::Label(idx, stmt) => todo!(),
-            StmtKind::Goto(idx) => todo!(),
-            StmtKind::If(expr, stmt, stmt1) => todo!(),
+            StmtKind::Decl(_) => todo!(),
+            StmtKind::Ret(_) => todo!(),
+            StmtKind::Label(_, _) => todo!(),
+            StmtKind::Goto(_) => todo!(),
+            StmtKind::If(_, _, _) => todo!(),
             StmtKind::Noop => todo!(),
         }
     }

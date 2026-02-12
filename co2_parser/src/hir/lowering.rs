@@ -5,18 +5,20 @@ use la_arena::Arena;
 
 use crate::{
     Span, Spanned,
-    diagnostic::{raise_error, report_error, unwind_stack_after_report},
-    hir::{Block, HirBody, HirCtxInterface, Local, LocalData},
+    diagnostic::{raise_error, report_error},
+    hir::{Block, HirBody, HirCtxInterface, Local},
     parser::{self, CompoundStatement, LazyCompoundStatement, compound_statement},
     print_errors_and_terminate,
 };
 
+#[allow(dead_code)]
 struct HirLowering<'c, C: HirCtxInterface> {
     ctx: &'c C,
     local_resolver: HashMap<String, Local<C>>,
     body: HirBody<C>,
 }
 
+#[allow(dead_code)]
 impl<'c, C: HirCtxInterface> HirLowering<'c, C> {
     fn new(ctx: &'c C, span: Span) -> Self {
         Self {
@@ -34,16 +36,16 @@ impl<'c, C: HirCtxInterface> HirLowering<'c, C> {
 
     fn lower_block(&mut self, (ast, span): Spanned<CompoundStatement>) -> Block<C> {
         let prev_scope = self.open_new_scope();
-        let mut stmts = vec![];
-        for (ast_stmt, span) in ast.statements {
+        let stmts = vec![];
+        for (ast_stmt, _span) in ast.statements {
             match ast_stmt {
                 parser::StatementOrDeclaration::Declaration(decl) => match decl.0 {
                     parser::Declaration::FunctionDefinition { .. } => {
                         raise_error(decl.1, "Nested declarations are not allowed");
                     }
                     parser::Declaration::Declaration {
-                        declaration_specifiers,
-                        declarators,
+                        declaration_specifiers: _,
+                        declarators: _,
                     } => todo!(),
                 },
                 parser::StatementOrDeclaration::Statement(_) => todo!(),
@@ -54,7 +56,7 @@ impl<'c, C: HirCtxInterface> HirLowering<'c, C> {
     }
 
     fn lower(&mut self, ast: LazyCompoundStatement, src: &'static str) {
-        let (stmt, errors) = compound_statement()
+        let (_stmt, errors) = compound_statement()
             .parse(
                 ast.tokens
                     .0

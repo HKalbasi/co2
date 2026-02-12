@@ -4,7 +4,7 @@ use chumsky::span::SimpleSpan;
 
 use crate::{
     Span, Spanned,
-    diagnostic::{raise_error, todo_error},
+    diagnostic::raise_error,
     parser::{self as ast, DeclarationSpecifier, LazyCompoundStatement, RustPath, UseItem},
     type_ir,
 };
@@ -124,10 +124,12 @@ impl Item {
 pub struct State {
     pub items: Vec<Spanned<Item>>,
     item_indexes_by_name: HashMap<String, usize>,
+    #[allow(dead_code)]
     anonymous_datatype_counter: usize,
 }
 
 impl State {
+    #[allow(dead_code)]
     fn convert_fields(&mut self, fields: &[Spanned<ast::StructOrUnionField>]) -> Vec<Field> {
         fields
             .iter()

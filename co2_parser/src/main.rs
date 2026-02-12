@@ -1,6 +1,6 @@
 use std::{env, fs};
 
-use chumsky_c_parser::{
+use co2_parser::{
     Field, Item, RustType, State,
     hir::{HirBody, HirCtxInterface},
 };
@@ -20,7 +20,7 @@ fn main() {
         .expect("Failed to read file")
         .leak();
 
-    let Some(state) = chumsky_c_parser::parse_items(filename, src) else {
+    let Some(state) = co2_parser::parse_items(filename, src) else {
         return;
     };
 

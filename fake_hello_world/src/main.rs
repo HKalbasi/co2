@@ -1,18 +1,18 @@
 #![feature(rustc_private)]
 
-use rustc_public_generative as gen;
+use rustc_public_generative as rustc_gen;
 
-fn place(local: usize) -> gen::MirPlace {
-    gen::MirPlace {
+fn place(local: usize) -> rustc_gen::MirPlace {
+    rustc_gen::MirPlace {
         local,
         projection: vec![],
     }
 }
 
-fn const_uint(value: u128, span: gen::PublicSpan) -> gen::MirOperand {
-    let c = gen::PublicMirConst::try_from_uint(value, gen::PublicUintTy::Usize)
+fn const_uint(value: u128, span: rustc_gen::PublicSpan) -> rustc_gen::MirOperand {
+    let c = rustc_gen::PublicMirConst::try_from_uint(value, rustc_gen::PublicUintTy::Usize)
         .expect("failed to build usize const");
-    gen::MirOperand::Constant(gen::MirConst {
+    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
         span,
         user_ty: None,
         const_: c,
@@ -20,21 +20,21 @@ fn const_uint(value: u128, span: gen::PublicSpan) -> gen::MirOperand {
 }
 
 fn fn_const_operand(
-    fn_def: gen::FnDef,
-    generic_args: Vec<gen::GenericArgKind>,
-    span: gen::PublicSpan,
-) -> gen::MirOperand {
+    fn_def: rustc_gen::FnDef,
+    generic_args: Vec<rustc_gen::GenericArgKind>,
+    span: rustc_gen::PublicSpan,
+) -> rustc_gen::MirOperand {
     let fn_ty =
-        gen::MirTy::from_rigid_kind(gen::RigidTy::FnDef(fn_def, gen::GenericArgs(generic_args)));
-    let c = gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
-    gen::MirOperand::Constant(gen::MirConst {
+        rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::FnDef(fn_def, rustc_gen::GenericArgs(generic_args)));
+    let c = rustc_gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
+    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
         span,
         user_ty: None,
         const_: c,
     })
 }
 
-fn dep_fn(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef {
+fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
     if let Some(found) = deps
         .functions
         .iter()
@@ -95,7 +95,7 @@ fn dep_fn(deps: &gen::DependencyInfo, path: &str) -> gen::FnDef {
     );
 }
 
-fn dep_adt(deps: &gen::DependencyInfo, path: &str) -> gen::AdtDef {
+fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::AdtDef {
     if let Some(found) = deps.types.iter().find(|t| t.path == path).map(|t| t.adt) {
         return found;
     }
@@ -142,93 +142,93 @@ fn dep_adt(deps: &gen::DependencyInfo, path: &str) -> gen::AdtDef {
 }
 
 fn main() {
-    let item_main = gen::ItemId::new(1);
-    let item_write = gen::ItemId::new(2);
-    let item_open = gen::ItemId::new(3);
-    let item_read = gen::ItemId::new(4);
-    let item_close = gen::ItemId::new(5);
-    let item_malloc = gen::ItemId::new(6);
-    let item_free = gen::ItemId::new(7);
+    let item_main = rustc_gen::ItemId::new(1);
+    let item_write = rustc_gen::ItemId::new(2);
+    let item_open = rustc_gen::ItemId::new(3);
+    let item_read = rustc_gen::ItemId::new(4);
+    let item_close = rustc_gen::ItemId::new(5);
+    let item_malloc = rustc_gen::ItemId::new(6);
+    let item_free = rustc_gen::ItemId::new(7);
 
-    gen::generate(
+    rustc_gen::generate(
         move |_ctx, _deps| {
-            let usize_ty = gen::MirTy::usize_ty();
-            let i8_ty = gen::MirTy::signed_ty(gen::PublicIntTy::I8);
-            let ptr_i8_mut = gen::MirTy::new_ptr(i8_ty, gen::MirMutability::Mut);
+            let usize_ty = rustc_gen::MirTy::usize_ty();
+            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
+            let ptr_i8_mut = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
 
-            gen::CurrentCrateInfo {
+            rustc_gen::CurrentCrateInfo {
                 crate_name: "fake_hello_world".to_string(),
                 entry: Some(item_main),
                 items: vec![
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_main,
                         name: "main".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::Function,
+                        kind: rustc_gen::ItemKind::Function,
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_write,
                         name: "write".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
                             output: usize_ty,
-                            abi: gen::FunctionAbi::C,
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_open,
                         name: "open".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![ptr_i8_mut, usize_ty],
                             output: usize_ty,
-                            abi: gen::FunctionAbi::C,
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_read,
                         name: "read".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
                             output: usize_ty,
-                            abi: gen::FunctionAbi::C,
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_close,
                         name: "close".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![usize_ty],
                             output: usize_ty,
-                            abi: gen::FunctionAbi::C,
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_malloc,
                         name: "malloc".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![usize_ty],
                             output: ptr_i8_mut,
-                            abi: gen::FunctionAbi::C,
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
-                    gen::ItemInfo {
+                    rustc_gen::ItemInfo {
                         id: item_free,
                         name: "free".to_string(),
                         parent: None,
-                        kind: gen::ItemKind::ForeignFunction(gen::FunctionSignature {
+                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
                             inputs: vec![ptr_i8_mut],
-                            output: gen::MirTy::new_tuple(&[]),
-                            abi: gen::FunctionAbi::C,
+                            output: rustc_gen::MirTy::new_tuple(&[]),
+                            abi: rustc_gen::FunctionAbi::C,
                             is_unsafe: true,
                         }),
                     },
@@ -236,7 +236,7 @@ fn main() {
             }
         },
         move |_ctx, deps, defined| {
-            let span: gen::PublicSpan = unsafe { std::mem::zeroed() };
+            let span: rustc_gen::PublicSpan = unsafe { std::mem::zeroed() };
 
             let write = defined
                 .items
@@ -290,314 +290,314 @@ fn main() {
             let result_adt = dep_adt(&deps, "std::result::Result");
 
             let args_ty =
-                gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(args_adt, gen::GenericArgs(vec![])));
-            let string_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+                rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(args_adt, rustc_gen::GenericArgs(vec![])));
+            let string_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 string_adt,
-                gen::GenericArgs(vec![]),
+                rustc_gen::GenericArgs(vec![]),
             ));
-            let cstring_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+            let cstring_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 cstring_adt,
-                gen::GenericArgs(vec![]),
+                rustc_gen::GenericArgs(vec![]),
             ));
-            let nul_error_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+            let nul_error_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 nul_error_adt,
-                gen::GenericArgs(vec![]),
+                rustc_gen::GenericArgs(vec![]),
             ));
-            let option_string_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+            let option_string_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 option_adt,
-                gen::GenericArgs(vec![gen::GenericArgKind::Type(string_ty)]),
+                rustc_gen::GenericArgs(vec![rustc_gen::GenericArgKind::Type(string_ty)]),
             ));
-            let result_cstring_ty = gen::MirTy::from_rigid_kind(gen::RigidTy::Adt(
+            let result_cstring_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 result_adt,
-                gen::GenericArgs(vec![
-                    gen::GenericArgKind::Type(cstring_ty),
-                    gen::GenericArgKind::Type(nul_error_ty),
+                rustc_gen::GenericArgs(vec![
+                    rustc_gen::GenericArgKind::Type(cstring_ty),
+                    rustc_gen::GenericArgKind::Type(nul_error_ty),
                 ]),
             ));
 
-            let args_ref_ty = gen::MirTy::new_ref(
-                gen::Region {
-                    kind: gen::RegionKind::ReErased,
+            let args_ref_ty = rustc_gen::MirTy::new_ref(
+                rustc_gen::Region {
+                    kind: rustc_gen::RegionKind::ReErased,
                 },
                 args_ty,
-                gen::MirMutability::Mut,
+                rustc_gen::MirMutability::Mut,
             );
-            let usize_ty = gen::MirTy::usize_ty();
-            let i8_ty = gen::MirTy::signed_ty(gen::PublicIntTy::I8);
-            let ptr_i8_mut = gen::MirTy::new_ptr(i8_ty, gen::MirMutability::Mut);
+            let usize_ty = rustc_gen::MirTy::usize_ty();
+            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
+            let ptr_i8_mut = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
 
             let locals = vec![
-                gen::MirLocalDecl {
-                    ty: gen::MirTy::new_tuple(&[]),
+                rustc_gen::MirLocalDecl {
+                    ty: rustc_gen::MirTy::new_tuple(&[]),
                     span,
-                    mutability: gen::MirMutability::Not,
+                    mutability: rustc_gen::MirMutability::Not,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: args_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: args_ref_ty,
                     span,
-                    mutability: gen::MirMutability::Not,
+                    mutability: rustc_gen::MirMutability::Not,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: option_string_ty,
                     span,
-                    mutability: gen::MirMutability::Not,
+                    mutability: rustc_gen::MirMutability::Not,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: string_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: result_cstring_ty,
                     span,
-                    mutability: gen::MirMutability::Not,
+                    mutability: rustc_gen::MirMutability::Not,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: cstring_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: ptr_i8_mut,
                     span,
-                    mutability: gen::MirMutability::Not,
+                    mutability: rustc_gen::MirMutability::Not,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: usize_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: ptr_i8_mut,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: usize_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
-                gen::MirLocalDecl {
+                rustc_gen::MirLocalDecl {
                     ty: usize_ty,
                     span,
-                    mutability: gen::MirMutability::Mut,
+                    mutability: rustc_gen::MirMutability::Mut,
                 },
             ];
 
             let blocks = vec![
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(std_env_args, vec![], span),
                             args: vec![],
                             destination: place(1),
                             target: Some(1),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
-                    statements: vec![gen::MirStatement {
-                        kind: gen::MirStatementKind::Assign(
+                rustc_gen::MirBasicBlock {
+                    statements: vec![rustc_gen::MirStatement {
+                        kind: rustc_gen::MirStatementKind::Assign(
                             place(2),
-                            gen::MirRvalue::Ref(
-                                gen::Region {
-                                    kind: gen::RegionKind::ReErased,
+                            rustc_gen::MirRvalue::Ref(
+                                rustc_gen::Region {
+                                    kind: rustc_gen::RegionKind::ReErased,
                                 },
-                                gen::MirBorrowKind::Mut {
-                                    kind: gen::MirMutBorrowKind::Default,
+                                rustc_gen::MirBorrowKind::Mut {
+                                    kind: rustc_gen::MirMutBorrowKind::Default,
                                 },
                                 place(1),
                             ),
                         ),
                         span,
                     }],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(
                                 iter_nth,
-                                vec![gen::GenericArgKind::Type(args_ty)],
+                                vec![rustc_gen::GenericArgKind::Type(args_ty)],
                                 span,
                             ),
-                            args: vec![gen::MirOperand::Move(place(2)), const_uint(1, span)],
+                            args: vec![rustc_gen::MirOperand::Move(place(2)), const_uint(1, span)],
                             destination: place(3),
                             target: Some(2),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(
                                 option_unwrap,
-                                vec![gen::GenericArgKind::Type(string_ty)],
+                                vec![rustc_gen::GenericArgKind::Type(string_ty)],
                                 span,
                             ),
-                            args: vec![gen::MirOperand::Move(place(3))],
+                            args: vec![rustc_gen::MirOperand::Move(place(3))],
                             destination: place(4),
                             target: Some(3),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(
                                 cstring_new,
-                                vec![gen::GenericArgKind::Type(string_ty)],
+                                vec![rustc_gen::GenericArgKind::Type(string_ty)],
                                 span,
                             ),
-                            args: vec![gen::MirOperand::Move(place(4))],
+                            args: vec![rustc_gen::MirOperand::Move(place(4))],
                             destination: place(5),
                             target: Some(4),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(
                                 result_unwrap,
                                 vec![
-                                    gen::GenericArgKind::Type(cstring_ty),
-                                    gen::GenericArgKind::Type(nul_error_ty),
+                                    rustc_gen::GenericArgKind::Type(cstring_ty),
+                                    rustc_gen::GenericArgKind::Type(nul_error_ty),
                                 ],
                                 span,
                             ),
-                            args: vec![gen::MirOperand::Move(place(5))],
+                            args: vec![rustc_gen::MirOperand::Move(place(5))],
                             destination: place(6),
                             target: Some(5),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(cstring_into_raw, vec![], span),
-                            args: vec![gen::MirOperand::Move(place(6))],
+                            args: vec![rustc_gen::MirOperand::Move(place(6))],
                             destination: place(7),
                             target: Some(6),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(open, vec![], span),
-                            args: vec![gen::MirOperand::Copy(place(7)), const_uint(0, span)],
+                            args: vec![rustc_gen::MirOperand::Copy(place(7)), const_uint(0, span)],
                             destination: place(8),
                             target: Some(7),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(malloc, vec![], span),
                             args: vec![const_uint(4096, span)],
                             destination: place(9),
                             target: Some(8),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(read, vec![], span),
                             args: vec![
-                                gen::MirOperand::Copy(place(8)),
-                                gen::MirOperand::Copy(place(9)),
+                                rustc_gen::MirOperand::Copy(place(8)),
+                                rustc_gen::MirOperand::Copy(place(9)),
                                 const_uint(4096, span),
                             ],
                             destination: place(10),
                             target: Some(9),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(write, vec![], span),
                             args: vec![
                                 const_uint(1, span),
-                                gen::MirOperand::Copy(place(9)),
-                                gen::MirOperand::Copy(place(10)),
+                                rustc_gen::MirOperand::Copy(place(9)),
+                                rustc_gen::MirOperand::Copy(place(10)),
                             ],
                             destination: place(11),
                             target: Some(10),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(close, vec![], span),
-                            args: vec![gen::MirOperand::Copy(place(8))],
+                            args: vec![rustc_gen::MirOperand::Copy(place(8))],
                             destination: place(11),
                             target: Some(11),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Call {
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Call {
                             func: fn_const_operand(free, vec![], span),
-                            args: vec![gen::MirOperand::Copy(place(9))],
+                            args: vec![rustc_gen::MirOperand::Copy(place(9))],
                             destination: place(0),
                             target: Some(12),
-                            unwind: gen::MirUnwindAction::Continue,
+                            unwind: rustc_gen::MirUnwindAction::Continue,
                         },
                         span,
                     },
                 },
-                gen::MirBasicBlock {
+                rustc_gen::MirBasicBlock {
                     statements: vec![],
-                    terminator: gen::MirTerminator {
-                        kind: gen::MirTerminatorKind::Return,
+                    terminator: rustc_gen::MirTerminator {
+                        kind: rustc_gen::MirTerminatorKind::Return,
                         span,
                     },
                 },
             ];
 
-            let body = gen::MirBody::new(blocks, locals, 0, vec![], None, span);
-            vec![gen::ItemMirInfo {
+            let body = rustc_gen::MirBody::new(blocks, locals, 0, vec![], None, span);
+            vec![rustc_gen::ItemMirInfo {
                 id: item_main,
                 body,
             }]

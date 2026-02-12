@@ -178,7 +178,10 @@ impl Context {
             .get(&file)
             .unwrap_or_else(|| panic!("file id {file:?} not registered"));
         let lo = file.start + BytePos(lo);
-        let hi = file.start + BytePos(hi);
+        let mut hi = file.start + BytePos(hi);
+        if hi > file.end {
+            hi = file.end;
+        }
         let span = RustcSpan::new(lo, hi, SyntaxContext::root(), None);
         rustc_public::rustc_internal::stable(span)
     }
@@ -746,8 +749,8 @@ fn generated_hir_crate<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> hir::Crate<'tcx> {
         eprintln!("generated_hir_crate");
     }
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            return gen.hir_crate(tcx, key);
+        if let Some(generated_crate) = generated {
+            return generated_crate.hir_crate(tcx, key);
         }
         (original.hir_crate)(tcx, key)
     })
@@ -761,8 +764,8 @@ fn generated_opt_hir_owner_nodes<'tcx>(
         eprintln!("generated_opt_hir_owner_nodes {:?}", key);
     }
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(nodes) = gen.opt_hir_owner_nodes(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(nodes) = generated_crate.opt_hir_owner_nodes(tcx, key) {
                 return Some(nodes);
             }
             if std::env::var("GEN_DEBUG").is_ok() {
@@ -782,8 +785,8 @@ fn generated_opt_hir_owner_nodes<'tcx>(
 
 fn generated_local_def_id_to_hir_id<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> HirId {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if gen.def_kinds.contains_key(&key) {
+        if let Some(generated_crate) = generated {
+            if generated_crate.def_kinds.contains_key(&key) {
                 return HirId::make_owner(key);
             }
         }
@@ -797,8 +800,8 @@ fn generated_local_def_id_to_hir_id<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) ->
 
 fn generated_hir_owner_parent_q<'tcx>(tcx: TyCtxt<'tcx>, key: OwnerId) -> HirId {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            return gen.hir_owner_parent_q(tcx, key);
+        if let Some(generated_crate) = generated {
+            return generated_crate.hir_owner_parent_q(tcx, key);
         }
         (original.hir_owner_parent_q)(tcx, key)
     })
@@ -809,8 +812,8 @@ fn generated_hir_attr_map<'tcx>(
     key: OwnerId,
 ) -> &'tcx hir::AttributeMap<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if gen.def_kinds.contains_key(&key.def_id) {
+        if let Some(generated_crate) = generated {
+            if generated_crate.def_kinds.contains_key(&key.def_id) {
                 return hir::AttributeMap::EMPTY;
             }
         }
@@ -825,8 +828,8 @@ fn generated_opt_ast_lowering_delayed_lints<'tcx>(
     key: OwnerId,
 ) -> Option<&'tcx hir::lints::DelayedLints> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if gen.def_kinds.contains_key(&key.def_id) {
+        if let Some(generated_crate) = generated {
+            if generated_crate.def_kinds.contains_key(&key.def_id) {
                 return None;
             }
         }
@@ -838,8 +841,8 @@ fn generated_opt_ast_lowering_delayed_lints<'tcx>(
 
 fn generated_entry_fn<'tcx>(tcx: TyCtxt<'tcx>, key: ()) -> Option<(DefId, EntryFnType)> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            return gen.entry_fn(tcx, key);
+        if let Some(generated_crate) = generated {
+            return generated_crate.entry_fn(tcx, key);
         }
         (original.entry_fn)(tcx, key)
     })
@@ -850,8 +853,8 @@ fn generated_def_kind<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> DefKind {
         eprintln!("generated_def_kind {:?}", key);
     }
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(kind) = gen.def_kind(key) {
+        if let Some(generated_crate) = generated {
+            if let Some(kind) = generated_crate.def_kind(key) {
                 return kind;
             }
         }
@@ -861,8 +864,8 @@ fn generated_def_kind<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> DefKind {
 
 fn generated_def_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> RustcSpan {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(span) = gen.def_span(key) {
+        if let Some(generated_crate) = generated {
+            if let Some(span) = generated_crate.def_span(key) {
                 return span;
             }
         }
@@ -872,8 +875,8 @@ fn generated_def_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> RustcSpan {
 
 fn generated_def_ident_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> Option<RustcSpan> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(span) = gen.def_span(key) {
+        if let Some(generated_crate) = generated {
+            if let Some(span) = generated_crate.def_span(key) {
                 return Some(span);
             }
         }
@@ -883,8 +886,8 @@ fn generated_def_ident_span<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> Option<
 
 fn generated_visibility<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> ty::Visibility<DefId> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if gen.def_kinds.contains_key(&key) {
+        if let Some(generated_crate) = generated {
+            if generated_crate.def_kinds.contains_key(&key) {
                 return ty::Visibility::Public;
             }
         }
@@ -894,8 +897,8 @@ fn generated_visibility<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> ty::Visibil
 
 fn generated_generics_of<'tcx>(tcx: TyCtxt<'tcx>, key: LocalDefId) -> ty::Generics {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(generics) = gen.generics_of(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(generics) = generated_crate.generics_of(tcx, key) {
                 return generics;
             }
         }
@@ -908,8 +911,8 @@ fn generated_type_of<'tcx>(
     key: LocalDefId,
 ) -> ty::EarlyBinder<'tcx, ty::Ty<'tcx>> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(ty) = gen.type_of(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(ty) = generated_crate.type_of(tcx, key) {
                 return ty;
             }
         }
@@ -922,8 +925,8 @@ fn generated_fn_sig<'tcx>(
     key: LocalDefId,
 ) -> ty::EarlyBinder<'tcx, ty::PolyFnSig<'tcx>> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(sig) = gen.fn_sig(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(sig) = generated_crate.fn_sig(tcx, key) {
                 return sig;
             }
         }
@@ -933,8 +936,8 @@ fn generated_fn_sig<'tcx>(
 
 fn generated_predicates_of<'tcx>(tcx: TyCtxt<'tcx>, key: DefId) -> ty::GenericPredicates<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(preds) = gen.predicates_of(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(preds) = generated_crate.predicates_of(tcx, key) {
                 return preds;
             }
         }
@@ -947,8 +950,8 @@ fn generated_explicit_predicates_of<'tcx>(
     key: LocalDefId,
 ) -> ty::GenericPredicates<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(preds) = gen.explicit_predicates_of(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(preds) = generated_crate.explicit_predicates_of(tcx, key) {
                 return preds;
             }
         }
@@ -961,8 +964,8 @@ fn generated_codegen_fn_attrs<'tcx>(
     key: LocalDefId,
 ) -> rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(attrs) = gen.codegen_fn_attrs(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(attrs) = generated_crate.codegen_fn_attrs(tcx, key) {
                 return attrs;
             }
         }
@@ -975,8 +978,8 @@ fn generated_mir_built<'tcx>(
     key: LocalDefId,
 ) -> &'tcx Steal<rustc_middle::mir::Body<'tcx>> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(body) = gen.mir_built(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(body) = generated_crate.mir_built(tcx, key) {
                 return body;
             }
         }
@@ -989,8 +992,8 @@ fn generated_mir_for_ctfe<'tcx>(
     key: LocalDefId,
 ) -> &'tcx rustc_middle::mir::Body<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(body) = gen.mir_for_ctfe(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(body) = generated_crate.mir_for_ctfe(tcx, key) {
                 return body;
             }
         }
@@ -1003,8 +1006,8 @@ fn generated_mir_drops_elaborated_and_const_checked<'tcx>(
     key: LocalDefId,
 ) -> &'tcx Steal<rustc_middle::mir::Body<'tcx>> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(body) = gen.mir_drops_elaborated_and_const_checked(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(body) = generated_crate.mir_drops_elaborated_and_const_checked(tcx, key) {
                 return body;
             }
         }
@@ -1017,8 +1020,8 @@ fn generated_optimized_mir<'tcx>(
     key: LocalDefId,
 ) -> &'tcx rustc_middle::mir::Body<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
-        if let Some(gen) = generated {
-            if let Some(body) = gen.optimized_mir(tcx, key) {
+        if let Some(generated_crate) = generated {
+            if let Some(body) = generated_crate.optimized_mir(tcx, key) {
                 return body;
             }
         }
@@ -1450,7 +1453,7 @@ impl GeneratedCrate {
             .map(|info| unsafe {
                 if std::env::var("GEN_DEBUG").is_ok() {
                     eprintln!(
-                        "gen.opt_hir_owner_nodes {:?} => {:?}",
+                        "generated_crate.opt_hir_owner_nodes {:?} => {:?}",
                         key,
                         info.nodes.node()
                     );
@@ -1462,7 +1465,7 @@ impl GeneratedCrate {
             .or_else(|| {
                 if std::env::var("GEN_DEBUG").is_ok() {
                     eprintln!(
-                        "gen.opt_hir_owner_nodes {:?} => None (len {})",
+                        "generated_crate.opt_hir_owner_nodes {:?} => None (len {})",
                         key,
                         self.owners.len()
                     );
@@ -1737,7 +1740,7 @@ fn build_owner_nodes_for_fn(
 
 fn build_mir_body<'tcx>(
     tcx: TyCtxt<'tcx>,
-    context: &Context,
+    _context: &Context,
     body: &MirBody,
     owner: LocalDefId,
 ) -> rustc_middle::mir::Body<'static> {
@@ -2049,23 +2052,6 @@ fn mir_const_to_rustc<'tcx>(
         user_ty: None,
         const_: run_with_public_context(tcx, || internal(tcx, konst.const_.clone())),
     }
-}
-
-fn to_rustc_span2(span: Span) -> RustcSpan {
-    // TODO: bad bad bad.
-    let lo = BytePos(span.lo);
-    let hi = BytePos(span.hi);
-    RustcSpan::new(lo, hi, SyntaxContext::root(), None)
-}
-
-fn to_rustc_span(context: &Context, span: Span) -> RustcSpan {
-    let guard = context.0.registered_files.lock().unwrap();
-    let file = guard
-        .get(&span.file)
-        .unwrap_or_else(|| panic!("file id {:?} not registered", span.file));
-    let lo = file.start + BytePos(span.lo);
-    let hi = file.start + BytePos(span.hi);
-    RustcSpan::new(lo, hi, SyntaxContext::root(), None)
 }
 
 fn make_owner_info(nodes: hir::OwnerNodes<'static>) -> hir::OwnerInfo<'static> {

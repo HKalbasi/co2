@@ -229,6 +229,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct LazySubscription {
+    #[allow(dead_code)]
     tokens: Vec<Spanned<Token>>,
 }
 

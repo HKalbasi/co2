@@ -31,7 +31,10 @@ pub fn base_type_of_decl<Ty: TypeInterface>(
                 ast::TypeSpecifier::Double => todo_error(*span),
                 ast::TypeSpecifier::Signed => (),
                 ast::TypeSpecifier::Unsigned => (),
-                ast::TypeSpecifier::StructOrUnion { kind: _, specifier } => {
+                ast::TypeSpecifier::StructOrUnion {
+                    kind: _,
+                    specifier: _,
+                } => {
                     todo!()
                     // return (
                     //     match specifier {
