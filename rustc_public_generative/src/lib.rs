@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::{Condvar, OnceLock};
 
 use rustc_abi::ExternAbi;
-use rustc_ast::{IntTy, UintTy};
+use rustc_ast::{IntTy, LitIntType, LitKind, UintTy};
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::steal::Steal;
@@ -1268,9 +1268,18 @@ impl GeneratedCrate {
             .unwrap_or("main");
         let main_ident = Ident::from_str(entry_name);
         let main_inputs: Vec<hir::Ty<'static>> = Vec::new();
+        let main_output = if info.no_main {
+            first_function
+                .as_ref()
+                .map(|f| mir_ty_to_hir(main_def, &f.signature.output))
+                .map(|ty| hir::FnRetTy::Return(leak(ty)))
+                .unwrap_or(hir::FnRetTy::DefaultReturn(DUMMY_SP))
+        } else {
+            hir::FnRetTy::DefaultReturn(DUMMY_SP)
+        };
         let main_fn_decl = leak(hir::FnDecl {
             inputs: leak(main_inputs.into_boxed_slice()),
-            output: hir::FnRetTy::DefaultReturn(DUMMY_SP),
+            output: main_output,
             c_variadic: false,
             implicit_self: hir::ImplicitSelfKind::None,
             lifetime_elision_allowed: true,
@@ -1308,12 +1317,25 @@ impl GeneratedCrate {
             span: DUMMY_SP,
         };
 
+        let main_body_kind = if info.no_main
+            && first_function
+                .as_ref()
+                .map(|f| f.signature.output != MirTy::new_tuple(&[]))
+                .unwrap_or(false)
+        {
+            hir::ExprKind::Lit(hir::Lit {
+                node: LitKind::Int(0u128.into(), LitIntType::Unsuffixed),
+                span: DUMMY_SP,
+            })
+        } else {
+            hir::ExprKind::Tup(&[])
+        };
         let main_body_expr = leak(hir::Expr {
             hir_id: HirId {
                 owner: OwnerId { def_id: main_def },
                 local_id: ItemLocalId::new(1),
             },
-            kind: hir::ExprKind::Tup(&[]),
+            kind: main_body_kind,
             span: DUMMY_SP,
         });
         let main_body = leak(hir::Body {

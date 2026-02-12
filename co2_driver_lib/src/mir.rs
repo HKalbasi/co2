@@ -21,13 +21,9 @@ pub(crate) fn build_mir(
     let span = ctx.span_in_file(file_id, 0, 0);
 
     let mut locals = Vec::new();
-    for (idx, local) in func.locals.iter().enumerate() {
+    for local in &func.locals {
         locals.push(rustc_gen::MirLocalDecl {
-            ty: if mode.no_main && idx == 0 {
-                rustc_gen::MirTy::new_tuple(&[])
-            } else {
-                mir_ty_from_type(&local.ty, Some(module), deps)
-            },
+            ty: mir_ty_from_type(&local.ty, Some(module), deps),
             span,
             mutability: rustc_gen::MirMutability::Mut,
         });
@@ -41,9 +37,6 @@ pub(crate) fn build_mir(
     for op in &func.ops {
         match op {
             HirOp::Assign { dst, src } => {
-                if mode.no_main && *dst == 0 {
-                    continue;
-                }
                 let rvalue = rustc_gen::MirRvalue::Use(lower_operand(
                     src,
                     &locals,

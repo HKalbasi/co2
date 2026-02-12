@@ -51,20 +51,13 @@ pub(crate) fn build_items(
             name: func.name.clone(),
             parent: None,
             kind: rustc_gen::ItemKind::Function(rustc_gen::FunctionSignature {
-                inputs: if mode.no_main {
-                    vec![]
-                } else {
-                    func.sig
-                        .params
-                        .iter()
-                        .map(|t| mir_ty_from_type(t, Some(module), &deps))
-                        .collect()
-                },
-                output: if mode.no_main {
-                    rustc_gen::MirTy::new_tuple(&[])
-                } else {
-                    mir_ty_from_type(&func.sig.ret, Some(module), &deps)
-                },
+                inputs: func
+                    .sig
+                    .params
+                    .iter()
+                    .map(|t| mir_ty_from_type(t, Some(module), &deps))
+                    .collect(),
+                output: mir_ty_from_type(&func.sig.ret, Some(module), &deps),
                 abi: mode.function_abi,
                 is_unsafe: mode.function_is_unsafe,
             }),
