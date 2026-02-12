@@ -32,7 +32,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::steal::Steal;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{DefId, LocalDefId, LocalDefIdMap, CRATE_DEF_ID};
+use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LocalDefId, LocalDefIdMap};
 use rustc_hir::definitions::{DefPathData, Definitions, DisambiguatorState};
 use rustc_hir::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use rustc_index::{Idx, IndexVec};
@@ -43,8 +43,9 @@ use rustc_middle::ty::{self, TyCtxt};
 use rustc_middle::util::Providers as UtilProviders;
 use rustc_session::config::EntryFnType;
 use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::{BytePos, Span as RustcSpan, SyntaxContext, DUMMY_SP};
+use rustc_span::{BytePos, DUMMY_SP, Span as RustcSpan, SyntaxContext};
 
+pub use rustc_public::CrateDef;
 pub use rustc_public::mir::{
     AggregateKind as MirAggregateKind, BasicBlock as MirBasicBlock, Body as MirBody,
     BorrowKind as MirBorrowKind, CastKind as MirCastKind, ConstOperand as MirConst,
@@ -58,7 +59,6 @@ pub use rustc_public::ty::{
     AdtDef, FnDef, GenericArgKind, GenericArgs, IntTy as PublicIntTy, MirConst as PublicMirConst,
     Region, RegionKind, RigidTy, Span as PublicSpan, Ty as MirTy, UintTy as PublicUintTy,
 };
-pub use rustc_public::CrateDef;
 
 /// Context passed to the user callback. Used for allocating new IDs and
 /// registering custom source files.
@@ -81,24 +81,6 @@ pub struct CustomFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Span {
-    pub file: FileId,
-    pub lo: u32,
-    pub hi: u32,
-}
-
-impl From<PublicSpan> for Span {
-    fn from(value: PublicSpan) -> Self {
-        let _ = value;
-        Self {
-            file: FileId(0),
-            lo: 0,
-            hi: 0,
-        }
-    }
-}
 
 impl Context {
     pub fn new() -> Self {
@@ -123,10 +105,6 @@ impl Context {
         FileId(id)
     }
 
-    pub fn span(&self, file: FileId, lo: u32, hi: u32) -> Span {
-        Span { file, lo, hi }
-    }
-
     pub fn take_custom_files(&self) -> Vec<CustomFile> {
         let mut guard = self.0.custom_files.lock().unwrap();
         std::mem::take(&mut *guard)
@@ -144,18 +122,13 @@ impl Context {
                 continue;
             }
             let source_file = if file.path.exists() {
-                source_map
-                    .load_file(&file.path)
-                    .unwrap_or_else(|_| {
-                        let real = source_map.path_mapping().to_real_filename(
-                            source_map.working_dir(),
-                            file.path.as_path(),
-                        );
-                        source_map.new_source_file(
-                            rustc_span::FileName::Real(real),
-                            file.contents.clone(),
-                        )
-                    })
+                source_map.load_file(&file.path).unwrap_or_else(|_| {
+                    let real = source_map
+                        .path_mapping()
+                        .to_real_filename(source_map.working_dir(), file.path.as_path());
+                    source_map
+                        .new_source_file(rustc_span::FileName::Real(real), file.contents.clone())
+                })
             } else {
                 source_map.new_source_file(
                     rustc_span::FileName::Custom(file.path.display().to_string()),
@@ -623,7 +596,8 @@ fn collect_dependency_def<'tcx>(
     if matches!(kind, DefKind::Fn | DefKind::AssocFn | DefKind::Ctor(..)) {
         let id = alloc_fn_id();
         let hash = tcx.def_path_hash(def_id);
-        let (hi, lo): (u64, u64) = unsafe { std::mem::transmute::<Fingerprint, (u64, u64)>(hash.0) };
+        let (hi, lo): (u64, u64) =
+            unsafe { std::mem::transmute::<Fingerprint, (u64, u64)>(hash.0) };
         info.functions.push(DependencyFunction {
             id,
             path: tcx.def_path_str(def_id),
@@ -817,10 +791,7 @@ fn generated_hir_owner_parent_q<'tcx>(tcx: TyCtxt<'tcx>, key: OwnerId) -> HirId 
     })
 }
 
-fn generated_hir_attr_map<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    key: OwnerId,
-) -> &'tcx hir::AttributeMap<'tcx> {
+fn generated_hir_attr_map<'tcx>(tcx: TyCtxt<'tcx>, key: OwnerId) -> &'tcx hir::AttributeMap<'tcx> {
     with_generated_and_original(tcx, |generated, original| {
         if let Some(generated_crate) = generated {
             if generated_crate.def_kinds.contains_key(&key.def_id) {
@@ -1078,7 +1049,12 @@ struct GeneratedCrate {
     foreign_function_infos: LocalDefIdMap<ForeignFunctionInfo>,
     foreign_function_sigs: LocalDefIdMap<(Vec<ty::Ty<'static>>, ty::Ty<'static>)>,
     foreign_function_symbols: LocalDefIdMap<Symbol>,
-    function_sigs: LocalDefIdMap<(Vec<ty::Ty<'static>>, ty::Ty<'static>, hir::Safety, ExternAbi)>,
+    function_sigs: LocalDefIdMap<(
+        Vec<ty::Ty<'static>>,
+        ty::Ty<'static>,
+        hir::Safety,
+        ExternAbi,
+    )>,
     function_symbols: LocalDefIdMap<Symbol>,
     owners: IndexVec<LocalDefId, Option<&'static hir::OwnerInfo<'static>>>,
     owner_parents: LocalDefIdMap<HirId>,
@@ -1289,9 +1265,9 @@ impl GeneratedCrate {
                 safety: hir::HeaderSafety::Normal(
                     if info.no_main
                         && first_function
-                        .as_ref()
-                        .map(|f| f.signature.is_unsafe)
-                        .unwrap_or(false)
+                            .as_ref()
+                            .map(|f| f.signature.is_unsafe)
+                            .unwrap_or(false)
                     {
                         hir::Safety::Unsafe
                     } else {
@@ -1662,13 +1638,7 @@ impl GeneratedCrate {
             };
             let output =
                 unsafe { std::mem::transmute::<ty::Ty<'static>, ty::Ty<'tcx>>(*output_static) };
-            let sig = tcx.mk_fn_sig(
-                inputs,
-                output,
-                false,
-                *safety,
-                *abi,
-            );
+            let sig = tcx.mk_fn_sig(inputs, output, false, *safety, *abi);
             let poly = ty::Binder::dummy(sig);
             return Some(ty::EarlyBinder::bind(poly));
         }
@@ -2047,15 +2017,17 @@ fn mir_rvalue_to_rustc<'tcx>(
                 rustc_public::mir::AggregateKind::Array(ty) => {
                     rustc_middle::mir::AggregateKind::Array(mir_ty_to_rustc(tcx, ty))
                 }
-                rustc_public::mir::AggregateKind::Tuple => {
-                    rustc_middle::mir::AggregateKind::Tuple
-                }
+                rustc_public::mir::AggregateKind::Tuple => rustc_middle::mir::AggregateKind::Tuple,
                 rustc_public::mir::AggregateKind::RawPtr(ty, mutability) => {
                     rustc_middle::mir::AggregateKind::RawPtr(
                         mir_ty_to_rustc(tcx, ty),
                         match mutability {
-                            rustc_public::mir::Mutability::Mut => rustc_middle::mir::Mutability::Mut,
-                            rustc_public::mir::Mutability::Not => rustc_middle::mir::Mutability::Not,
+                            rustc_public::mir::Mutability::Mut => {
+                                rustc_middle::mir::Mutability::Mut
+                            }
+                            rustc_public::mir::Mutability::Not => {
+                                rustc_middle::mir::Mutability::Not
+                            }
                         },
                     )
                 }
@@ -2077,35 +2049,39 @@ fn mir_rvalue_to_rustc<'tcx>(
                 rustc_public::mir::CastKind::PointerCoercion(coercion) => {
                     rustc_middle::mir::CastKind::PointerCoercion(
                         match coercion {
-                        rustc_public::mir::PointerCoercion::ReifyFnPointer(safety) => {
-                            rustc_middle::ty::adjustment::PointerCoercion::ReifyFnPointer(
-                                match safety {
-                                    rustc_public::mir::Safety::Safe => rustc_hir::Safety::Safe,
-                                    rustc_public::mir::Safety::Unsafe => rustc_hir::Safety::Unsafe,
-                                },
-                            )
-                        }
-                        rustc_public::mir::PointerCoercion::UnsafeFnPointer => {
-                            rustc_middle::ty::adjustment::PointerCoercion::UnsafeFnPointer
-                        }
-                        rustc_public::mir::PointerCoercion::ClosureFnPointer(safety) => {
-                            rustc_middle::ty::adjustment::PointerCoercion::ClosureFnPointer(
-                                match safety {
-                                    rustc_public::mir::Safety::Safe => rustc_hir::Safety::Safe,
-                                    rustc_public::mir::Safety::Unsafe => rustc_hir::Safety::Unsafe,
-                                },
-                            )
-                        }
-                        rustc_public::mir::PointerCoercion::MutToConstPointer => {
-                            rustc_middle::ty::adjustment::PointerCoercion::MutToConstPointer
-                        }
-                        rustc_public::mir::PointerCoercion::ArrayToPointer => {
-                            rustc_middle::ty::adjustment::PointerCoercion::ArrayToPointer
-                        }
-                        rustc_public::mir::PointerCoercion::Unsize => {
-                            rustc_middle::ty::adjustment::PointerCoercion::Unsize
-                        }
-                    },
+                            rustc_public::mir::PointerCoercion::ReifyFnPointer(safety) => {
+                                rustc_middle::ty::adjustment::PointerCoercion::ReifyFnPointer(
+                                    match safety {
+                                        rustc_public::mir::Safety::Safe => rustc_hir::Safety::Safe,
+                                        rustc_public::mir::Safety::Unsafe => {
+                                            rustc_hir::Safety::Unsafe
+                                        }
+                                    },
+                                )
+                            }
+                            rustc_public::mir::PointerCoercion::UnsafeFnPointer => {
+                                rustc_middle::ty::adjustment::PointerCoercion::UnsafeFnPointer
+                            }
+                            rustc_public::mir::PointerCoercion::ClosureFnPointer(safety) => {
+                                rustc_middle::ty::adjustment::PointerCoercion::ClosureFnPointer(
+                                    match safety {
+                                        rustc_public::mir::Safety::Safe => rustc_hir::Safety::Safe,
+                                        rustc_public::mir::Safety::Unsafe => {
+                                            rustc_hir::Safety::Unsafe
+                                        }
+                                    },
+                                )
+                            }
+                            rustc_public::mir::PointerCoercion::MutToConstPointer => {
+                                rustc_middle::ty::adjustment::PointerCoercion::MutToConstPointer
+                            }
+                            rustc_public::mir::PointerCoercion::ArrayToPointer => {
+                                rustc_middle::ty::adjustment::PointerCoercion::ArrayToPointer
+                            }
+                            rustc_public::mir::PointerCoercion::Unsize => {
+                                rustc_middle::ty::adjustment::PointerCoercion::Unsize
+                            }
+                        },
                         rustc_middle::mir::CoercionSource::AsCast,
                     )
                 }
