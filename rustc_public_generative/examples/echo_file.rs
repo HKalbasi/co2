@@ -161,10 +161,6 @@ fn main() {
             let file_id = ctx.add_custom_file("/tmp/echo_file.rs", "fn main()");
             _ = FILE_ID.set(file_id);
 
-            let usize_ty = rustc_gen::MirTy::usize_ty();
-            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
-            let ptr_i8_mut = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
-
             rustc_gen::CurrentCrateInfo {
                 crate_name: "fake_hello_world".to_string(),
                 entry: Some(item_main),
@@ -174,88 +170,135 @@ fn main() {
                         id: item_main,
                         name: "main".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::Function(rustc_gen::FunctionSignature {
-                            inputs: vec![],
-                            output: rustc_gen::MirTy::new_tuple(&[]),
-                            abi: rustc_gen::FunctionAbi::Rust,
-                            is_unsafe: false,
-                        }),
+                        kind: rustc_gen::ItemKind::Function,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_write,
                         name: "write".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
-                            output: usize_ty,
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_open,
                         name: "open".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![ptr_i8_mut, usize_ty],
-                            output: usize_ty,
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_read,
                         name: "read".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
-                            output: usize_ty,
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_close,
                         name: "close".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty],
-                            output: usize_ty,
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_malloc,
                         name: "malloc".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty],
-                            output: ptr_i8_mut,
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                     rustc_gen::ItemInfo {
                         id: item_free,
                         name: "free".to_string(),
                         parent: None,
-                        kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                            inputs: vec![ptr_i8_mut],
-                            output: rustc_gen::MirTy::new_tuple(&[]),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        }),
+                        kind: rustc_gen::ItemKind::ForeignFunction,
                         no_mangle: false,
                     },
                 ],
             }
+        },
+        move |_ctx, _deps, _defined| {
+            let usize_ty = rustc_gen::MirTy::usize_ty();
+            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
+            let ptr_i8_mut = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
+            vec![
+                rustc_gen::ItemSignatureInfo {
+                    id: item_main,
+                    kind: rustc_gen::ItemSignatureKind::Function(rustc_gen::FunctionSignature {
+                        inputs: vec![],
+                        output: rustc_gen::MirTy::new_tuple(&[]),
+                        abi: rustc_gen::FunctionAbi::Rust,
+                        is_unsafe: false,
+                    }),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_write,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
+                            output: usize_ty,
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_open,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![ptr_i8_mut, usize_ty],
+                            output: usize_ty,
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_read,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![usize_ty, ptr_i8_mut, usize_ty],
+                            output: usize_ty,
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_close,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![usize_ty],
+                            output: usize_ty,
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_malloc,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![usize_ty],
+                            output: ptr_i8_mut,
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+                rustc_gen::ItemSignatureInfo {
+                    id: item_free,
+                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
+                        rustc_gen::FunctionSignature {
+                            inputs: vec![ptr_i8_mut],
+                            output: rustc_gen::MirTy::new_tuple(&[]),
+                            abi: rustc_gen::FunctionAbi::C,
+                            is_unsafe: true,
+                        },
+                    ),
+                },
+            ]
         },
         move |ctx, deps, defined| {
             let span: rustc_gen::PublicSpan = ctx.span_in_file(*FILE_ID.get().unwrap(), 0, 2);
