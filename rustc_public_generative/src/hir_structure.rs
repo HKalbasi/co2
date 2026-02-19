@@ -1,0 +1,70 @@
+use rustc_public::ty::{AdtDef, FnDef, Span};
+
+use crate::{DefId, HirTy};
+
+#[derive(Debug, Clone)]
+pub struct HirStructure {
+    pub root: HirModule,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirModule {
+    pub span: Span,
+    pub items: Vec<HirModuleItem>,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirModuleItem {
+    Function {
+        name: String,
+        id: FnDef,
+        sig: FunctionSignature,
+        span: Span,
+    },
+    Adt {
+        name: String,
+        id: AdtDef,
+        kind: HirAdtKind,
+        span: Span,
+    },
+    ForeignMod {
+        id: DefId,
+        items: Vec<ForeignModItem>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum HirAdtKind {
+    Struct { fields: Vec<StructField> },
+}
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub id: DefId,
+    pub name: String,
+    pub ty: HirTy,
+}
+
+#[derive(Debug, Clone)]
+pub enum ForeignModItem {
+    ForeignFunction {
+        name: String,
+        id: FnDef,
+        sig: FunctionSignature,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionSignature {
+    pub inputs: Vec<HirTy>,
+    pub output: HirTy,
+    pub abi: FunctionAbi,
+    pub is_unsafe: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionAbi {
+    Rust,
+    C,
+}

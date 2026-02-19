@@ -2,555 +2,624 @@
 
 use std::sync::OnceLock;
 
-use rustc_public_generative as rustc_gen;
+use rustc_public_generative::{
+    CrateGeneratorState, DependencyInfo, FileId, ForeignModItem, FunctionAbi, FunctionSignature,
+    HirAdtKind, HirModule, HirModuleItem, HirStructure, HirStructureCtx, HirTy, StructField,
+    generate,
+    rustc_public::{
+        DefId,
+        mir::{
+            BasicBlock as MirBasicBlock, Body, CastKind, ConstOperand, LocalDecl as MirLocalDecl,
+            Mutability, Operand as MirOperand, Place as MirPlace, ProjectionElem as MirProjection,
+            RawPtrKind, Rvalue, Statement as MirStatement, StatementKind as MirStatementKind,
+            Terminator as MirTerminator, TerminatorKind, UnwindAction,
+        },
+        ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, MirConst, Span, Ty, UintTy, VariantIdx},
+    },
+};
 
-fn place(local: usize) -> rustc_gen::MirPlace {
-    rustc_gen::MirPlace {
+fn place(local: usize) -> MirPlace {
+    MirPlace {
         local,
         projection: vec![],
     }
 }
 
-fn place_fields(local: usize, fields: &[(usize, rustc_gen::MirTy)]) -> rustc_gen::MirPlace {
-    rustc_gen::MirPlace {
+fn place_fields(local: usize, fields: &[(usize, Ty)]) -> MirPlace {
+    MirPlace {
         local,
         projection: fields
             .iter()
-            .map(|(field, ty)| rustc_gen::MirProjection::Field(*field, *ty))
+            .map(|(field, ty)| MirProjection::Field(*field, *ty))
             .collect(),
     }
 }
 
-fn const_uint(
-    value: u128,
-    ty: rustc_gen::PublicUintTy,
-    span: rustc_gen::PublicSpan,
-) -> rustc_gen::MirOperand {
-    let c =
-        rustc_gen::PublicMirConst::try_from_uint(value, ty).expect("failed to build uint const");
-    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
+fn const_uint(value: u128, span: Span) -> MirOperand {
+    let c = MirConst::try_from_uint(value, UintTy::Usize).expect("failed to build usize const");
+    MirOperand::Constant(ConstOperand {
         span,
         user_ty: None,
         const_: c,
     })
 }
 
-fn fn_const_operand(
-    fn_def: rustc_gen::FnDef,
-    generic_args: Vec<rustc_gen::GenericArgKind>,
-    span: rustc_gen::PublicSpan,
-) -> rustc_gen::MirOperand {
-    let fn_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::FnDef(
+fn const_u32(value: u128, span: Span) -> MirOperand {
+    let c = MirConst::try_from_uint(value, UintTy::U32).expect("failed to build u32 const");
+    MirOperand::Constant(ConstOperand {
+        span,
+        user_ty: None,
+        const_: c,
+    })
+}
+
+fn const_u8(value: u128, span: Span) -> MirOperand {
+    let c = MirConst::try_from_uint(value, UintTy::U8).expect("failed to build u8 const");
+    MirOperand::Constant(ConstOperand {
+        span,
+        user_ty: None,
+        const_: c,
+    })
+}
+
+fn fn_const_operand(fn_def: FnDef, generic_args: Vec<GenericArgKind>, span: Span) -> MirOperand {
+    let fn_ty = Ty::from_rigid_kind(rustc_public_generative::rustc_public::ty::RigidTy::FnDef(
         fn_def,
-        rustc_gen::GenericArgs(generic_args),
+        GenericArgs(generic_args),
     ));
-    let c = rustc_gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
-    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
+    let c = MirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
+    MirOperand::Constant(ConstOperand {
         span,
         user_ty: None,
         const_: c,
     })
 }
 
-fn variant_idx(value: usize) -> rustc_gen::VariantIdx {
-    unsafe { std::mem::transmute::<usize, rustc_gen::VariantIdx>(value) }
+fn dep_adt(deps: &DependencyInfo, path: &str) -> AdtDef {
+    if let Some(found) = deps.types.iter().find(|t| t.path == path).map(|t| t.adt) {
+        return found;
+    }
+
+    if let Some(found) = deps
+        .types
+        .iter()
+        .find(|t| t.path.ends_with(path))
+        .map(|t| t.adt)
+    {
+        return found;
+    }
+
+    if let Some(last) = path.rsplit("::").next() {
+        if let Some(found) = deps
+            .types
+            .iter()
+            .find(|t| t.path.ends_with(&format!("::{last}")) && !t.path.contains("{{"))
+            .map(|t| t.adt)
+        {
+            return found;
+        }
+    }
+
+    let mut similar = deps
+        .types
+        .iter()
+        .filter(|t| {
+            t.path.contains(path)
+                || path.contains(&t.path)
+                || path
+                    .rsplit("::")
+                    .next()
+                    .is_some_and(|last| t.path.ends_with(&format!("::{last}")))
+        })
+        .map(|t| t.path.clone())
+        .collect::<Vec<_>>();
+    similar.sort();
+    similar.truncate(20);
+    panic!(
+        "missing dependency type: {path}\nexample matches:\n{}",
+        similar.join("\n")
+    );
 }
 
-static FILE_ID: OnceLock<rustc_gen::FileId> = OnceLock::new();
+struct State {
+    file_id: FileId,
+
+    point_adt: AdtDef,
+    human_adt: AdtDef,
+    length_fn: FnDef,
+    main_fn: FnDef,
+    write_fn: FnDef,
+
+    x_field: DefId,
+    y_field: DefId,
+    location_field: DefId,
+    age_field: DefId,
+}
+
+unsafe impl Send for State {}
+unsafe impl Sync for State {}
+
+fn variant_idx(id: usize) -> VariantIdx {
+    unsafe { std::mem::transmute::<usize, VariantIdx>(id) }
+}
+
+impl CrateGeneratorState for State {
+    fn hir_structure(ctx: HirStructureCtx) -> (Self, HirStructure) {
+        // Generate fake source code that matches the MIR we'll emit
+        let source_code = r#"
+struct Point { x: usize, y: usize }
+struct Human { age: u32, location: Point }
+
+fn length(h: Human) -> usize {
+    let x = h.location.x;
+    let y = h.location.y;
+    x * x + y * y
+}
+
+extern "C" {
+    fn write(fd: usize, buf: *mut u8, count: usize) -> usize;
+}
 
 fn main() {
-    rustc_gen::generate(
-        move |ctx, _deps| {
-            let file_id = ctx.add_custom_file("/tmp/point_length.rs", "fn main()");
-            _ = FILE_ID.set(file_id);
-            rustc_gen::CurrentCrateInfo {
-                crate_name: "point_length_fake".to_string(),
-                no_main: false,
+    let point = Point { x: 3, y: 4 };
+    let human = Human { location: point, age: 30 };
+    let len = length(human);
+    let msg = [50u8, 53, 10];
+    unsafe { write(1, msg.as_mut_ptr() as *mut u8, 3); }
+}
+"#;
+        let file_id = ctx.add_custom_file("/tmp/point_length.rs", source_code);
+
+        // Spans pointing to actual locations in the fake source code
+        let point_span = ctx.span_in_file(file_id, 1, 40); // struct Point line
+        let human_span = ctx.span_in_file(file_id, 41, 85); // struct Human line
+        let length_span = ctx.span_in_file(file_id, 87, 170); // fn length
+        let main_span = ctx.span_in_file(file_id, 230, 380); // fn main
+        let write_span = ctx.span_in_file(file_id, 172, 228); // extern block
+
+        let root_crate = ctx.root_crate_def_id();
+        let foreign_mod =
+            ctx.allocate_def_id(root_crate, rustc_public_generative::DefData::ForeignMod);
+
+        let point_adt = AdtDef(ctx.allocate_def_id(
+            root_crate,
+            rustc_public_generative::DefData::TypeNs("Point".to_owned()),
+        ));
+        let human_adt = AdtDef(ctx.allocate_def_id(
+            root_crate,
+            rustc_public_generative::DefData::TypeNs("Human".to_owned()),
+        ));
+        let length_fn_def = FnDef(ctx.allocate_def_id(
+            root_crate,
+            rustc_public_generative::DefData::ValueNs("length".to_owned()),
+        ));
+        let main_fn_def = FnDef(ctx.allocate_def_id(
+            root_crate,
+            rustc_public_generative::DefData::ValueNs("main".to_owned()),
+        ));
+        let write_fn_def = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("write".to_owned()),
+        ));
+
+        let x_field = ctx.allocate_def_id(
+            point_adt.0,
+            rustc_public_generative::DefData::ValueNs("x".to_owned()),
+        );
+        let y_field = ctx.allocate_def_id(
+            point_adt.0,
+            rustc_public_generative::DefData::ValueNs("y".to_owned()),
+        );
+        let location_field = ctx.allocate_def_id(
+            human_adt.0,
+            rustc_public_generative::DefData::ValueNs("location".to_owned()),
+        );
+        let age_field = ctx.allocate_def_id(
+            human_adt.0,
+            rustc_public_generative::DefData::ValueNs("age".to_owned()),
+        );
+
+        let usize_ty = || HirTy::usize_ty(main_span);
+        let u32_ty = HirTy::unsigned_ty(UintTy::U32, main_span);
+        let u8_ty = HirTy::unsigned_ty(UintTy::U8, main_span);
+        let ptr_u8_mut = HirTy::new_ptr(u8_ty, Mutability::Mut, main_span);
+
+        let point_ty = HirTy::adt(point_adt, vec![], main_span);
+        let human_ty = HirTy::adt(human_adt, vec![], main_span);
+
+        let hir_structure = HirStructure {
+            root: HirModule {
+                span: main_span,
                 items: vec![
-                    rustc_gen::ItemInfo {
+                    HirModuleItem::Adt {
                         name: "Point".to_string(),
-                        kind: rustc_gen::ItemKind::Struct(vec!["x".to_string(), "y".to_string()]),
-                        no_mangle: false,
+                        id: point_adt,
+                        kind: HirAdtKind::Struct {
+                            fields: vec![
+                                StructField {
+                                    id: x_field,
+                                    name: "x".to_owned(),
+                                    ty: usize_ty(),
+                                },
+                                StructField {
+                                    name: "y".to_owned(),
+                                    id: y_field,
+                                    ty: usize_ty(),
+                                },
+                            ],
+                        },
+                        span: point_span,
                     },
-                    rustc_gen::ItemInfo {
+                    HirModuleItem::Adt {
                         name: "Human".to_string(),
-                        kind: rustc_gen::ItemKind::Struct(vec![
-                            "location".to_string(),
-                            "age".to_string(),
-                        ]),
-                        no_mangle: false,
+                        id: human_adt,
+                        kind: HirAdtKind::Struct {
+                            fields: vec![
+                                StructField {
+                                    name: "age".to_owned(),
+                                    id: age_field,
+                                    ty: u32_ty,
+                                },
+                                StructField {
+                                    name: "location".to_owned(),
+                                    id: location_field,
+                                    ty: point_ty,
+                                },
+                            ],
+                        },
+                        span: human_span,
                     },
-                    rustc_gen::ItemInfo {
+                    HirModuleItem::Function {
                         name: "length".to_string(),
-                        kind: rustc_gen::ItemKind::Function,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "main".to_string(),
-                        kind: rustc_gen::ItemKind::Function,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "write".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                ],
-            }
-        },
-        move |ctx, _deps, defined| {
-            let file_id = *FILE_ID.get().unwrap();
-            let span = ctx.span_in_file(file_id, 2, 5);
-
-            let point_adt = defined
-                .items
-                .iter()
-                .find(|i| i.name == "Point")
-                .and_then(|i| i.adt_def())
-                .expect("missing point adt");
-            let human_adt = defined
-                .items
-                .iter()
-                .find(|i| i.name == "Human")
-                .and_then(|i| i.adt_def())
-                .expect("missing human adt");
-            let usize_ty = || rustc_gen::HirTy::usize_ty(span);
-            let u32_ty = rustc_gen::HirTy::unsigned_ty(rustc_gen::PublicUintTy::U32, span);
-            let u8_ty = rustc_gen::HirTy::unsigned_ty(rustc_gen::PublicUintTy::U8, span);
-            let ptr_u8_mut = rustc_gen::HirTy::new_ptr(u8_ty, rustc_gen::MirMutability::Mut, span);
-            let point_ty = rustc_gen::HirTy::adt(point_adt, vec![], span);
-            let human_ty = rustc_gen::HirTy::adt(human_adt, vec![], span);
-
-            let length_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "length")
-                .and_then(|i| i.fn_def())
-                .expect("missing length");
-
-            let main_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "main")
-                .and_then(|i| i.fn_def())
-                .expect("missing main");
-            let write_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "write")
-                .and_then(|i| i.fn_def())
-                .expect("missing write");
-
-            let x_field = defined
-                .items
-                .iter()
-                .find(|i| i.name == "x")
-                .map(|i| i.def_id())
-                .expect("missing x");
-            let y_field = defined
-                .items
-                .iter()
-                .find(|i| i.name == "y")
-                .map(|i| i.def_id())
-                .expect("missing y");
-            let location_field = defined
-                .items
-                .iter()
-                .find(|i| i.name == "location")
-                .map(|i| i.def_id())
-                .expect("missing location");
-            let age_field = defined
-                .items
-                .iter()
-                .find(|i| i.name == "age")
-                .map(|i| i.def_id())
-                .expect("missing age");
-
-            vec![
-                rustc_gen::ItemSignatureInfo {
-                    id: point_adt.0,
-                    kind: rustc_gen::ItemSignatureKind::Struct(vec![
-                        rustc_gen::StructField {
-                            id: x_field,
-                            ty: usize_ty(),
-                        },
-                        rustc_gen::StructField {
-                            id: y_field,
-                            ty: usize_ty(),
-                        },
-                    ]),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: human_adt.0,
-                    kind: rustc_gen::ItemSignatureKind::Struct(vec![
-                        rustc_gen::StructField {
-                            id: location_field,
-                            ty: point_ty,
-                        },
-                        rustc_gen::StructField {
-                            id: age_field,
-                            ty: u32_ty,
-                        },
-                    ]),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: length_fn.0,
-                    kind: rustc_gen::ItemSignatureKind::Function {
-                        sig: rustc_gen::FunctionSignature {
+                        id: length_fn_def,
+                        sig: FunctionSignature {
                             inputs: vec![human_ty],
                             output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::Rust,
+                            abi: FunctionAbi::Rust,
                             is_unsafe: false,
                         },
-                        no_mangle: false,
+                        span: length_span,
                     },
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: main_fn.0,
-                    kind: rustc_gen::ItemSignatureKind::Function {
-                        sig: rustc_gen::FunctionSignature {
+                    HirModuleItem::Function {
+                        name: "main".to_string(),
+                        id: main_fn_def,
+                        sig: FunctionSignature {
                             inputs: vec![],
-                            output: rustc_gen::HirTy::new_tuple(vec![], span),
-                            abi: rustc_gen::FunctionAbi::Rust,
+                            output: HirTy::new_tuple(vec![], main_span),
+                            abi: FunctionAbi::Rust,
                             is_unsafe: false,
                         },
-                        no_mangle: false,
+                        span: main_span,
                     },
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: write_fn.0,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty(), ptr_u8_mut, usize_ty()],
-                            output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-            ]
-        },
-        move |ctx, _deps, defined| {
-            let file_id = *FILE_ID.get().unwrap();
-            let span = ctx.span_in_file(file_id, 2, 5);
+                    HirModuleItem::ForeignMod {
+                        id: foreign_mod,
+                        items: vec![ForeignModItem::ForeignFunction {
+                            name: "write".to_string(),
+                            id: write_fn_def,
+                            sig: FunctionSignature {
+                                inputs: vec![usize_ty(), ptr_u8_mut, usize_ty()],
+                                output: usize_ty(),
+                                abi: FunctionAbi::C,
+                                is_unsafe: true,
+                            },
+                            span: write_span,
+                        }],
+                    },
+                ],
+            },
+        };
 
-            let span: rustc_gen::PublicSpan = ctx.span_in_file(*FILE_ID.get().unwrap(), 0, 2);
-            let point_adt = defined
-                .items
-                .iter()
-                .find(|i| i.name == "Point")
-                .and_then(|i| i.adt_def())
-                .expect("missing point adt");
-            let human_adt = defined
-                .items
-                .iter()
-                .find(|i| i.name == "Human")
-                .and_then(|i| i.adt_def())
-                .expect("missing human adt");
-            let usize_ty = rustc_gen::MirTy::usize_ty();
-            let u8_ty = rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U8);
-            let point_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
+        (
+            State {
+                file_id,
+
                 point_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let human_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
                 human_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let tuple_u8_3_ty = rustc_gen::MirTy::new_tuple(&[u8_ty, u8_ty, u8_ty]);
-            let ptr_tuple_u8_3 =
-                rustc_gen::MirTy::new_ptr(tuple_u8_3_ty, rustc_gen::MirMutability::Mut);
-            let ptr_u8_mut = rustc_gen::MirTy::new_ptr(u8_ty, rustc_gen::MirMutability::Mut);
-            let length_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "length")
-                .and_then(|i| i.fn_def())
-                .expect("missing length fn def");
-            // dbg!(length_fn.fn_sig());
-            let write_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "write")
-                .and_then(|i| i.fn_def())
-                .expect("missing write fn def");
-            let main_fn = defined
-                .items
-                .iter()
-                .find(|i| i.name == "main")
-                .and_then(|i| i.fn_def())
-                .expect("missing write fn def");
+                length_fn: length_fn_def,
+                main_fn: main_fn_def,
+                write_fn: write_fn_def,
 
-            let length_body = {
-                let locals = vec![
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
+                x_field,
+                y_field,
+                location_field,
+                age_field,
+            },
+            hir_structure,
+        )
+    }
+
+    fn emit_mir(&mut self, ctx: HirStructureCtx, def: DefId) -> Body {
+        // Spans pointing to actual locations in the fake source code
+        let length_fn_span: Span = ctx.span_in_file(self.file_id, 81, 111); // "fn length(h: Human) -> usize {"
+        let let_x_span: Span = ctx.span_in_file(self.file_id, 112, 137); // "    let x = h.location.x;"
+        let let_y_span: Span = ctx.span_in_file(self.file_id, 138, 163); // "    let y = h.location.y;"
+        let return_expr_span: Span = ctx.span_in_file(self.file_id, 164, 181); // "    x * x + y * y"
+        let main_fn_span: Span = ctx.span_in_file(self.file_id, 263, 482); // fn main
+        // Body span covering the entire function
+        let body_span: Span = ctx.span_in_file(self.file_id, 81, 183);
+
+        let usize_ty = Ty::usize_ty();
+        let u8_ty = Ty::unsigned_ty(UintTy::U8);
+        let point_ty =
+            Ty::from_rigid_kind(rustc_public_generative::rustc_public::ty::RigidTy::Adt(
+                self.point_adt,
+                GenericArgs(vec![]),
+            ));
+        let human_ty =
+            Ty::from_rigid_kind(rustc_public_generative::rustc_public::ty::RigidTy::Adt(
+                self.human_adt,
+                GenericArgs(vec![]),
+            ));
+        let tuple_u8_3_ty = Ty::new_tuple(&[u8_ty, u8_ty, u8_ty]);
+        let ptr_tuple_u8_3 = Ty::new_ptr(tuple_u8_3_ty, Mutability::Mut);
+        let ptr_u8_mut = Ty::new_ptr(u8_ty, Mutability::Mut);
+
+        if def == self.length_fn.0 {
+            let locals = vec![
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: length_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: human_ty,
+                    span: length_fn_span,
+                    mutability: Mutability::Not,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: let_x_span,
+                    mutability: Mutability::Not,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: let_y_span,
+                    mutability: Mutability::Not,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: return_expr_span,
+                    mutability: Mutability::Not,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: return_expr_span,
+                    mutability: Mutability::Not,
+                },
+            ];
+
+            let x_ty = Ty::usize_ty();
+            let y_ty = Ty::usize_ty();
+
+            let blocks = vec![MirBasicBlock {
+                statements: vec![
+                    MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(2),
+                            Rvalue::Use(MirOperand::Move(place_fields(
+                                1,
+                                &[(1, point_ty), (0, x_ty)],
+                            ))),
+                        ),
+                        span: let_x_span,
                     },
-                    rustc_gen::MirLocalDecl {
-                        ty: human_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Not,
+                    MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(3),
+                            Rvalue::Use(MirOperand::Move(place_fields(
+                                1,
+                                &[(1, point_ty), (1, y_ty)],
+                            ))),
+                        ),
+                        span: let_y_span,
                     },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Not,
+                    MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(4),
+                            Rvalue::BinaryOp(
+                                rustc_public_generative::rustc_public::mir::BinOp::Mul,
+                                MirOperand::Move(place(2)),
+                                MirOperand::Move(place(2)),
+                            ),
+                        ),
+                        span: return_expr_span,
                     },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Not,
+                    MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(5),
+                            Rvalue::BinaryOp(
+                                rustc_public_generative::rustc_public::mir::BinOp::Mul,
+                                MirOperand::Move(place(3)),
+                                MirOperand::Move(place(3)),
+                            ),
+                        ),
+                        span: return_expr_span,
                     },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Not,
+                    MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(0),
+                            Rvalue::BinaryOp(
+                                rustc_public_generative::rustc_public::mir::BinOp::Add,
+                                MirOperand::Move(place(4)),
+                                MirOperand::Move(place(5)),
+                            ),
+                        ),
+                        span: return_expr_span,
                     },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Not,
-                    },
-                ];
-                let blocks = vec![rustc_gen::MirBasicBlock {
+                ],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Return,
+                    span: return_expr_span,
+                },
+            }];
+
+            Body::new(blocks, locals, 1, vec![], None, body_span)
+        } else if def == self.main_fn.0 {
+            let locals = vec![
+                MirLocalDecl {
+                    ty: Ty::new_tuple(&[]),
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: point_ty,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: human_ty,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: tuple_u8_3_ty,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: ptr_tuple_u8_3,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: ptr_u8_mut,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+                MirLocalDecl {
+                    ty: usize_ty,
+                    span: main_fn_span,
+                    mutability: Mutability::Mut,
+                },
+            ];
+
+            let blocks = vec![
+                MirBasicBlock {
                     statements: vec![
-                        rustc_gen::MirStatement {
-                            kind: rustc_gen::MirStatementKind::Assign(
+                        MirStatement {
+                            kind: MirStatementKind::Assign(
+                                place(1),
+                                Rvalue::Aggregate(
+                                    rustc_public_generative::rustc_public::mir::AggregateKind::Adt(
+                                        self.point_adt,
+                                        variant_idx(0),
+                                        GenericArgs(vec![]),
+                                        None,
+                                        None,
+                                    ),
+                                    vec![
+                                        const_uint(3, main_fn_span),
+                                        const_uint(4, main_fn_span),
+                                    ],
+                                ),
+                            ),
+                            span: main_fn_span,
+                        },
+                        MirStatement {
+                            kind: MirStatementKind::Assign(
                                 place(2),
-                                rustc_gen::MirRvalue::Use(rustc_gen::MirOperand::Move(
-                                    place_fields(1, &[(0, point_ty), (0, usize_ty)]),
-                                )),
-                            ),
-                            span,
-                        },
-                        rustc_gen::MirStatement {
-                            kind: rustc_gen::MirStatementKind::Assign(
-                                place(3),
-                                rustc_gen::MirRvalue::Use(rustc_gen::MirOperand::Move(
-                                    place_fields(1, &[(0, point_ty), (1, usize_ty)]),
-                                )),
-                            ),
-                            span,
-                        },
-                        rustc_gen::MirStatement {
-                            kind: rustc_gen::MirStatementKind::Assign(
-                                place(4),
-                                rustc_gen::MirRvalue::BinaryOp(
-                                    rustc_gen::MirBinOp::Mul,
-                                    rustc_gen::MirOperand::Move(place(2)),
-                                    rustc_gen::MirOperand::Move(place(2)),
+                                Rvalue::Aggregate(
+                                    rustc_public_generative::rustc_public::mir::AggregateKind::Adt(
+                                        self.human_adt,
+                                        variant_idx(0),
+                                        GenericArgs(vec![]),
+                                        None,
+                                        None,
+                                    ),
+                                    vec![
+                                        const_u32(30, main_fn_span),
+                                        MirOperand::Move(place(1)),
+                                    ],
                                 ),
                             ),
-                            span,
-                        },
-                        rustc_gen::MirStatement {
-                            kind: rustc_gen::MirStatementKind::Assign(
-                                place(5),
-                                rustc_gen::MirRvalue::BinaryOp(
-                                    rustc_gen::MirBinOp::Mul,
-                                    rustc_gen::MirOperand::Move(place(3)),
-                                    rustc_gen::MirOperand::Move(place(3)),
-                                ),
-                            ),
-                            span,
-                        },
-                        rustc_gen::MirStatement {
-                            kind: rustc_gen::MirStatementKind::Assign(
-                                place(0),
-                                rustc_gen::MirRvalue::BinaryOp(
-                                    rustc_gen::MirBinOp::Add,
-                                    rustc_gen::MirOperand::Move(place(4)),
-                                    rustc_gen::MirOperand::Move(place(5)),
-                                ),
-                            ),
-                            span,
+                            span: main_fn_span,
                         },
                     ],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Return,
-                        span,
-                    },
-                }];
-                rustc_gen::MirBody::new(blocks, locals, 1, vec![], None, span)
-            };
-
-            let main_body = {
-                let locals = vec![
-                    rustc_gen::MirLocalDecl {
-                        ty: rustc_gen::MirTy::new_tuple(&[]),
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: point_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: human_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: tuple_u8_3_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: ptr_tuple_u8_3,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: ptr_u8_mut,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                    rustc_gen::MirLocalDecl {
-                        ty: usize_ty,
-                        span,
-                        mutability: rustc_gen::MirMutability::Mut,
-                    },
-                ];
-                let blocks = vec![
-                    rustc_gen::MirBasicBlock {
-                        statements: vec![
-                            rustc_gen::MirStatement {
-                                kind: rustc_gen::MirStatementKind::Assign(
-                                    place(1),
-                                    rustc_gen::MirRvalue::Aggregate(
-                                        rustc_gen::MirAggregateKind::Adt(
-                                            point_adt,
-                                            variant_idx(0),
-                                            rustc_gen::GenericArgs(vec![]),
-                                            None,
-                                            None,
-                                        ),
-                                        vec![
-                                            const_uint(3, rustc_gen::PublicUintTy::Usize, span),
-                                            const_uint(4, rustc_gen::PublicUintTy::Usize, span),
-                                        ],
-                                    ),
-                                ),
-                                span,
-                            },
-                            rustc_gen::MirStatement {
-                                kind: rustc_gen::MirStatementKind::Assign(
-                                    place(2),
-                                    rustc_gen::MirRvalue::Aggregate(
-                                        rustc_gen::MirAggregateKind::Adt(
-                                            human_adt,
-                                            variant_idx(0),
-                                            rustc_gen::GenericArgs(vec![]),
-                                            None,
-                                            None,
-                                        ),
-                                        vec![
-                                            rustc_gen::MirOperand::Move(place(1)),
-                                            const_uint(30, rustc_gen::PublicUintTy::U32, span),
-                                        ],
-                                    ),
-                                ),
-                                span,
-                            },
-                        ],
-                        terminator: rustc_gen::MirTerminator {
-                            kind: rustc_gen::MirTerminatorKind::Call {
-                                func: fn_const_operand(length_fn, vec![], span),
-                                args: vec![rustc_gen::MirOperand::Move(place(2))],
-                                destination: place(3),
-                                target: Some(1),
-                                unwind: rustc_gen::MirUnwindAction::Continue,
-                            },
-                            span,
+                    terminator: MirTerminator {
+                        kind: TerminatorKind::Call {
+                            func: fn_const_operand(self.length_fn, vec![], main_fn_span),
+                            args: vec![MirOperand::Move(place(2))],
+                            destination: place(3),
+                            target: Some(1),
+                            unwind: UnwindAction::Continue,
                         },
+                        span: main_fn_span,
                     },
-                    rustc_gen::MirBasicBlock {
-                        statements: vec![
-                            rustc_gen::MirStatement {
-                                kind: rustc_gen::MirStatementKind::Assign(
+                },
+                MirBasicBlock {
+                    statements: vec![
+                        MirStatement {
+                            kind: MirStatementKind::Assign(
+                                place(4),
+                                Rvalue::Aggregate(
+                                    rustc_public_generative::rustc_public::mir::AggregateKind::Tuple,
+                                    vec![
+                                        const_u8(50, main_fn_span),
+                                        const_u8(53, main_fn_span),
+                                        const_u8(10, main_fn_span),
+                                    ],
+                                ),
+                            ),
+                            span: main_fn_span,
+                        },
+                        MirStatement {
+                            kind: MirStatementKind::Assign(
+                                place(5),
+                                Rvalue::AddressOf(
+                                    RawPtrKind::Mut,
                                     place(4),
-                                    rustc_gen::MirRvalue::Aggregate(
-                                        rustc_gen::MirAggregateKind::Tuple,
-                                        vec![
-                                            const_uint(50, rustc_gen::PublicUintTy::U8, span),
-                                            const_uint(53, rustc_gen::PublicUintTy::U8, span),
-                                            const_uint(10, rustc_gen::PublicUintTy::U8, span),
-                                        ],
-                                    ),
                                 ),
-                                span,
-                            },
-                            rustc_gen::MirStatement {
-                                kind: rustc_gen::MirStatementKind::Assign(
-                                    place(5),
-                                    rustc_gen::MirRvalue::AddressOf(
-                                        rustc_gen::MirRawPtrKind::Mut,
-                                        place(4),
-                                    ),
-                                ),
-                                span,
-                            },
-                            rustc_gen::MirStatement {
-                                kind: rustc_gen::MirStatementKind::Assign(
-                                    place(6),
-                                    rustc_gen::MirRvalue::Cast(
-                                        rustc_gen::MirCastKind::PtrToPtr,
-                                        rustc_gen::MirOperand::Move(place(5)),
-                                        ptr_u8_mut,
-                                    ),
-                                ),
-                                span,
-                            },
-                        ],
-                        terminator: rustc_gen::MirTerminator {
-                            kind: rustc_gen::MirTerminatorKind::Call {
-                                func: fn_const_operand(write_fn, vec![], span),
-                                args: vec![
-                                    const_uint(1, rustc_gen::PublicUintTy::Usize, span),
-                                    rustc_gen::MirOperand::Move(place(6)),
-                                    const_uint(3, rustc_gen::PublicUintTy::Usize, span),
-                                ],
-                                destination: place(7),
-                                target: Some(2),
-                                unwind: rustc_gen::MirUnwindAction::Continue,
-                            },
-                            span,
+                            ),
+                            span: main_fn_span,
                         },
-                    },
-                    rustc_gen::MirBasicBlock {
-                        statements: vec![],
-                        terminator: rustc_gen::MirTerminator {
-                            kind: rustc_gen::MirTerminatorKind::Return,
-                            span,
+                        MirStatement {
+                            kind: MirStatementKind::Assign(
+                                place(6),
+                                Rvalue::Cast(
+                                    CastKind::PtrToPtr,
+                                    MirOperand::Move(place(5)),
+                                    ptr_u8_mut,
+                                ),
+                            ),
+                            span: main_fn_span,
                         },
+                    ],
+                    terminator: MirTerminator {
+                        kind: TerminatorKind::Call {
+                            func: fn_const_operand(self.write_fn, vec![], main_fn_span),
+                            args: vec![
+                                const_uint(1, main_fn_span),
+                                MirOperand::Move(place(6)),
+                                const_uint(3, main_fn_span),
+                            ],
+                            destination: place(7),
+                            target: Some(2),
+                            unwind: UnwindAction::Continue,
+                        },
+                        span: main_fn_span,
                     },
-                ];
-                rustc_gen::MirBody::new(blocks, locals, 0, vec![], None, span)
-            };
+                },
+                MirBasicBlock {
+                    statements: vec![],
+                    terminator: MirTerminator {
+                        kind: TerminatorKind::Return,
+                        span: main_fn_span,
+                    },
+                },
+            ];
 
-            vec![
-                rustc_gen::ItemMirInfo {
-                    id: length_fn.0,
-                    body: length_body,
-                },
-                rustc_gen::ItemMirInfo {
-                    id: main_fn.0,
-                    body: main_body,
-                },
-            ]
-        },
-    );
+            Body::new(blocks, locals, 0, vec![], None, main_fn_span)
+        } else {
+            panic!("unexpected def: {:?}", def);
+        }
+    }
+}
+
+fn main() {
+    generate::<State>();
 }

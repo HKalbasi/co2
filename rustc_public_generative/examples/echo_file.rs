@@ -2,19 +2,35 @@
 
 use std::sync::OnceLock;
 
-use rustc_public_generative::{self as rustc_gen, DefinedCrateInfo, FileId};
+// use rustc_public_generative::{self as rustc_gen, DefinedCrateInfo, FileId};
+use rustc_public_generative::{
+    CrateGeneratorState, DependencyInfo, FileId, ForeignModItem, FunctionAbi, FunctionSignature,
+    HirModule, HirModuleItem, HirStructure, HirStructureCtx, HirTy, generate,
+    rustc_public::{
+        DefId,
+        mir::{
+            BasicBlock as MirBasicBlock, Body, BorrowKind, ConstOperand, LocalDecl as MirLocalDecl,
+            MutBorrowKind, Mutability, Operand as MirOperand, Place as MirPlace, Rvalue,
+            Statement as MirStatement, StatementKind as MirStatementKind,
+            Terminator as MirTerminator, TerminatorKind, UnwindAction,
+        },
+        ty::{
+            AdtDef, FnDef, GenericArgKind, GenericArgs, IntTy, MirConst, Region, RegionKind,
+            RigidTy, Span as PublicSpan, Ty, UintTy,
+        },
+    },
+};
 
-fn place(local: usize) -> rustc_gen::MirPlace {
-    rustc_gen::MirPlace {
+fn place(local: usize) -> MirPlace {
+    MirPlace {
         local,
         projection: vec![],
     }
 }
 
-fn const_uint(value: u128, span: rustc_gen::PublicSpan) -> rustc_gen::MirOperand {
-    let c = rustc_gen::PublicMirConst::try_from_uint(value, rustc_gen::PublicUintTy::Usize)
-        .expect("failed to build usize const");
-    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
+fn const_uint(value: u128, span: PublicSpan) -> MirOperand {
+    let c = MirConst::try_from_uint(value, UintTy::Usize).expect("failed to build usize const");
+    MirOperand::Constant(ConstOperand {
         span,
         user_ty: None,
         const_: c,
@@ -22,23 +38,20 @@ fn const_uint(value: u128, span: rustc_gen::PublicSpan) -> rustc_gen::MirOperand
 }
 
 fn fn_const_operand(
-    fn_def: rustc_gen::FnDef,
-    generic_args: Vec<rustc_gen::GenericArgKind>,
-    span: rustc_gen::PublicSpan,
-) -> rustc_gen::MirOperand {
-    let fn_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::FnDef(
-        fn_def,
-        rustc_gen::GenericArgs(generic_args),
-    ));
-    let c = rustc_gen::PublicMirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
-    rustc_gen::MirOperand::Constant(rustc_gen::MirConst {
+    fn_def: FnDef,
+    generic_args: Vec<GenericArgKind>,
+    span: PublicSpan,
+) -> MirOperand {
+    let fn_ty = Ty::from_rigid_kind(RigidTy::FnDef(fn_def, GenericArgs(generic_args)));
+    let c = MirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
+    MirOperand::Constant(ConstOperand {
         span,
         user_ty: None,
         const_: c,
     })
 }
 
-fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
+fn dep_fn(deps: &DependencyInfo, path: &str) -> FnDef {
     if let Some(found) = deps
         .functions
         .iter()
@@ -99,7 +112,7 @@ fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
     );
 }
 
-fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::AdtDef {
+fn dep_adt(deps: &DependencyInfo, path: &str) -> AdtDef {
     if let Some(found) = deps.types.iter().find(|t| t.path == path).map(|t| t.adt) {
         return found;
     }
@@ -145,544 +158,491 @@ fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::AdtDef {
     );
 }
 
-static FILE_ID: OnceLock<FileId> = OnceLock::new();
+struct State {
+    file_id: FileId,
 
-fn lookup_id(krate: &DefinedCrateInfo, name: &str) -> rustc_gen::DefId {
-    krate
-        .items
-        .iter()
-        .find(|item| item.name == name)
-        .unwrap()
-        .def_id()
+    main_fn: FnDef,
+    write_fn: FnDef,
+    open_fn: FnDef,
+    read_fn: FnDef,
+    close_fn: FnDef,
+    malloc_fn: FnDef,
+    free_fn: FnDef,
+}
+
+unsafe impl Send for State {}
+unsafe impl Sync for State {}
+
+impl CrateGeneratorState for State {
+    fn hir_structure(ctx: HirStructureCtx) -> (Self, HirStructure) {
+        let file_id = ctx.add_custom_file("/tmp/echo_file.rs", "fn main()");
+        let span = ctx.span_in_file(file_id, 2, 5);
+
+        let root_crate = ctx.root_crate_def_id();
+        let foreign_mod =
+            ctx.allocate_def_id(root_crate, rustc_public_generative::DefData::ForeignMod);
+        let main_fn = FnDef(ctx.allocate_def_id(
+            root_crate,
+            rustc_public_generative::DefData::ValueNs("main".to_owned()),
+        ));
+        let write_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("write".to_owned()),
+        ));
+        let open_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("open".to_owned()),
+        ));
+        let read_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("read".to_owned()),
+        ));
+        let close_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("close".to_owned()),
+        ));
+        let malloc_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("malloc".to_owned()),
+        ));
+        let free_fn = FnDef(ctx.allocate_def_id(
+            foreign_mod,
+            rustc_public_generative::DefData::ValueNs("free".to_owned()),
+        ));
+
+        let usize_ty = || HirTy::usize_ty(span);
+        let i8_ty = || HirTy::signed_ty(IntTy::I8, span);
+        let ptr_i8_mut = || HirTy::new_ptr(i8_ty(), Mutability::Mut, span);
+
+        let hir_structure = HirStructure {
+            root: HirModule {
+                span,
+                items: vec![
+                    HirModuleItem::Function {
+                        name: "main".to_string(),
+                        id: main_fn,
+                        sig: FunctionSignature {
+                            inputs: vec![],
+                            output: HirTy::new_tuple(vec![], span),
+                            abi: FunctionAbi::Rust,
+                            is_unsafe: false,
+                        },
+                        span,
+                    },
+                    HirModuleItem::ForeignMod {
+                        id: foreign_mod,
+                        items: vec![
+                            ForeignModItem::ForeignFunction {
+                                name: "write".to_string(),
+                                id: write_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![usize_ty(), ptr_i8_mut(), usize_ty()],
+                                    output: usize_ty(),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                            ForeignModItem::ForeignFunction {
+                                name: "open".to_string(),
+                                id: open_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![ptr_i8_mut(), usize_ty()],
+                                    output: usize_ty(),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                            ForeignModItem::ForeignFunction {
+                                name: "read".to_string(),
+                                id: read_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![usize_ty(), ptr_i8_mut(), usize_ty()],
+                                    output: usize_ty(),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                            ForeignModItem::ForeignFunction {
+                                name: "close".to_string(),
+                                id: close_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![usize_ty()],
+                                    output: usize_ty(),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                            ForeignModItem::ForeignFunction {
+                                name: "malloc".to_string(),
+                                id: malloc_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![usize_ty()],
+                                    output: ptr_i8_mut(),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                            ForeignModItem::ForeignFunction {
+                                name: "free".to_string(),
+                                id: free_fn,
+                                sig: FunctionSignature {
+                                    inputs: vec![ptr_i8_mut()],
+                                    output: HirTy::new_tuple(vec![], span),
+                                    abi: FunctionAbi::C,
+                                    is_unsafe: true,
+                                },
+                                span,
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+        (
+            State {
+                file_id,
+
+                main_fn,
+                write_fn,
+                open_fn,
+                read_fn,
+                close_fn,
+                malloc_fn,
+                free_fn,
+            },
+            hir_structure,
+        )
+    }
+
+    fn emit_mir(&mut self, ctx: HirStructureCtx, def: DefId) -> Body {
+        assert_eq!(self.main_fn.0, def);
+
+        let span: PublicSpan = ctx.span_in_file(self.file_id, 0, 2);
+
+        let deps = ctx.dependencies();
+
+        let write = self.write_fn;
+        let open = self.open_fn;
+        let read = self.read_fn;
+        let close = self.close_fn;
+        let malloc = self.malloc_fn;
+        let free = self.free_fn;
+
+        let std_env_args = dep_fn(&deps, "std::env::args");
+        let iter_nth = dep_fn(&deps, "std::iter::Iterator::nth");
+        let option_unwrap = dep_fn(&deps, "std::option::Option::unwrap");
+        let result_unwrap = dep_fn(&deps, "std::result::Result::unwrap");
+        let cstring_new = dep_fn(&deps, "std::ffi::CString::new");
+        let cstring_into_raw = dep_fn(&deps, "std::ffi::CString::into_raw");
+
+        let args_adt = dep_adt(&deps, "std::env::Args");
+        let string_adt = dep_adt(&deps, "std::string::String");
+        let cstring_adt = dep_adt(&deps, "std::ffi::CString");
+        let nul_error_adt = dep_adt(&deps, "std::ffi::NulError");
+        let option_adt = dep_adt(&deps, "std::option::Option");
+        let result_adt = dep_adt(&deps, "std::result::Result");
+
+        let args_ty = Ty::from_rigid_kind(RigidTy::Adt(args_adt, GenericArgs(vec![])));
+        let string_ty = Ty::from_rigid_kind(RigidTy::Adt(string_adt, GenericArgs(vec![])));
+        let cstring_ty = Ty::from_rigid_kind(RigidTy::Adt(cstring_adt, GenericArgs(vec![])));
+        let nul_error_ty = Ty::from_rigid_kind(RigidTy::Adt(nul_error_adt, GenericArgs(vec![])));
+        let option_string_ty = Ty::from_rigid_kind(RigidTy::Adt(
+            option_adt,
+            GenericArgs(vec![GenericArgKind::Type(string_ty)]),
+        ));
+        let result_cstring_ty = Ty::from_rigid_kind(RigidTy::Adt(
+            result_adt,
+            GenericArgs(vec![
+                GenericArgKind::Type(cstring_ty),
+                GenericArgKind::Type(nul_error_ty),
+            ]),
+        ));
+
+        let args_ref_ty = Ty::new_ref(
+            Region {
+                kind: RegionKind::ReErased,
+            },
+            args_ty,
+            Mutability::Mut,
+        );
+        let usize_ty = Ty::usize_ty();
+        let i8_ty = Ty::signed_ty(IntTy::I8);
+        let ptr_i8_mut = Ty::new_ptr(i8_ty, Mutability::Mut);
+
+        let locals = vec![
+            MirLocalDecl {
+                ty: Ty::new_tuple(&[]),
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: args_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: args_ref_ty,
+                span,
+                mutability: Mutability::Not,
+            },
+            MirLocalDecl {
+                ty: option_string_ty,
+                span,
+                mutability: Mutability::Not,
+            },
+            MirLocalDecl {
+                ty: string_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: result_cstring_ty,
+                span,
+                mutability: Mutability::Not,
+            },
+            MirLocalDecl {
+                ty: cstring_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: ptr_i8_mut,
+                span,
+                mutability: Mutability::Not,
+            },
+            MirLocalDecl {
+                ty: usize_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: ptr_i8_mut,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: usize_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+            MirLocalDecl {
+                ty: usize_ty,
+                span,
+                mutability: Mutability::Mut,
+            },
+        ];
+
+        let blocks = vec![
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(std_env_args, vec![], span),
+                        args: vec![],
+                        destination: place(1),
+                        target: Some(1),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(2),
+                        Rvalue::Ref(
+                            Region {
+                                kind: RegionKind::ReErased,
+                            },
+                            BorrowKind::Mut {
+                                kind: MutBorrowKind::Default,
+                            },
+                            place(1),
+                        ),
+                    ),
+                    span,
+                }],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(iter_nth, vec![GenericArgKind::Type(args_ty)], span),
+                        args: vec![MirOperand::Move(place(2)), const_uint(1, span)],
+                        destination: place(3),
+                        target: Some(2),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(
+                            option_unwrap,
+                            vec![GenericArgKind::Type(string_ty)],
+                            span,
+                        ),
+                        args: vec![MirOperand::Move(place(3))],
+                        destination: place(4),
+                        target: Some(3),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(
+                            cstring_new,
+                            vec![GenericArgKind::Type(string_ty)],
+                            span,
+                        ),
+                        args: vec![MirOperand::Move(place(4))],
+                        destination: place(5),
+                        target: Some(4),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(
+                            result_unwrap,
+                            vec![
+                                GenericArgKind::Type(cstring_ty),
+                                GenericArgKind::Type(nul_error_ty),
+                            ],
+                            span,
+                        ),
+                        args: vec![MirOperand::Move(place(5))],
+                        destination: place(6),
+                        target: Some(5),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(cstring_into_raw, vec![], span),
+                        args: vec![MirOperand::Move(place(6))],
+                        destination: place(7),
+                        target: Some(6),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(open, vec![], span),
+                        args: vec![MirOperand::Copy(place(7)), const_uint(0, span)],
+                        destination: place(8),
+                        target: Some(7),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(malloc, vec![], span),
+                        args: vec![const_uint(4096, span)],
+                        destination: place(9),
+                        target: Some(8),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(read, vec![], span),
+                        args: vec![
+                            MirOperand::Copy(place(8)),
+                            MirOperand::Copy(place(9)),
+                            const_uint(4096, span),
+                        ],
+                        destination: place(10),
+                        target: Some(9),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(write, vec![], span),
+                        args: vec![
+                            const_uint(1, span),
+                            MirOperand::Copy(place(9)),
+                            MirOperand::Copy(place(10)),
+                        ],
+                        destination: place(11),
+                        target: Some(10),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(close, vec![], span),
+                        args: vec![MirOperand::Copy(place(8))],
+                        destination: place(11),
+                        target: Some(11),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Call {
+                        func: fn_const_operand(free, vec![], span),
+                        args: vec![MirOperand::Copy(place(9))],
+                        destination: place(0),
+                        target: Some(12),
+                        unwind: UnwindAction::Continue,
+                    },
+                    span,
+                },
+            },
+            MirBasicBlock {
+                statements: vec![],
+                terminator: MirTerminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                },
+            },
+        ];
+        Body::new(blocks, locals, 0, vec![], None, span)
+    }
 }
 
 fn main() {
-    // let item_main = rustc_gen::ItemId::new(1);
-    // let item_write = rustc_gen::ItemId::new(2);
-    // let item_open = rustc_gen::ItemId::new(3);
-    // let item_read = rustc_gen::ItemId::new(4);
-    // let item_close = rustc_gen::ItemId::new(5);
-    // let item_malloc = rustc_gen::ItemId::new(6);
-    // let item_free = rustc_gen::ItemId::new(7);
-
-    rustc_gen::generate(
-        move |ctx, _deps| {
-            let file_id = ctx.add_custom_file("/tmp/echo_file.rs", "fn main()");
-            _ = FILE_ID.set(file_id);
-
-            rustc_gen::CurrentCrateInfo {
-                crate_name: "fake_hello_world".to_string(),
-                no_main: false,
-                items: vec![
-                    rustc_gen::ItemInfo {
-                        name: "main".to_string(),
-                        kind: rustc_gen::ItemKind::Function,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "write".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "open".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "read".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "close".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "malloc".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                    rustc_gen::ItemInfo {
-                        name: "free".to_string(),
-                        kind: rustc_gen::ItemKind::ForeignFunction,
-                        no_mangle: false,
-                    },
-                ],
-            }
-        },
-        move |ctx, _deps, _defined| {
-            let file_id = *FILE_ID.get().unwrap();
-            let span = ctx.span_in_file(file_id, 2, 5);
-
-            let item_main = lookup_id(&_defined, "main");
-            let item_write = lookup_id(&_defined, "write");
-            let item_open = lookup_id(&_defined, "open");
-            let item_read = lookup_id(&_defined, "read");
-            let item_close = lookup_id(&_defined, "close");
-            let item_malloc = lookup_id(&_defined, "malloc");
-            let item_free = lookup_id(&_defined, "free");
-
-            let usize_ty = || rustc_gen::HirTy::usize_ty(span);
-            let i8_ty = || rustc_gen::HirTy::signed_ty(rustc_gen::PublicIntTy::I8, span);
-            let ptr_i8_mut = || rustc_gen::HirTy::new_ptr(i8_ty(), rustc_gen::MirMutability::Mut, span);
-            vec![
-                rustc_gen::ItemSignatureInfo {
-                    id: item_main,
-                    kind: rustc_gen::ItemSignatureKind::Function {
-                        sig: rustc_gen::FunctionSignature {
-                            inputs: vec![],
-                            output: rustc_gen::HirTy::new_tuple(vec![], span),
-                            abi: rustc_gen::FunctionAbi::Rust,
-                            is_unsafe: false,
-                        },
-                        no_mangle: false,
-                    },
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_write,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty(), ptr_i8_mut(), usize_ty()],
-                            output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_open,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![ptr_i8_mut(), usize_ty()],
-                            output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_read,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty(), ptr_i8_mut(), usize_ty()],
-                            output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_close,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty()],
-                            output: usize_ty(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_malloc,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![usize_ty()],
-                            output: ptr_i8_mut(),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-                rustc_gen::ItemSignatureInfo {
-                    id: item_free,
-                    kind: rustc_gen::ItemSignatureKind::ForeignFunction(
-                        rustc_gen::FunctionSignature {
-                            inputs: vec![ptr_i8_mut()],
-                            output: rustc_gen::HirTy::new_tuple(vec![], span),
-                            abi: rustc_gen::FunctionAbi::C,
-                            is_unsafe: true,
-                        },
-                    ),
-                    span,
-                },
-            ]
-        },
-        move |ctx, deps, defined| {
-            let span: rustc_gen::PublicSpan = ctx.span_in_file(*FILE_ID.get().unwrap(), 0, 2);
-
-            let write = defined
-                .items
-                .iter()
-                .find(|i| i.name == "write")
-                .and_then(|i| i.fn_def())
-                .expect("missing write def");
-            let open = defined
-                .items
-                .iter()
-                .find(|i| i.name == "open")
-                .and_then(|i| i.fn_def())
-                .expect("missing open def");
-            let read = defined
-                .items
-                .iter()
-                .find(|i| i.name == "read")
-                .and_then(|i| i.fn_def())
-                .expect("missing read def");
-            let close = defined
-                .items
-                .iter()
-                .find(|i| i.name == "close")
-                .and_then(|i| i.fn_def())
-                .expect("missing close def");
-            let malloc = defined
-                .items
-                .iter()
-                .find(|i| i.name == "malloc")
-                .and_then(|i| i.fn_def())
-                .expect("missing malloc def");
-            let free = defined
-                .items
-                .iter()
-                .find(|i| i.name == "free")
-                .and_then(|i| i.fn_def())
-                .expect("missing free def");
-
-            let std_env_args = dep_fn(&deps, "std::env::args");
-            let iter_nth = dep_fn(&deps, "std::iter::Iterator::nth");
-            let option_unwrap = dep_fn(&deps, "std::option::Option::unwrap");
-            let result_unwrap = dep_fn(&deps, "std::result::Result::unwrap");
-            let cstring_new = dep_fn(&deps, "std::ffi::CString::new");
-            let cstring_into_raw = dep_fn(&deps, "std::ffi::CString::into_raw");
-
-            let args_adt = dep_adt(&deps, "std::env::Args");
-            let string_adt = dep_adt(&deps, "std::string::String");
-            let cstring_adt = dep_adt(&deps, "std::ffi::CString");
-            let nul_error_adt = dep_adt(&deps, "std::ffi::NulError");
-            let option_adt = dep_adt(&deps, "std::option::Option");
-            let result_adt = dep_adt(&deps, "std::result::Result");
-
-            let args_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                args_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let string_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                string_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let cstring_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                cstring_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let nul_error_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                nul_error_adt,
-                rustc_gen::GenericArgs(vec![]),
-            ));
-            let option_string_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                option_adt,
-                rustc_gen::GenericArgs(vec![rustc_gen::GenericArgKind::Type(string_ty)]),
-            ));
-            let result_cstring_ty = rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                result_adt,
-                rustc_gen::GenericArgs(vec![
-                    rustc_gen::GenericArgKind::Type(cstring_ty),
-                    rustc_gen::GenericArgKind::Type(nul_error_ty),
-                ]),
-            ));
-
-            let args_ref_ty = rustc_gen::MirTy::new_ref(
-                rustc_gen::Region {
-                    kind: rustc_gen::RegionKind::ReErased,
-                },
-                args_ty,
-                rustc_gen::MirMutability::Mut,
-            );
-            let usize_ty = rustc_gen::MirTy::usize_ty();
-            let i8_ty = rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8);
-            let ptr_i8_mut = rustc_gen::MirTy::new_ptr(i8_ty, rustc_gen::MirMutability::Mut);
-
-            let locals = vec![
-                rustc_gen::MirLocalDecl {
-                    ty: rustc_gen::MirTy::new_tuple(&[]),
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: args_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: args_ref_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Not,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: option_string_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Not,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: string_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: result_cstring_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Not,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: cstring_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: ptr_i8_mut,
-                    span,
-                    mutability: rustc_gen::MirMutability::Not,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: usize_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: ptr_i8_mut,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: usize_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-                rustc_gen::MirLocalDecl {
-                    ty: usize_ty,
-                    span,
-                    mutability: rustc_gen::MirMutability::Mut,
-                },
-            ];
-
-            let blocks = vec![
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(std_env_args, vec![], span),
-                            args: vec![],
-                            destination: place(1),
-                            target: Some(1),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![rustc_gen::MirStatement {
-                        kind: rustc_gen::MirStatementKind::Assign(
-                            place(2),
-                            rustc_gen::MirRvalue::Ref(
-                                rustc_gen::Region {
-                                    kind: rustc_gen::RegionKind::ReErased,
-                                },
-                                rustc_gen::MirBorrowKind::Mut {
-                                    kind: rustc_gen::MirMutBorrowKind::Default,
-                                },
-                                place(1),
-                            ),
-                        ),
-                        span,
-                    }],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(
-                                iter_nth,
-                                vec![rustc_gen::GenericArgKind::Type(args_ty)],
-                                span,
-                            ),
-                            args: vec![rustc_gen::MirOperand::Move(place(2)), const_uint(1, span)],
-                            destination: place(3),
-                            target: Some(2),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(
-                                option_unwrap,
-                                vec![rustc_gen::GenericArgKind::Type(string_ty)],
-                                span,
-                            ),
-                            args: vec![rustc_gen::MirOperand::Move(place(3))],
-                            destination: place(4),
-                            target: Some(3),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(
-                                cstring_new,
-                                vec![rustc_gen::GenericArgKind::Type(string_ty)],
-                                span,
-                            ),
-                            args: vec![rustc_gen::MirOperand::Move(place(4))],
-                            destination: place(5),
-                            target: Some(4),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(
-                                result_unwrap,
-                                vec![
-                                    rustc_gen::GenericArgKind::Type(cstring_ty),
-                                    rustc_gen::GenericArgKind::Type(nul_error_ty),
-                                ],
-                                span,
-                            ),
-                            args: vec![rustc_gen::MirOperand::Move(place(5))],
-                            destination: place(6),
-                            target: Some(5),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(cstring_into_raw, vec![], span),
-                            args: vec![rustc_gen::MirOperand::Move(place(6))],
-                            destination: place(7),
-                            target: Some(6),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(open, vec![], span),
-                            args: vec![rustc_gen::MirOperand::Copy(place(7)), const_uint(0, span)],
-                            destination: place(8),
-                            target: Some(7),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(malloc, vec![], span),
-                            args: vec![const_uint(4096, span)],
-                            destination: place(9),
-                            target: Some(8),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(read, vec![], span),
-                            args: vec![
-                                rustc_gen::MirOperand::Copy(place(8)),
-                                rustc_gen::MirOperand::Copy(place(9)),
-                                const_uint(4096, span),
-                            ],
-                            destination: place(10),
-                            target: Some(9),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(write, vec![], span),
-                            args: vec![
-                                const_uint(1, span),
-                                rustc_gen::MirOperand::Copy(place(9)),
-                                rustc_gen::MirOperand::Copy(place(10)),
-                            ],
-                            destination: place(11),
-                            target: Some(10),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(close, vec![], span),
-                            args: vec![rustc_gen::MirOperand::Copy(place(8))],
-                            destination: place(11),
-                            target: Some(11),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Call {
-                            func: fn_const_operand(free, vec![], span),
-                            args: vec![rustc_gen::MirOperand::Copy(place(9))],
-                            destination: place(0),
-                            target: Some(12),
-                            unwind: rustc_gen::MirUnwindAction::Continue,
-                        },
-                        span,
-                    },
-                },
-                rustc_gen::MirBasicBlock {
-                    statements: vec![],
-                    terminator: rustc_gen::MirTerminator {
-                        kind: rustc_gen::MirTerminatorKind::Return,
-                        span,
-                    },
-                },
-            ];
-
-            let body = rustc_gen::MirBody::new(blocks, locals, 0, vec![], None, span);
-            vec![rustc_gen::ItemMirInfo {
-                id: lookup_id(&defined, "main"),
-                body,
-            }]
-        },
-    );
+    generate::<State>();
 }
