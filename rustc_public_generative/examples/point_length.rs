@@ -225,6 +225,7 @@ fn main() {
                             abi: FunctionAbi::Rust,
                             is_unsafe: false,
                         },
+                        no_mangle: false,
                         span: length_span,
                     },
                     HirModuleItem::Function {
@@ -236,6 +237,7 @@ fn main() {
                             abi: FunctionAbi::Rust,
                             is_unsafe: false,
                         },
+                        no_mangle: false,
                         span: main_span,
                     },
                     HirModuleItem::ForeignMod {

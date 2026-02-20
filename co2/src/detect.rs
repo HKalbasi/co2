@@ -90,7 +90,7 @@ impl Callbacks for DetectCallbacks {
 }
 
 pub(crate) enum DetectResult {
-    Continue(i32),
+    Continue(std::process::ExitCode),
     Co2(PathBuf),
 }
 

@@ -225,6 +225,7 @@ impl CrateGeneratorState for State {
                             abi: FunctionAbi::Rust,
                             is_unsafe: false,
                         },
+                        no_mangle: false,
                         span,
                     },
                     HirModuleItem::ForeignMod {

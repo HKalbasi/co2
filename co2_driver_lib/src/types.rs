@@ -1,5 +1,9 @@
-use co2_hir_mir::{MirModule, Type as HirType};
+use co2_hir_mir::{FuncSig, MirModule, Type as HirType};
 use rustc_public_generative as rustc_gen;
+use rustc_public_generative::rustc_public::{
+    mir::Mutability,
+    ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, IntTy, RigidTy, Ty, UintTy},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CompileMode {
@@ -25,72 +29,23 @@ impl CompileMode {
     };
 }
 
-pub(crate) fn func_item_id(name: &str) -> rustc_gen::ItemId {
-    let mut hash = 0u64;
-    for b in name.as_bytes() {
-        hash = hash.wrapping_mul(131).wrapping_add(*b as u64);
-    }
-    rustc_gen::ItemId::new(hash.max(1))
-}
-
-pub(crate) fn build_items(
+pub(crate) fn hir_sig_from_func_sig(
+    sig: &FuncSig,
     module: &MirModule,
-    deps: rustc_gen::DependencyInfo,
-    mode: CompileMode,
-) -> rustc_gen::CurrentCrateInfo {
-    let mut items = Vec::new();
-    let mut entry = None;
-
-    for func in &module.functions {
-        let id = func_item_id(&func.name);
-        if func.name == "main" {
-            entry = Some(id);
-        }
-        items.push(rustc_gen::ItemInfo {
-            id,
-            name: func.name.clone(),
-            parent: None,
-            kind: rustc_gen::ItemKind::Function(rustc_gen::FunctionSignature {
-                inputs: func
-                    .sig
-                    .params
-                    .iter()
-                    .map(|t| mir_ty_from_type(t, Some(module), &deps))
-                    .collect(),
-                output: mir_ty_from_type(&func.sig.ret, Some(module), &deps),
-                abi: mode.function_abi,
-                is_unsafe: mode.function_is_unsafe,
-            }),
-            no_mangle: mode.function_no_mangle,
-        });
-    }
-
-    for ext in &module.externs {
-        let id = func_item_id(&ext.name);
-        items.push(rustc_gen::ItemInfo {
-            id,
-            name: ext.name.clone(),
-            parent: None,
-            kind: rustc_gen::ItemKind::ForeignFunction(rustc_gen::FunctionSignature {
-                inputs: ext
-                    .sig
-                    .params
-                    .iter()
-                    .map(|t| mir_ty_from_type(t, Some(module), &deps))
-                    .collect(),
-                output: mir_ty_from_type(&ext.sig.ret, Some(module), &deps),
-                abi: rustc_gen::FunctionAbi::C,
-                is_unsafe: true,
-            }),
-            no_mangle: false,
-        });
-    }
-
-    rustc_gen::CurrentCrateInfo {
-        crate_name: "co2".to_owned(),
-        entry: if mode.no_main { None } else { entry },
-        items,
-        no_main: mode.no_main,
+    deps: &rustc_gen::DependencyInfo,
+    abi: rustc_gen::FunctionAbi,
+    is_unsafe: bool,
+    span: rustc_gen::rustc_public::ty::Span,
+) -> rustc_gen::FunctionSignature {
+    rustc_gen::FunctionSignature {
+        inputs: sig
+            .params
+            .iter()
+            .map(|t| hir_ty_from_type(t, Some(module), deps, span))
+            .collect(),
+        output: hir_ty_from_type(&sig.ret, Some(module), deps, span),
+        abi,
+        is_unsafe,
     }
 }
 
@@ -98,20 +53,38 @@ pub(crate) fn mir_ty_from_type(
     ty: &HirType,
     module: Option<&MirModule>,
     deps: &rustc_gen::DependencyInfo,
-) -> rustc_gen::MirTy {
+) -> Ty {
     match ty {
-        HirType::Void => rustc_gen::MirTy::new_tuple(&[]),
-        HirType::Int => rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I32),
-        HirType::Char => rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8),
-        HirType::Ptr(inner) => rustc_gen::MirTy::new_ptr(
-            mir_ty_from_type(inner, module, deps),
-            rustc_gen::MirMutability::Mut,
-        ),
-        HirType::Array(inner) => rustc_gen::MirTy::new_ptr(
-            mir_ty_from_type(inner, module, deps),
-            rustc_gen::MirMutability::Mut,
-        ),
+        HirType::Void => Ty::new_tuple(&[]),
+        HirType::Int => Ty::signed_ty(IntTy::I32),
+        HirType::Char => Ty::signed_ty(IntTy::I8),
+        HirType::Ptr(inner) => Ty::new_ptr(mir_ty_from_type(inner, module, deps), Mutability::Mut),
+        HirType::Array(inner) => Ty::new_ptr(mir_ty_from_type(inner, module, deps), Mutability::Mut),
         HirType::RustPath(path) => mir_ty_from_rust_path(path, module, deps),
+    }
+}
+
+pub(crate) fn hir_ty_from_type(
+    ty: &HirType,
+    module: Option<&MirModule>,
+    deps: &rustc_gen::DependencyInfo,
+    span: rustc_gen::rustc_public::ty::Span,
+) -> rustc_gen::HirTy {
+    match ty {
+        HirType::Void => rustc_gen::HirTy::new_tuple(vec![], span),
+        HirType::Int => rustc_gen::HirTy::signed_ty(IntTy::I32, span),
+        HirType::Char => rustc_gen::HirTy::signed_ty(IntTy::I8, span),
+        HirType::Ptr(inner) => rustc_gen::HirTy::new_ptr(
+            hir_ty_from_type(inner, module, deps, span),
+            Mutability::Mut,
+            span,
+        ),
+        HirType::Array(inner) => rustc_gen::HirTy::new_ptr(
+            hir_ty_from_type(inner, module, deps, span),
+            Mutability::Mut,
+            span,
+        ),
+        HirType::RustPath(path) => hir_ty_from_rust_path(path, module, deps, span),
     }
 }
 
@@ -119,7 +92,7 @@ pub(crate) fn mir_ty_from_rust_path(
     path: &co2_parser::RustPath,
     module: Option<&MirModule>,
     deps: &rustc_gen::DependencyInfo,
-) -> rustc_gen::MirTy {
+) -> Ty {
     let base = rust_path_base_string(path);
     if let Some(prim) = primitive_mir_ty(&base) {
         return prim;
@@ -128,23 +101,49 @@ pub(crate) fn mir_ty_from_rust_path(
     let adt = dep_adt(deps, &base);
     let mut generic_args = rust_path_generic_args(path)
         .into_iter()
-        .map(|arg| rustc_gen::GenericArgKind::Type(mir_ty_from_rust_path(&arg, module, deps)))
+        .map(|arg| GenericArgKind::Type(mir_ty_from_rust_path(&arg, module, deps)))
         .collect::<Vec<_>>();
     if (base == "std::vec::Vec" || base == "alloc::vec::Vec" || base.ends_with("::Vec"))
         && generic_args.len() == 1
     {
         let global = dep_adt_any(deps, &["alloc::alloc::Global", "std::alloc::Global"]);
-        generic_args.push(rustc_gen::GenericArgKind::Type(
-            rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-                global,
-                rustc_gen::GenericArgs(vec![]),
-            )),
-        ));
+        generic_args.push(GenericArgKind::Type(Ty::from_rigid_kind(RigidTy::Adt(
+            global,
+            GenericArgs(vec![]),
+        ))));
     }
-    rustc_gen::MirTy::from_rigid_kind(rustc_gen::RigidTy::Adt(
-        adt,
-        rustc_gen::GenericArgs(generic_args),
-    ))
+    Ty::from_rigid_kind(RigidTy::Adt(adt, GenericArgs(generic_args)))
+}
+
+pub(crate) fn hir_ty_from_rust_path(
+    path: &co2_parser::RustPath,
+    module: Option<&MirModule>,
+    deps: &rustc_gen::DependencyInfo,
+    span: rustc_gen::rustc_public::ty::Span,
+) -> rustc_gen::HirTy {
+    let base = rust_path_base_string(path);
+    if let Some(prim) = primitive_hir_ty(&base, span) {
+        return prim;
+    }
+
+    let adt = dep_adt(deps, &base);
+    let mut generic_args = rust_path_generic_args(path)
+        .into_iter()
+        .map(|arg| {
+            rustc_gen::HirGenericArg::Ty(hir_ty_from_rust_path(&arg, module, deps, span))
+        })
+        .collect::<Vec<_>>();
+    if (base == "std::vec::Vec" || base == "alloc::vec::Vec" || base.ends_with("::Vec"))
+        && generic_args.len() == 1
+    {
+        let global = dep_adt_any(deps, &["alloc::alloc::Global", "std::alloc::Global"]);
+        generic_args.push(rustc_gen::HirGenericArg::Ty(rustc_gen::HirTy::adt(
+            global,
+            vec![],
+            span,
+        )));
+    }
+    rustc_gen::HirTy::adt(adt, generic_args, span)
 }
 
 fn rust_path_base_string(path: &co2_parser::RustPath) -> String {
@@ -167,19 +166,31 @@ pub(crate) fn rust_path_generic_args(path: &co2_parser::RustPath) -> Vec<co2_par
     Vec::new()
 }
 
-fn primitive_mir_ty(name: &str) -> Option<rustc_gen::MirTy> {
+fn primitive_mir_ty(name: &str) -> Option<Ty> {
     match name {
-        "u8" => Some(rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U8)),
-        "i8" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I8)),
-        "u32" => Some(rustc_gen::MirTy::unsigned_ty(rustc_gen::PublicUintTy::U32)),
-        "i32" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::I32)),
-        "usize" => Some(rustc_gen::MirTy::usize_ty()),
-        "isize" => Some(rustc_gen::MirTy::signed_ty(rustc_gen::PublicIntTy::Isize)),
+        "u8" => Some(Ty::unsigned_ty(UintTy::U8)),
+        "i8" => Some(Ty::signed_ty(IntTy::I8)),
+        "u32" => Some(Ty::unsigned_ty(UintTy::U32)),
+        "i32" => Some(Ty::signed_ty(IntTy::I32)),
+        "usize" => Some(Ty::usize_ty()),
+        "isize" => Some(Ty::signed_ty(IntTy::Isize)),
         _ => None,
     }
 }
 
-pub(crate) fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::FnDef {
+fn primitive_hir_ty(name: &str, span: rustc_gen::rustc_public::ty::Span) -> Option<rustc_gen::HirTy> {
+    match name {
+        "u8" => Some(rustc_gen::HirTy::unsigned_ty(UintTy::U8, span)),
+        "i8" => Some(rustc_gen::HirTy::signed_ty(IntTy::I8, span)),
+        "u32" => Some(rustc_gen::HirTy::unsigned_ty(UintTy::U32, span)),
+        "i32" => Some(rustc_gen::HirTy::signed_ty(IntTy::I32, span)),
+        "usize" => Some(rustc_gen::HirTy::usize_ty(span)),
+        "isize" => Some(rustc_gen::HirTy::signed_ty(IntTy::Isize, span)),
+        _ => None,
+    }
+}
+
+pub(crate) fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> FnDef {
     if let Some(found) = find_dep_fn(deps, path) {
         if std::env::var("CO2_DEBUG_DEP").is_ok() {
             eprintln!("dep_fn resolved: {path}");
@@ -204,7 +215,7 @@ pub(crate) fn dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen:
     panic!("missing dependency function: {path}");
 }
 
-pub(crate) fn dep_fn_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> rustc_gen::FnDef {
+pub(crate) fn dep_fn_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> FnDef {
     for path in paths {
         if let Some(found) = find_dep_fn(deps, path) {
             return found;
@@ -248,7 +259,7 @@ pub(crate) fn dep_fn_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> ru
     );
 }
 
-fn find_dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> Option<rustc_gen::FnDef> {
+fn find_dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> Option<FnDef> {
     if let Some(found) = deps
         .functions
         .iter()
@@ -296,7 +307,7 @@ fn find_dep_fn(deps: &rustc_gen::DependencyInfo, path: &str) -> Option<rustc_gen
     None
 }
 
-pub(crate) fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen::AdtDef {
+pub(crate) fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> AdtDef {
     if let Some(found) = deps.types.iter().find(|t| t.path == path).map(|t| t.adt) {
         return found;
     }
@@ -324,7 +335,7 @@ pub(crate) fn dep_adt(deps: &rustc_gen::DependencyInfo, path: &str) -> rustc_gen
     panic!("missing dependency type: {path}");
 }
 
-pub(crate) fn dep_adt_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> rustc_gen::AdtDef {
+pub(crate) fn dep_adt_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> AdtDef {
     for path in paths {
         if let Some(found) = deps.types.iter().find(|t| t.path == *path).map(|t| t.adt) {
             return found;

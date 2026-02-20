@@ -24,7 +24,7 @@ use rustc_session::config::EntryFnType;
 use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::{BytePos, DUMMY_SP, Span as RustcSpan, SyntaxContext};
 
-use crate::hir_structure::{FunctionSignature, StructField};
+use crate::hir_structure::{FunctionAbi, FunctionSignature, StructField};
 pub use crate::hir_ty::{HirTy, HirTyKind};
 use crate::{
     CrateGeneratorState, DependencyCrate, DependencyFunction, DependencyInfo, DependencyType,
@@ -164,12 +164,13 @@ impl ItemSignatureInfo {
                     name: _,
                     id,
                     sig,
+                    no_mangle,
                     span,
                 } => result.push(ItemSignatureInfo {
                     id: id.0,
                     kind: ItemSignatureKind::Function {
                         sig: sig.clone(),
-                        no_mangle: false,
+                        no_mangle: *no_mangle,
                     },
                     span: *span,
                 }),
@@ -513,10 +514,13 @@ impl DefinedCrateInfo {
         let mut the_foreign_def = None;
         for hir_item in &hir_structure.root.items {
             match hir_item.clone() {
-                crate::hir_structure::HirModuleItem::Function { name, id, .. } => {
+                crate::hir_structure::HirModuleItem::Function { name, id, sig, .. } => {
                     items.push(DefinedItemInfo {
                         name,
-                        kind: DefinedItemKind::Function(id),
+                        kind: DefinedItemKind::Function {
+                            fn_def: id,
+                            abi: sig.abi,
+                        },
                     });
                 }
                 crate::HirModuleItem::Adt {
@@ -707,7 +711,16 @@ impl DefinedCrateState {
             | DefinedCrateState::Stage2(defined_crate_info, _, _, _) => defined_crate_info
                 .items
                 .iter()
-                .find(|item| item.name == "main")
+                .find(|item| {
+                    item.name == "main"
+                        && matches!(
+                            item.kind,
+                            DefinedItemKind::Function {
+                                abi: FunctionAbi::Rust,
+                                ..
+                            }
+                        )
+                })
                 .map(|item| item.def_id()),
         };
 
@@ -736,7 +749,7 @@ impl DefinedCrateState {
             .kind;
         match kind {
             DefinedItemKind::ForeignMod(_) => DefKind::ForeignMod,
-            DefinedItemKind::Function(_) => DefKind::Fn,
+            DefinedItemKind::Function { .. } => DefKind::Fn,
             DefinedItemKind::ForeignFunction(_) => DefKind::Fn,
             DefinedItemKind::Struct(_) => DefKind::Struct,
             DefinedItemKind::Field(_) => DefKind::Field,
@@ -816,7 +829,7 @@ pub struct DefinedItemInfo {
 impl DefinedItemInfo {
     pub fn def_id(&self) -> rustc_public::DefId {
         match self.kind {
-            DefinedItemKind::Function(fn_def) | DefinedItemKind::ForeignFunction(fn_def) => {
+            DefinedItemKind::Function { fn_def, .. } | DefinedItemKind::ForeignFunction(fn_def) => {
                 fn_def.0
             }
             DefinedItemKind::Struct(adt_def) => adt_def.0,
@@ -829,7 +842,7 @@ impl DefinedItemInfo {
 #[derive(Debug, Clone, Copy)]
 pub enum DefinedItemKind {
     ForeignMod(DefId),
-    Function(FnDef),
+    Function { fn_def: FnDef, abi: FunctionAbi },
     ForeignFunction(FnDef),
     Struct(AdtDef),
     Field(DefId),
@@ -1062,7 +1075,6 @@ impl<S: CrateGeneratorState> rustc_driver::Callbacks for GenerateCallbacks<S> {
         config.override_queries = Some(override_queries::<S>);
 
         if let Some(gate) = GENERATE_STATE.get() {
-            dbg!("locked");
             let mut guard = gate.state.lock().unwrap();
             if std::env::var("GEN_DEBUG").is_ok() {
                 eprintln!("callbacks.config: storing callback");
@@ -1239,7 +1251,6 @@ fn override_providers<S: CrateGeneratorState>(
     providers: &mut QueryProviders,
     gate: Arc<GenerateGate>,
 ) {
-    dbg!("locked");
     let mut guard = gate.state.lock().unwrap();
     if guard.original.is_none() {
         guard.original = Some(OriginalProviders {

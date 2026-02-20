@@ -19,6 +19,7 @@ pub enum HirModuleItem {
         name: String,
         id: FnDef,
         sig: FunctionSignature,
+        no_mangle: bool,
         span: Span,
     },
     Adt {

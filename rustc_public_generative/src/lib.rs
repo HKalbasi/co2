@@ -109,6 +109,10 @@ pub fn generate<S: CrateGeneratorState>() {
     internal::generate::<S>();
 }
 
+pub fn generate_with_args<S: CrateGeneratorState>(args: Vec<String>) {
+    internal::generate_with_args::<S>(args);
+}
+
 pub enum DefData {
     ForeignMod,
     ValueNs(String),

@@ -10,12 +10,12 @@ mod detect;
 use co2_driver_lib::{CompileMode, compile_co2_file};
 use detect::{DetectResult, detect_co2};
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
     let co2_file = match detect_co2(&args) {
         DetectResult::Continue(exit_code) => {
-            std::process::exit(exit_code);
+            return exit_code;
         }
         DetectResult::Co2(file) => file,
     };
@@ -30,6 +30,8 @@ fn main() {
         } else {
             eprintln!("co2 panic: non-string payload");
         }
-        std::process::exit(101);
+        return std::process::ExitCode::from(101);
     }
+
+    std::process::ExitCode::SUCCESS
 }
