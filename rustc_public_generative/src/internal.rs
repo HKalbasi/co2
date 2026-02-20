@@ -1037,9 +1037,7 @@ pub fn allocate_def_id<'tcx>(
 }
 
 fn rustc_def_to_my_def<'tcx>(_tcx: TyCtxt<'tcx>, def_id: RustcDefId) -> DefId {
-    rustc_public::compiler_interface::with(|cx| unsafe {
-        (*cx.tables.as_ptr()).def_ids.create_or_fetch(def_id)
-    })
+    rustc_public::rustc_internal::stable(def_id)
 }
 
 impl<S: CrateGeneratorState> GenerateCallbacks<S> {

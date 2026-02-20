@@ -1,7 +1,5 @@
 #![feature(rustc_private)]
 
-use std::sync::OnceLock;
-
 // use rustc_public_generative::{self as rustc_gen, DefinedCrateInfo, FileId};
 use rustc_public_generative::{
     CrateGeneratorState, DependencyInfo, FileId, ForeignModItem, FunctionAbi, FunctionSignature,
