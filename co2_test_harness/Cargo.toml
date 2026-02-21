@@ -7,3 +7,4 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 shlex = "1"
+tempfile = "3.25.0"

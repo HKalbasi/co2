@@ -3,10 +3,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
+use tempfile::{Builder as TempDirBuilder, TempDir};
 
 #[derive(Parser, Debug)]
 #[command(name = "co2_test_harness")]
@@ -83,36 +83,6 @@ struct CompileResult {
     output: Output,
     exe_path: PathBuf,
     _temp: TempDir,
-}
-
-struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    fn new_in(base: &Path, prefix: &str) -> Result<Self> {
-        fs::create_dir_all(base)
-            .with_context(|| format!("failed to create temp base {}", base.display()))?;
-        let pid = std::process::id();
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("clock before UNIX_EPOCH")?
-            .as_nanos();
-        let path = base.join(format!("{prefix}{pid}-{nanos}"));
-        fs::create_dir_all(&path)
-            .with_context(|| format!("failed to create temp dir {}", path.display()))?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
 
 enum TestOutcome {
@@ -219,7 +189,10 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
 }
 
 fn compile_test(root: &Path, suite: Suite, mode: Mode, test: &TestCase) -> Result<CompileResult> {
-    let temp = TempDir::new_in(&root.join("target"), "co2-ct-")?;
+    let temp = TempDirBuilder::new()
+        .prefix("co2-ct-")
+        .tempdir()
+        .context("failed to create temp dir for test artifacts")?;
     let temp_path = temp.path();
 
     let name = test
