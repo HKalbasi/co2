@@ -1,6 +1,6 @@
 #![feature(rustc_private)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -11,12 +11,12 @@ use co2_parser::{
     StructOrUnionSpecifier, TypeQueryResult, TypeResolver, TypeSpecifier, UnaryOp as ParsedUnaryOp,
 };
 use rustc_public_generative::rustc_public::{
-    CrateItem, DefId,
+    CrateDefType, CrateItem, DefId,
     mir::{
         BasicBlock, Body, CastKind, ConstOperand, LocalDecl, Mutability, Operand, Rvalue,
         Statement, StatementKind, Terminator, TerminatorKind,
     },
-    ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, MirConst, RigidTy, Ty, UintTy},
+    ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, MirConst, RigidTy, Ty, TyKind, UintTy},
 };
 use rustc_public_generative::{self as rustc_gen, FunctionSignature};
 
@@ -52,7 +52,7 @@ struct PendingStatic {
     name: String,
     def: DefId,
     ty: rustc_gen::HirTy,
-    init_value: i64,
+    init_value: Option<i64>,
 }
 
 struct Co2GeneratorState {
@@ -405,30 +405,6 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                             declarator,
                             initializer,
                         } = init.0;
-                        if let Some((initializer, _)) = &initializer
-                            && let Initializer::Expr((expr, _)) = initializer
-                            && !declarator_is_function(&declarator.0)
-                            && let Ok((name, hir_ty)) = lower_value_decl_type(
-                                &ctx,
-                                cleaned_specs.clone(),
-                                declarator.clone(),
-                                &typedefs,
-                                &typedef_hir_tys,
-                            )
-                            && let Ok(init_value) = eval_enum_const_expr(expr, &enum_values)
-                        {
-                            let static_def_id = ctx.allocate_def_id(
-                                root_crate,
-                                rustc_gen::DefData::ValueNs(name.clone()),
-                            );
-                            pending_statics.push(PendingStatic {
-                                name,
-                                def: static_def_id,
-                                ty: hir_ty,
-                                init_value,
-                            });
-                            continue;
-                        }
 
                         if is_typedef {
                             if let Ok((name, ty)) = lower_value_decl_type(
@@ -466,6 +442,43 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                                     });
                                 }
                             }
+                            continue;
+                        }
+
+                        if !declarator_is_function(&declarator.0)
+                            && let Ok((name, hir_ty)) = lower_value_decl_type(
+                                &ctx,
+                                cleaned_specs.clone(),
+                                declarator.clone(),
+                                &typedefs,
+                                &typedef_hir_tys,
+                            )
+                        {
+                            let static_def_id = ctx.allocate_def_id(
+                                root_crate,
+                                rustc_gen::DefData::ValueNs(name.clone()),
+                            );
+                            if let Some((initializer, _)) = &initializer {
+                                if let Initializer::Expr((expr, _)) = initializer
+                                    && let Ok(init_value) = eval_enum_const_expr(expr, &enum_values)
+                                {
+                                    pending_statics.push(PendingStatic {
+                                        name,
+                                        def: static_def_id,
+                                        ty: hir_ty,
+                                        init_value: Some(init_value),
+                                    });
+                                    continue;
+                                }
+                                // Non-const initializer: leave it for prelude lowering.
+                                continue;
+                            }
+                            pending_statics.push(PendingStatic {
+                                name,
+                                def: static_def_id,
+                                ty: hir_ty,
+                                init_value: None,
+                            });
                             continue;
                         }
 
@@ -606,6 +619,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
     fn emit_mir(&mut self, ctx: rustc_gen::HirStructureCtx, def: DefId) -> Body {
         if let Some(pending_static) = self.pending_statics.iter().find(|s| s.def == def) {
             return build_static_initializer_body(
+                &self.deps,
                 CrateItem(pending_static.def).ty(),
                 pending_static.init_value,
                 ctx.span_in_file(self.file_id, 0, 0),
@@ -1133,65 +1147,170 @@ fn decl_all_declarators_in_set(decl: &Declaration, names: &HashSet<String>) -> b
     })
 }
 
+fn dep_fn_any(deps: &rustc_gen::DependencyInfo, paths: &[&str]) -> FnDef {
+    for path in paths {
+        if let Some(found) = find_dep_fn(deps, path) {
+            return found;
+        }
+    }
+    panic!("missing dependency function (any of): {}", paths.join(", "));
+}
+
+fn fn_const_operand(
+    fn_def: FnDef,
+    generic_args: Vec<GenericArgKind>,
+    span: rustc_public_generative::rustc_public::ty::Span,
+) -> Operand {
+    let fn_ty = Ty::from_rigid_kind(RigidTy::FnDef(fn_def, GenericArgs(generic_args)));
+    let c = MirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
+    Operand::Constant(ConstOperand {
+        span,
+        user_ty: None,
+        const_: c,
+    })
+}
+
+fn infer_fn_generic_args_for_return(
+    sig: &rustc_public_generative::rustc_public::ty::FnSig,
+    ret_ty: Ty,
+) -> Vec<GenericArgKind> {
+    let mut by_index: BTreeMap<u32, Ty> = BTreeMap::new();
+    collect_param_bindings(sig.output(), ret_ty, &mut by_index);
+    by_index
+        .into_values()
+        .map(GenericArgKind::Type)
+        .collect::<Vec<_>>()
+}
+
+fn collect_param_bindings(expected: Ty, actual: Ty, out: &mut BTreeMap<u32, Ty>) {
+    match (expected.kind(), actual.kind()) {
+        (TyKind::Param(param), _) => {
+            out.entry(param.index).or_insert(actual);
+        }
+        (TyKind::RigidTy(RigidTy::Ref(_, expected_inner, _)), _) => {
+            collect_param_bindings(expected_inner, actual, out);
+        }
+        (
+            TyKind::RigidTy(RigidTy::Adt(expected_adt, expected_args)),
+            TyKind::RigidTy(RigidTy::Adt(actual_adt, actual_args)),
+        ) if expected_adt == actual_adt && expected_args.0.len() == actual_args.0.len() => {
+            for (e, a) in expected_args.0.iter().zip(actual_args.0.iter()) {
+                if let (GenericArgKind::Type(et), GenericArgKind::Type(at)) = (e, a) {
+                    collect_param_bindings(*et, *at, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn build_static_initializer_body(
+    deps: &rustc_gen::DependencyInfo,
     ty: Ty,
-    init_value: i64,
+    init_value: Option<i64>,
     span: rustc_public_generative::rustc_public::ty::Span,
 ) -> Body {
-    let locals = vec![
-        LocalDecl {
-            ty,
-            span,
-            mutability: Mutability::Mut,
-        },
-        LocalDecl {
-            ty: Ty::unsigned_ty(UintTy::U64),
-            span,
-            mutability: Mutability::Mut,
-        },
-    ];
-    let const_u64 = MirConst::try_from_uint(init_value as u128, UintTy::U64)
-        .expect("failed to build static initializer const");
-    let mut statements = vec![Statement {
-        kind: StatementKind::Assign(
-            rustc_public_generative::rustc_public::mir::Place {
-                local: 1,
-                projection: vec![],
-            },
-            Rvalue::Use(Operand::Constant(ConstOperand {
+    if let Some(init_value) = init_value {
+        let locals = vec![
+            LocalDecl {
+                ty,
                 span,
-                user_ty: None,
-                const_: const_u64,
-            })),
-        ),
-        span,
-    }];
-    statements.push(Statement {
-        kind: StatementKind::Assign(
-            rustc_public_generative::rustc_public::mir::Place {
-                local: 0,
-                projection: vec![],
+                mutability: Mutability::Mut,
             },
-            Rvalue::Cast(
-                CastKind::IntToInt,
-                Operand::Copy(rustc_public_generative::rustc_public::mir::Place {
+            LocalDecl {
+                ty: Ty::unsigned_ty(UintTy::U64),
+                span,
+                mutability: Mutability::Mut,
+            },
+        ];
+        let const_u64 = MirConst::try_from_uint(init_value as u128, UintTy::U64)
+            .expect("failed to build static initializer const");
+        let mut statements = vec![Statement {
+            kind: StatementKind::Assign(
+                rustc_public_generative::rustc_public::mir::Place {
                     local: 1,
                     projection: vec![],
-                }),
-                ty,
+                },
+                Rvalue::Use(Operand::Constant(ConstOperand {
+                    span,
+                    user_ty: None,
+                    const_: const_u64,
+                })),
             ),
-        ),
-        span,
-    });
+            span,
+        }];
+        statements.push(Statement {
+            kind: StatementKind::Assign(
+                rustc_public_generative::rustc_public::mir::Place {
+                    local: 0,
+                    projection: vec![],
+                },
+                Rvalue::Cast(
+                    CastKind::IntToInt,
+                    Operand::Copy(rustc_public_generative::rustc_public::mir::Place {
+                        local: 1,
+                        projection: vec![],
+                    }),
+                    ty,
+                ),
+            ),
+            span,
+        });
 
-    Body::new(
-        vec![BasicBlock {
-            statements,
-            terminator: Terminator {
-                kind: TerminatorKind::Return,
-                span,
+        return Body::new(
+            vec![BasicBlock {
+                statements,
+                terminator: Terminator {
+                    kind: TerminatorKind::Return,
+                    span,
+                },
+            }],
+            locals,
+            0,
+            vec![],
+            None,
+            span,
+        );
+    }
+
+    let zeroed_fn = dep_fn_any(deps, &["std::mem::zeroed", "core::mem::zeroed"]);
+    let sig = zeroed_fn
+        .ty()
+        .kind()
+        .fn_sig()
+        .expect("std::mem::zeroed has no signature")
+        .skip_binder();
+    let generic_args = infer_fn_generic_args_for_return(&sig, ty);
+    let locals = vec![LocalDecl {
+        ty,
+        span,
+        mutability: Mutability::Mut,
+    }];
+    let call_block = BasicBlock {
+        statements: vec![],
+        terminator: Terminator {
+            kind: TerminatorKind::Call {
+                func: fn_const_operand(zeroed_fn, generic_args, span),
+                args: vec![],
+                destination: rustc_public_generative::rustc_public::mir::Place {
+                    local: 0,
+                    projection: vec![],
+                },
+                target: Some(1),
+                unwind: rustc_public_generative::rustc_public::mir::UnwindAction::Continue,
             },
-        }],
+            span,
+        },
+    };
+    let return_block = BasicBlock {
+        statements: vec![],
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            span,
+        },
+    };
+    Body::new(
+        vec![call_block, return_block],
         locals,
         0,
         vec![],
