@@ -39,6 +39,7 @@ pub struct HirCtx<'a, R> {
     named_labels: RefCell<HashMap<String, LabelId>>,
     continue_labels: RefCell<Vec<LabelId>>,
     break_labels: RefCell<Vec<LabelId>>,
+    pub(crate) ret_ty: Ty,
 }
 
 impl<'a, R> HirCtx<'a, R> {
@@ -47,6 +48,7 @@ impl<'a, R> HirCtx<'a, R> {
         resolve_value: fn(&R, &str) -> Option<ResolvedValue>,
         resolve_type: fn(&R, &str) -> Option<Ty>,
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
+        ret_ty: Ty,
     ) -> Self {
         Self {
             resolver,
@@ -57,6 +59,7 @@ impl<'a, R> HirCtx<'a, R> {
             named_labels: RefCell::new(HashMap::new()),
             continue_labels: RefCell::new(Vec::new()),
             break_labels: RefCell::new(Vec::new()),
+            ret_ty,
         }
     }
 

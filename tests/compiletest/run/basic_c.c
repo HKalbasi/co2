@@ -561,9 +561,9 @@ int main17()
 	if (((int)u[0]) - 'A' || ((int)u[1]) - '\n' || ((int)u[2]) - 'B')
 		return 1;
 	if (((int)u[3]) - '\t' || ((int)u[4]) - '\\' || ((int)u[5]) - '\"')
-		return 1;
+		return u[0] + 5;
 	if (u[6])
-		return 1;
+		return u[0];
 
 	return 0;
 }

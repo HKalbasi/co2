@@ -10,6 +10,64 @@ pub(crate) fn is_integer_ty(ty: Ty) -> bool {
     )
 }
 
+fn integer_rank(ty: Ty) -> Option<(u8, bool)> {
+    match ty.kind() {
+        TyKind::RigidTy(RigidTy::Int(int_ty)) => {
+            let rank = match int_ty {
+                IntTy::I8 => 1,
+                IntTy::I16 => 2,
+                IntTy::I32 => 3,
+                IntTy::I64 => 4,
+                IntTy::Isize => 5,
+                IntTy::I128 => 6,
+            };
+            Some((rank, false))
+        }
+        TyKind::RigidTy(RigidTy::Uint(uint_ty)) => {
+            let rank = match uint_ty {
+                UintTy::U8 => 1,
+                UintTy::U16 => 2,
+                UintTy::U32 => 3,
+                UintTy::U64 => 4,
+                UintTy::Usize => 5,
+                UintTy::U128 => 6,
+            };
+            Some((rank, true))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn common_integer_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
+    let (lhs_rank, lhs_unsigned) = integer_rank(lhs)?;
+    let (rhs_rank, rhs_unsigned) = integer_rank(rhs)?;
+
+    let (rank, unsigned) = if lhs_rank == rhs_rank {
+        (lhs_rank, lhs_unsigned || rhs_unsigned)
+    } else if lhs_rank > rhs_rank {
+        (lhs_rank, lhs_unsigned)
+    } else {
+        (rhs_rank, rhs_unsigned)
+    };
+
+    let ty = match (rank, unsigned) {
+        (1, false) => Ty::signed_ty(IntTy::I8),
+        (2, false) => Ty::signed_ty(IntTy::I16),
+        (3, false) => Ty::signed_ty(IntTy::I32),
+        (4, false) => Ty::signed_ty(IntTy::I64),
+        (5, false) => Ty::signed_ty(IntTy::Isize),
+        (6, false) => Ty::signed_ty(IntTy::I128),
+        (1, true) => Ty::unsigned_ty(UintTy::U8),
+        (2, true) => Ty::unsigned_ty(UintTy::U16),
+        (3, true) => Ty::unsigned_ty(UintTy::U32),
+        (4, true) => Ty::unsigned_ty(UintTy::U64),
+        (5, true) => Ty::unsigned_ty(UintTy::Usize),
+        (6, true) => Ty::unsigned_ty(UintTy::U128),
+        _ => return None,
+    };
+    Some(ty)
+}
+
 pub(crate) fn array_elem_ty(ty: Ty) -> Option<Ty> {
     let TyKind::RigidTy(RigidTy::Array(elem, _)) = ty.kind() else {
         return None;
@@ -54,6 +112,33 @@ pub(crate) fn is_maybe_uninit_fn_ptr_ty(ty: Ty) -> Option<Binder<FnSig>> {
 
 pub(crate) fn callable_sig(ty: Ty) -> Option<Binder<FnSig>> {
     ty.kind().fn_sig().or_else(|| is_maybe_uninit_fn_ptr_ty(ty))
+}
+
+pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
+    if dst == src {
+        return false;
+    }
+    let dst_is_mu_fn_ptr = is_maybe_uninit_fn_ptr_ty(dst).is_some();
+    matches!(
+        (dst.kind(), src.kind()),
+        (
+            TyKind::RigidTy(RigidTy::RawPtr(_, _)),
+            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
+        ) | (
+            TyKind::RigidTy(RigidTy::FnPtr(_)),
+            TyKind::RigidTy(RigidTy::FnDef(_, _))
+        ) | (
+            TyKind::RigidTy(RigidTy::FnPtr(_)),
+            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
+        )
+    ) || (dst_is_mu_fn_ptr
+        && matches!(
+            src.kind(),
+            TyKind::RigidTy(
+                RigidTy::Int(_) | RigidTy::Uint(_) | RigidTy::FnDef(_, _) | RigidTy::FnPtr(_)
+            )
+        ))
+        || (is_integer_ty(dst) && is_integer_ty(src))
 }
 
 pub(crate) fn resolve_field_in_adt(base: Ty, field: &str) -> Option<(usize, Ty)> {

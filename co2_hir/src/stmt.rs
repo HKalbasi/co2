@@ -8,7 +8,7 @@ use crate::HirDecl;
 use crate::expr::{HirExpr, HirExprKind};
 use crate::item::{HirLocal, LabelId, LocalId};
 use crate::resolver::HirCtx;
-use crate::ty::is_condition_ty;
+use crate::ty::{is_condition_ty, needs_implicit_cast};
 
 #[derive(Clone, Debug)]
 pub enum HirStmt {
@@ -181,7 +181,14 @@ impl<R> HirCtx<'_, R> {
             }
             Statement::Return(expr) => {
                 if let Some(expr) = expr {
-                    let expr = self.lower_expr((expr.0, expr.1), locals, local_map)?;
+                    let mut expr = self.lower_expr((expr.0, expr.1), locals, local_map)?;
+                    if needs_implicit_cast(self.ret_ty, expr.ty) {
+                        expr = HirExpr {
+                            kind: HirExprKind::Cast(Box::new(expr.clone())),
+                            ty: self.ret_ty,
+                            span: expr.span,
+                        };
+                    }
                     out.push(HirStmt::Return(Some(expr), span));
                 } else {
                     out.push(HirStmt::Return(None, span));

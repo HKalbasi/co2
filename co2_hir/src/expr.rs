@@ -17,32 +17,10 @@ use crate::item::{HirLocal, LocalId};
 use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
-    adt_field_tys, array_elem_ty, callable_sig, is_array_ty, is_condition_ty, is_integer_ty,
-    is_maybe_uninit_fn_ptr_ty, resolve_field_in_adt, ty_matches_expected,
+    adt_field_tys, array_elem_ty, callable_sig, common_integer_ty, is_array_ty, is_condition_ty,
+    is_integer_ty, is_maybe_uninit_fn_ptr_ty, needs_implicit_cast, resolve_field_in_adt,
+    ty_matches_expected,
 };
-
-fn needs_implicit_cast(dst: Ty, src: &HirExpr) -> bool {
-    let dst_is_mu_fn_ptr = is_maybe_uninit_fn_ptr_ty(dst).is_some();
-    matches!(
-        (dst.kind(), src.ty.kind()),
-        (
-            TyKind::RigidTy(RigidTy::RawPtr(_, _)),
-            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
-        ) | (
-            TyKind::RigidTy(RigidTy::FnPtr(_)),
-            TyKind::RigidTy(RigidTy::FnDef(_, _))
-        ) | (
-            TyKind::RigidTy(RigidTy::FnPtr(_)),
-            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
-        )
-    ) || (dst_is_mu_fn_ptr
-        && matches!(
-            src.ty.kind(),
-            TyKind::RigidTy(
-                RigidTy::Int(_) | RigidTy::Uint(_) | RigidTy::FnDef(_, _) | RigidTy::FnPtr(_)
-            )
-        ))
-}
 
 #[derive(Clone, Debug)]
 pub struct HirExpr {
@@ -242,7 +220,7 @@ impl<R> HirCtx<'_, R> {
                 for (idx, (expected, actual)) in
                     sig.inputs().iter().zip(lowered_args.iter_mut()).enumerate()
                 {
-                    if needs_implicit_cast(*expected, actual) {
+                    if needs_implicit_cast(*expected, actual.ty) {
                         *actual = HirExpr {
                             kind: HirExprKind::Cast(Box::new(actual.clone())),
                             ty: *expected,
@@ -346,7 +324,7 @@ impl<R> HirCtx<'_, R> {
                     }
                     let mut rhs = self.lower_expr(*rhs, locals, local_map)?;
                     self.array_to_pointer_decay_if_array(&mut rhs);
-                    if needs_implicit_cast(lhs.ty, &rhs) {
+                    if needs_implicit_cast(lhs.ty, rhs.ty) {
                         rhs = HirExpr {
                             kind: HirExprKind::Cast(Box::new(rhs.clone())),
                             ty: lhs.ty,
@@ -861,6 +839,31 @@ impl<R> HirCtx<'_, R> {
                         });
                     }
                     _ => {}
+                }
+            }
+        }
+
+        if is_integer_ty(lhs.ty) && is_integer_ty(rhs.ty) {
+            if is_assignment {
+                if needs_implicit_cast(lhs.ty, rhs.ty) {
+                    rhs = HirExpr {
+                        kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                        ty: lhs.ty,
+                        span: rhs.span,
+                    };
+                }
+            } else if lhs.ty != rhs.ty {
+                if let Some(common_ty) = common_integer_ty(lhs.ty, rhs.ty) {
+                    lhs = HirExpr {
+                        kind: HirExprKind::Cast(Box::new(lhs.clone())),
+                        ty: common_ty,
+                        span: lhs.span,
+                    };
+                    rhs = HirExpr {
+                        kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                        ty: common_ty,
+                        span: rhs.span,
+                    };
                 }
             }
         }

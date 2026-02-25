@@ -646,6 +646,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             DriverResolver::resolve_value,
             DriverResolver::resolve_type,
             &span_converter,
+            func.def.fn_sig().skip_binder().output(),
         );
         let body_identifiers = func
             .body_tokens
