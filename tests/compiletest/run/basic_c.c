@@ -115,6 +115,9 @@ int main7()
 	if (*(arr + 1) - 2)
 		return 1;
 
+	if (&arr[1] - &arr[0] != 1)
+		return 1;
+
 	*(p + 2) = 5;
 	p[3] = 7;
 

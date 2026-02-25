@@ -160,6 +160,12 @@ fn collect_param_bindings(expected: Ty, actual: Ty, out: &mut BTreeMap<u32, Ty>)
             collect_param_bindings(expected_inner, actual, out);
         }
         (
+            TyKind::RigidTy(RigidTy::RawPtr(expected_inner, _)),
+            TyKind::RigidTy(RigidTy::RawPtr(actual_inner, _)),
+        ) => {
+            collect_param_bindings(expected_inner, actual_inner, out);
+        }
+        (
             TyKind::RigidTy(RigidTy::Adt(expected_adt, expected_args)),
             TyKind::RigidTy(RigidTy::Adt(actual_adt, actual_args)),
         ) if expected_adt == actual_adt && expected_args.0.len() == actual_args.0.len() => {

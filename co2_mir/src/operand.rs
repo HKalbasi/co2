@@ -15,6 +15,34 @@ use crate::{
     place::place,
 };
 
+fn find_ptr_offset_from_fn(deps: &rustc_public_generative::DependencyInfo) -> Option<rustc_public_generative::rustc_public::ty::FnDef> {
+    let exact = [
+        "core::ptr::mut_ptr::offset_from",
+        "core::ptr::const_ptr::offset_from",
+        "std::ptr::mut_ptr::offset_from",
+        "std::ptr::const_ptr::offset_from",
+    ];
+    for wanted in exact {
+        if let Some(found) = deps
+            .functions
+            .iter()
+            .find(|f| f.fn_def.is_some() && f.path.contains(wanted))
+            .and_then(|f| f.fn_def)
+        {
+            return Some(found);
+        }
+    }
+
+    deps.functions
+        .iter()
+        .find(|f| {
+            f.fn_def.is_some()
+                && f.path.ends_with("::offset_from")
+                && (f.path.contains("::ptr::mut_ptr::") || f.path.contains("::ptr::const_ptr::"))
+        })
+        .and_then(|f| f.fn_def)
+}
+
 fn maybe_uninit_fn_ptr_inner(ty: Ty) -> Option<Ty> {
     let TyKind::RigidTy(RigidTy::Adt(_, args)) = ty.kind() else {
         return None;
@@ -246,18 +274,51 @@ impl Builder<'_> {
             HirExprKind::PtrDiff { lhs, rhs } => {
                 let lhs_op = self.lower_expr_to_operand(lhs);
                 let rhs_op = self.lower_expr_to_operand(rhs);
-                let ret_local = self.new_temp(expr.ty, Mutability::Mut, expr.span);
+                let TyKind::RigidTy(RigidTy::RawPtr(pointee_ty, _)) = lhs.ty.kind() else {
+                    panic!("ptr diff lhs must be raw pointer, got {:?}", lhs.ty);
+                };
+                let isize_ty = Ty::signed_ty(IntTy::Isize);
+                let ret_local = self.new_temp(isize_ty, Mutability::Mut, expr.span);
+                let offset_from = find_ptr_offset_from_fn(self.deps)
+                    .expect("missing pointer offset_from dependency function");
+                let const_ptr_ty = Ty::new_ptr(pointee_ty, Mutability::Not);
+                let lhs_cast = self.new_temp(const_ptr_ty, Mutability::Mut, expr.span);
                 self.stmts.push(MirStatement {
                     kind: MirStatementKind::Assign(
-                        place(ret_local),
-                        Rvalue::BinaryOp(
-                            rustc_public_generative::rustc_public::mir::BinOp::Sub,
-                            lhs_op,
-                            rhs_op,
-                        ),
+                        place(lhs_cast),
+                        Rvalue::Cast(CastKind::PtrToPtr, lhs_op, const_ptr_ty),
                     ),
                     span: expr.span,
                 });
+                let rhs_cast = self.new_temp(const_ptr_ty, Mutability::Mut, expr.span);
+                self.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(rhs_cast),
+                        Rvalue::Cast(CastKind::PtrToPtr, rhs_op, const_ptr_ty),
+                    ),
+                    span: expr.span,
+                });
+                let generic_args = match offset_from.ty().kind() {
+                    TyKind::RigidTy(RigidTy::FnDef(_, existing)) if !existing.0.is_empty() => {
+                        existing
+                            .0
+                            .iter()
+                            .map(|arg| match arg {
+                                GenericArgKind::Type(ty) if matches!(ty.kind(), TyKind::Param(_)) => {
+                                    GenericArgKind::Type(pointee_ty)
+                                }
+                                _ => arg.clone(),
+                            })
+                            .collect()
+                    }
+                    _ => vec![GenericArgKind::Type(pointee_ty)],
+                };
+                self.emit_call_block(
+                    fn_const_operand(offset_from, generic_args, expr.span),
+                    vec![MirOperand::Copy(place(lhs_cast)), MirOperand::Copy(place(rhs_cast))],
+                    place(ret_local),
+                    expr.span,
+                );
                 MirOperand::Copy(place(ret_local))
             }
             HirExprKind::Binary { op, lhs, rhs } => {
