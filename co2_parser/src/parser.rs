@@ -1123,15 +1123,26 @@ impl StructOrUnionSpecifier {
         };
 
         let mut entries = Vec::new();
+        let mut anon_idx = 0usize;
         for (field, _) in fields {
             let base = canonical_base_type_key(&field.specifiers)?;
+            if field.declarators.is_empty() {
+                entries.push(format!("$anon{anon_idx}:{base}"));
+                anon_idx += 1;
+                continue;
+            }
             for (decl, _) in &field.declarators {
                 if decl.bits.is_some() {
                     return None;
                 }
                 let (name, suffix) = canonical_decl_key(&decl.declarator.0)?;
-                let name = name?;
-                entries.push(format!("{name}:{base}{suffix}"));
+                match name {
+                    Some(name) => entries.push(format!("{name}:{base}{suffix}")),
+                    None => {
+                        entries.push(format!("$anon{anon_idx}:{base}{suffix}"));
+                        anon_idx += 1;
+                    }
+                }
             }
         }
         entries.sort();

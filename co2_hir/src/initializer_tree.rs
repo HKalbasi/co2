@@ -14,7 +14,7 @@ use crate::{
     stmt::HirStmt,
     ty::{
         adt_field_tys, array_elem_ty, is_array_ty, is_integer_ty, is_maybe_uninit_fn_ptr_ty,
-        resolve_field_in_adt, ty_matches_expected,
+        resolve_field_path_in_adt, ty_matches_expected,
     },
 };
 
@@ -68,14 +68,23 @@ impl InitializerCursor {
                     current_ty = elem_ty;
                 }
                 Designator::Field(name) => {
-                    let (index, field_ty) = resolve_field_in_adt(current_ty, name.0.as_str())
+                    let (path, field_ty) = resolve_field_path_in_adt(current_ty, name.0.as_str())
                         .ok_or_else(|| {
                             format!(
                                 "field designator `{}` used on non-struct type: {:?}",
                                 name.0, current_ty
                             )
                         })?;
-                    cursor.stack.push((index, field_ty));
+                    let mut cursor_ty = current_ty;
+                    for index in path {
+                        let fields = adt_field_tys(cursor_ty)
+                            .ok_or_else(|| format!("designator on non-adt type: {:?}", cursor_ty))?;
+                        let next_ty = *fields.get(index).ok_or_else(|| {
+                            format!("designator field index out of bounds: {} for {:?}", index, cursor_ty)
+                        })?;
+                        cursor.stack.push((index, next_ty));
+                        cursor_ty = next_ty;
+                    }
                     current_ty = field_ty;
                 }
             }

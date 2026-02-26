@@ -80,6 +80,35 @@ pub fn lower_value_decl_type(
     }
 }
 
+pub fn lower_field_decl_type(
+    ctx: &HirStructureCtx,
+    declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
+    declarator: Spanned<Declarator>,
+    typedefs: &std::collections::HashMap<String, DefId>,
+    typedef_hir_tys: &std::collections::HashMap<String, HirTy>,
+) -> Result<HirTy, String> {
+    let base = base_ty_of_decl(
+        ctx,
+        declaration_specifiers,
+        declarator.1,
+        typedefs,
+        typedef_hir_tys,
+    )?;
+    let (decl_ty, _) = extract_decl_type(
+        ctx,
+        TyOrFunction::Ty(base),
+        declarator,
+        typedefs,
+        typedef_hir_tys,
+    )?;
+    match decl_ty {
+        TyOrFunction::Ty(ty) => Ok(ty),
+        TyOrFunction::Function(_) => {
+            Err("function type is not valid in struct/union field position".to_owned())
+        }
+    }
+}
+
 fn base_ty_of_decl(
     ctx: &HirStructureCtx,
     specifiers: Vec<Spanned<DeclarationSpecifier>>,

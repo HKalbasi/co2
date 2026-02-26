@@ -3,6 +3,8 @@ use rustc_public_generative::rustc_public::ty::{
     Binder, FnSig, GenericArgKind, IntTy, RigidTy, Ty, TyKind, UintTy, VariantIdx,
 };
 
+const ANON_FIELD_PREFIX: &str = "__anon_field_";
+
 pub(crate) fn is_integer_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
@@ -144,15 +146,28 @@ pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
         || (is_integer_ty(dst) && is_integer_ty(src))
 }
 
-pub(crate) fn resolve_field_in_adt(base: Ty, field: &str) -> Option<(usize, Ty)> {
+pub(crate) fn resolve_field_path_in_adt(base: Ty, field: &str) -> Option<(Vec<usize>, Ty)> {
     let TyKind::RigidTy(RigidTy::Adt(adt, args)) = base.kind() else {
         return None;
     };
     let variant = adt.variant(variant_idx(0))?;
     let fields = variant.fields();
     for (idx, field_def) in fields.iter().enumerate() {
-        if field_def.name.to_string() == field {
-            return Some((idx, field_def.ty_with_args(&args)));
+        let name = field_def.name.to_string();
+        if name == field {
+            return Some((vec![idx], field_def.ty_with_args(&args)));
+        }
+    }
+    for (idx, field_def) in fields.iter().enumerate() {
+        let name = field_def.name.to_string();
+        if !name.starts_with(ANON_FIELD_PREFIX) {
+            continue;
+        }
+        let nested_ty = field_def.ty_with_args(&args);
+        if let Some((mut sub_path, nested_field_ty)) = resolve_field_path_in_adt(nested_ty, field)
+        {
+            sub_path.insert(0, idx);
+            return Some((sub_path, nested_field_ty));
         }
     }
     None

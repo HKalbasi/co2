@@ -18,7 +18,7 @@ use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
     adt_field_tys, array_elem_ty, callable_sig, common_integer_ty, is_array_ty, is_condition_ty,
-    is_integer_ty, is_maybe_uninit_fn_ptr_ty, needs_implicit_cast, resolve_field_in_adt,
+    is_integer_ty, is_maybe_uninit_fn_ptr_ty, needs_implicit_cast, resolve_field_path_in_adt,
     ty_matches_expected,
 };
 
@@ -246,16 +246,9 @@ impl<R> HirCtx<'_, R> {
             }
             Expression::Field(base, field) => {
                 let base = self.lower_expr(*base, locals, local_map)?;
-                let (index, field_ty) = resolve_field_in_adt(base.ty, &field.0)
-                    .ok_or_else(|| format!("unknown field `{}`", field.0))?;
-                Ok(HirExpr {
-                    kind: HirExprKind::Field {
-                        base: Box::new(base),
-                        index,
-                    },
-                    ty: field_ty,
-                    span,
-                })
+                let (path, field_ty) = resolve_field_path_in_adt(base.ty, &field.0)
+                    .ok_or_else(|| format!("unknown field `{}` on type {:?}", field.0, base.ty))?;
+                self.project_field_path(base, &path, field_ty, span)
             }
             Expression::Arrow(base, field) => {
                 let mut base = self.lower_expr(*base, locals, local_map)?;
@@ -271,16 +264,11 @@ impl<R> HirCtx<'_, R> {
                     ty: pointee,
                     span,
                 };
-                let (index, field_ty) = resolve_field_in_adt(deref_base.ty, &field.0)
-                    .ok_or_else(|| format!("unknown field `{}`", field.0))?;
-                Ok(HirExpr {
-                    kind: HirExprKind::Field {
-                        base: Box::new(deref_base),
-                        index,
-                    },
-                    ty: field_ty,
-                    span,
-                })
+                let (path, field_ty) = resolve_field_path_in_adt(deref_base.ty, &field.0)
+                    .ok_or_else(|| {
+                        format!("unknown field `{}` on type {:?}", field.0, deref_base.ty)
+                    })?;
+                self.project_field_path(deref_base, &path, field_ty, span)
             }
             Expression::Subscript(base, index) => {
                 let mut base = self.lower_expr(*base, locals, local_map)?;
@@ -753,6 +741,38 @@ impl<R> HirCtx<'_, R> {
                 }
             }
         }
+    }
+
+    fn project_field_path(
+        &self,
+        mut base: HirExpr,
+        path: &[usize],
+        field_ty: Ty,
+        span: RustSpan,
+    ) -> Result<HirExpr, String> {
+        for index in path {
+            let Some(field_tys) = adt_field_tys(base.ty) else {
+                return Err(format!("field projection on non-adt type: {:?}", base.ty));
+            };
+            let Some(next_ty) = field_tys.get(*index).copied() else {
+                return Err(format!("field index out of bounds: {} for {:?}", index, base.ty));
+            };
+            base = HirExpr {
+                kind: HirExprKind::Field {
+                    base: Box::new(base),
+                    index: *index,
+                },
+                ty: next_ty,
+                span,
+            };
+        }
+        if base.ty != field_ty {
+            return Err(format!(
+                "resolved field type mismatch: projected {:?}, expected {:?}",
+                base.ty, field_ty
+            ));
+        }
+        Ok(base)
     }
 }
 

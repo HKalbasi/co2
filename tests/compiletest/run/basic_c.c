@@ -705,6 +705,14 @@ int count() {
 	return counter;
 }
 
+struct s_nested {
+	int x;
+	struct {
+		int y;
+		int z;
+	} nest;
+};
+
 int main23()
 {
 	count();
@@ -714,12 +722,61 @@ int main23()
 	return count() - uninit;
 }
 
+int main24()
+{
+	struct s_nested v;
+
+	v.x = 1;
+	v.nest.y = 2;
+	v.nest.z = 3;
+	if (v.x - 1)
+		return 1;
+	if (v.nest.y - 2)
+		return 1;
+	if (v.nest.z - 3)
+		return 1;
+	return 0;
+}
+
+typedef struct {
+	int a;
+	union {
+		int b1;
+		int b2;
+	};
+	struct { union { struct { int c; }; }; };
+	struct {
+		int d;
+	};
+} s2;
+
+int main25()
+{
+	s2 v;
+
+	v.a = 1;
+	v.b1 = 2;
+	v.c = 3;
+	v.d = 4;
+
+	if (v.a != 1)
+		return 1;
+	if (v.b1 != 2 && v.b2 != 2)
+		return 2;
+	if (v.c != 3)
+		return 3;
+	if (v.d != 4)
+		return 4;
+
+	return 0;
+}
+
 int main() {
 	if (main1() || main2() || main3() || main4() || main5()
 		|| main6() || main7() || main8() || main9() || main10()
 		|| main11() || main12() || main13() || main14() || main15()
 		|| main16() || main17() || main18() || main19() || main20()
-		|| main21() || main22() || main23()) {
+		|| main21() || main22() || main23() || main24() || main25()) {
 		return 6;
 	}
 	return 0;

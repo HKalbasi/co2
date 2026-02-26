@@ -26,7 +26,7 @@ mod types;
 
 pub use types::CompileMode;
 
-use crate::hir_ty::{lower_function_signature, lower_value_decl_type};
+use crate::hir_ty::{lower_field_decl_type, lower_function_signature, lower_value_decl_type};
 use crate::span::FILE_ID;
 
 struct PendingCompile {
@@ -54,6 +54,13 @@ struct PendingStatic {
     ty: rustc_gen::HirTy,
     init_value: Option<i64>,
 }
+
+struct PendingStructDef {
+    key: String,
+    fields: Vec<co2_parser::Spanned<StructOrUnionField>>,
+}
+
+const ANON_FIELD_PREFIX: &str = "__anon_field_";
 
 struct Co2GeneratorState {
     deps: rustc_gen::DependencyInfo,
@@ -205,11 +212,6 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
         let mut enum_values: HashMap<String, i64> = HashMap::new();
         let mut typedef_type_defs: HashMap<String, DefId> = HashMap::new();
 
-        struct PendingStructDef {
-            key: String,
-            fields: Vec<co2_parser::Spanned<StructOrUnionField>>,
-        }
-
         let mut pending_structs_by_key: HashMap<String, PendingStructDef> = HashMap::new();
         let mut typedef_struct_aliases: Vec<(String, String)> = Vec::new();
         let mut struct_tag_aliases: Vec<(String, String)> = Vec::new();
@@ -246,22 +248,11 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                 Some(key) => key,
                 None => continue,
             };
-
-            let fields = match struct_spec {
-                StructOrUnionSpecifier::Defined { ident, fields } => {
-                    struct_tag_aliases.push((ident.0.clone(), key.clone()));
-                    fields
-                }
-                StructOrUnionSpecifier::Anonymous { fields } => fields,
-                StructOrUnionSpecifier::Declared { .. } => continue,
-            };
-
-            pending_structs_by_key
-                .entry(key.clone())
-                .or_insert_with(|| PendingStructDef {
-                    key: key.clone(),
-                    fields: fields.clone(),
-                });
+            collect_struct_specifier(
+                &struct_spec,
+                &mut pending_structs_by_key,
+                &mut struct_tag_aliases,
+            );
 
             if is_typedef {
                 for init in declarators {
@@ -306,11 +297,43 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             let adt = adt_by_name[&pending_struct.key];
             let mut hir_fields = Vec::new();
             let mut skip_struct = false;
+            let mut anon_field_idx = 0usize;
 
             for (field, field_span) in pending_struct.fields {
+                if field.declarators.is_empty() {
+                    let specs = field
+                        .specifiers
+                        .iter()
+                        .cloned()
+                        .map(DeclarationSpecifier::TypeSpecifier)
+                        .map(|spec| (spec, field_span))
+                        .collect::<Vec<_>>();
+                    let Ok(field_ty) = lower_field_decl_type(
+                        &ctx,
+                        specs,
+                        (Declarator::Abstract, field_span),
+                        &typedefs,
+                        &typedef_hir_tys,
+                    ) else {
+                        skip_struct = true;
+                        break;
+                    };
+                    let field_name = format!("{ANON_FIELD_PREFIX}{anon_field_idx}");
+                    anon_field_idx += 1;
+                    let field_def =
+                        ctx.allocate_def_id(adt.0, rustc_gen::DefData::ValueNs(field_name.clone()));
+                    hir_fields.push(rustc_gen::StructField {
+                        id: field_def,
+                        name: field_name,
+                        ty: field_ty,
+                    });
+                    continue;
+                }
                 for (decl, _) in field.declarators {
                     let field_name = struct_declarator_name(&decl).unwrap_or_else(|| {
-                        panic!("anonymous struct field in {}", pending_struct.key)
+                        let name = format!("{ANON_FIELD_PREFIX}{anon_field_idx}");
+                        anon_field_idx += 1;
+                        name
                     });
                     let specs = field
                         .specifiers
@@ -319,7 +342,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                         .map(DeclarationSpecifier::TypeSpecifier)
                         .map(|spec| (spec, field_span))
                         .collect::<Vec<_>>();
-                    let Ok((_, field_ty)) = lower_value_decl_type(
+                    let Ok(field_ty) = lower_field_decl_type(
                         &ctx,
                         specs,
                         decl.declarator.clone(),
@@ -329,7 +352,6 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                         skip_struct = true;
                         break;
                     };
-
                     let field_def =
                         ctx.allocate_def_id(adt.0, rustc_gen::DefData::ValueNs(field_name.clone()));
                     hir_fields.push(rustc_gen::StructField {
@@ -686,6 +708,47 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             self.mode.no_main && func.name == "main",
         )
     }
+}
+
+fn collect_nested_struct_specs_in_fields(
+    fields: &[co2_parser::Spanned<StructOrUnionField>],
+    pending_structs_by_key: &mut HashMap<String, PendingStructDef>,
+    struct_tag_aliases: &mut Vec<(String, String)>,
+) {
+    for (field, _) in fields {
+        for (type_spec, _) in &field.specifiers {
+            let TypeSpecifier::StructOrUnion { specifier, .. } = type_spec else {
+                continue;
+            };
+            collect_struct_specifier(specifier, pending_structs_by_key, struct_tag_aliases);
+        }
+    }
+}
+
+fn collect_struct_specifier(
+    struct_spec: &StructOrUnionSpecifier,
+    pending_structs_by_key: &mut HashMap<String, PendingStructDef>,
+    struct_tag_aliases: &mut Vec<(String, String)>,
+) {
+    let key = match struct_spec.canonical_field_set_key() {
+        Some(key) => key,
+        None => return,
+    };
+    let fields = match struct_spec {
+        StructOrUnionSpecifier::Defined { ident, fields } => {
+            struct_tag_aliases.push((ident.0.clone(), key.clone()));
+            fields
+        }
+        StructOrUnionSpecifier::Anonymous { fields } => fields,
+        StructOrUnionSpecifier::Declared { .. } => return,
+    };
+    pending_structs_by_key
+        .entry(key.clone())
+        .or_insert_with(|| PendingStructDef {
+            key: key.clone(),
+            fields: fields.clone(),
+        });
+    collect_nested_struct_specs_in_fields(fields, pending_structs_by_key, struct_tag_aliases);
 }
 
 fn resolve_candidates(path: &str, uses: &[String]) -> Vec<String> {
