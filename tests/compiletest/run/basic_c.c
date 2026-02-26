@@ -439,11 +439,15 @@ int main14()
 {
 	int x;
 	int *p;
+	void *p_void;
 	int arr[4];
 	struct { int a; char b; } s;
 
-	x = 0;
+	x = 2;
 	p = &x;
+	p_void = p;
+	if(*((int*)p_void) != 2)
+		return 1;
 	if (sizeof x - 4)
 		return 1;
 	if (sizeof(int) - 4)

@@ -125,6 +125,9 @@ pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
             TyKind::RigidTy(RigidTy::RawPtr(_, _)),
             TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
         ) | (
+            TyKind::RigidTy(RigidTy::RawPtr(_, _)),
+            TyKind::RigidTy(RigidTy::RawPtr(_, _))
+        ) | (
             TyKind::RigidTy(RigidTy::FnPtr(_)),
             TyKind::RigidTy(RigidTy::FnDef(_, _))
         ) | (
