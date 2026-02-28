@@ -109,21 +109,20 @@ fn preprocess(input: &Path, cpp_args: &[String]) -> String {
     String::from_utf8(out.stdout).expect("gcc -E produced non-utf8 output")
 }
 
-fn normalize_preprocessed(preprocessed: &str) -> String {
-    let no_markers = strip_line_markers(preprocessed);
-    let no_attrs = strip_gnu_attributes(&no_markers);
-    let no_asm = strip_gnu_asm_annotations(&no_attrs);
-    let no_typeof = replace_gnu_typeof_with_usize(&no_asm);
-    strip_extension_keywords(&no_typeof)
+fn normalize_preprocessed(text: &str) -> String {
+    let text = strip_line_markers(text);
+    let text = strip_gnu_attributes(&text);
+    let text = strip_gnu_asm_annotations(&text);
+    let text = replace_gnu_typeof_with_usize(&text);
+    strip_extension_keywords(&text)
 }
 
 fn strip_line_markers(preprocessed: &str) -> String {
     let mut out = String::new();
     for line in preprocessed.lines() {
-        if is_line_marker(line) {
-            continue;
+        if !is_line_marker(line) {
+            out.push_str(line);
         }
-        out.push_str(line);
         out.push('\n');
     }
     out

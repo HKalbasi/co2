@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use co2_parser::{
-    BinOp as ParsedBinOp, Constant, Declarator, Expression, IntegerSuffix, Spanned,
-    SpecifierQualifier, Statement, StatementOrDeclaration, TypeName, UnaryOp as ParsedUnaryOp,
-    UpdateOp as ParsedUpdateOp,
+    BinOp as ParsedBinOp, Constant, Expression, IntegerSuffix, Spanned, Statement,
+    StatementOrDeclaration, UnaryOp as ParsedUnaryOp, UpdateOp as ParsedUpdateOp,
 };
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
@@ -201,9 +200,11 @@ impl<R> HirCtx<'_, R> {
             }),
             Expression::Call { func, params } => {
                 let func_expr = self.lower_expr((func.0, func.1), locals, local_map)?;
-                let sig = callable_sig(func_expr.ty)
-                    .expect("todo: emit type error here")
-                    .skip_binder();
+                let Some(sig) = callable_sig(func_expr.ty) else {
+                    self.terminate_with_error(parser_span, "Type is not callable");
+                };
+
+                let sig = sig.skip_binder();
 
                 let mut lowered_args = Vec::with_capacity(params.len());
                 for param in params {
@@ -440,7 +441,7 @@ impl<R> HirCtx<'_, R> {
             Expression::Cast { type_name, expr } => {
                 let mut inner = self.lower_expr(*expr, locals, local_map)?;
                 self.array_to_pointer_decay_if_array(&mut inner);
-                let target_ty = self.lower_type_name(*type_name)?;
+                let target_ty = self.lower_type_name(*type_name, parser_span)?;
                 let src_is_int = is_integer_ty(inner.ty);
                 let dst_is_int = is_integer_ty(target_ty);
                 let src_is_ptr_like = matches!(
@@ -476,15 +477,14 @@ impl<R> HirCtx<'_, R> {
                 type_name,
                 initializer,
             } => {
-                let target_ty = self.lower_type_name(*type_name)?;
+                let target_ty = self.lower_type_name(*type_name, parser_span)?;
                 let tree =
-                    self.lower_to_initializer_tree(target_ty, *initializer, locals, local_map)?;
-                let init_expr = initializer_tree_to_expr(&tree, target_ty, span)
-                    .ok_or_else(|| "unsupported compound literal initializer shape".to_owned())?;
+                    self.lower_to_initializer_tree(target_ty, *initializer, locals, local_map);
+                let init_expr = self.initializer_tree_to_expr(&tree, target_ty, parser_span);
                 Ok(init_expr)
             }
             Expression::SizeofType(type_name) => {
-                let ty = self.lower_type_name(*type_name)?;
+                let ty = self.lower_type_name(*type_name, parser_span)?;
                 let size = ty
                     .layout()
                     .map_err(|e| format!("failed to compute layout for sizeof(type): {e}"))?
@@ -528,7 +528,10 @@ impl<R> HirCtx<'_, R> {
                                     span,
                                 });
                             }
-                            return Err("cannot take address of non-place expression".to_owned());
+                            self.terminate_with_error(
+                                parser_span,
+                                "cannot take address of non-place expression",
+                            );
                         }
                         Ok(HirExpr {
                             kind: HirExprKind::AddrOf(Box::new(inner.clone())),
@@ -667,84 +670,6 @@ impl<R> HirCtx<'_, R> {
                     ty: result_ty,
                     span,
                 })
-            }
-        }
-    }
-
-    fn lower_type_name(&self, type_name: TypeName) -> Result<Ty, String> {
-        let mut base = None;
-        for (sq, _) in &type_name.specifier_qualifier_list {
-            let SpecifierQualifier::TypeSpecifier((type_specifier, _)) = sq else {
-                continue;
-            };
-            if let co2_parser::TypeSpecifier::StructOrUnion { kind, specifier } = type_specifier {
-                base = Some(match specifier {
-                    co2_parser::StructOrUnionSpecifier::Declared { ident } => self
-                        .resolve_type(&ident.0)
-                        .ok_or_else(|| format!("unresolved struct/union tag: {}", ident.0))?,
-                    co2_parser::StructOrUnionSpecifier::Defined { .. }
-                    | co2_parser::StructOrUnionSpecifier::Anonymous { .. } => {
-                        let key = specifier.canonical_field_set_key().ok_or_else(|| {
-                            "struct/union type is only supported when declared at top level"
-                                .to_owned()
-                        })?;
-                        let key = format!("{kind:?}::{key}");
-                        self.resolve_type(&key).ok_or_else(|| {
-                            format!(
-                                "anonymous struct/union type is not predeclared at top level: {key}"
-                            )
-                        })?
-                    }
-                });
-                break;
-            }
-            if let Some(ty) = crate::ty::type_specifier_to_ty(type_specifier)? {
-                base = Some(ty);
-                break;
-            }
-            if let co2_parser::TypeSpecifier::TypedefName(path) = type_specifier {
-                let name = path.0.to_pretty();
-                base = Some(
-                    self.resolve_type(&name)
-                        .ok_or_else(|| format!("unresolved typedef path: {name}"))?,
-                );
-                break;
-            }
-        }
-        let base = base.ok_or_else(|| "no suitable type specifier in sizeof(type)".to_owned())?;
-        match type_name.abstract_declarator {
-            None => Ok(base),
-            Some(decl) => self.apply_abstract_declarator(base, decl),
-        }
-    }
-
-    fn apply_abstract_declarator(
-        &self,
-        base: Ty,
-        (decl, _span): Spanned<Declarator>,
-    ) -> Result<Ty, String> {
-        match decl {
-            Declarator::Abstract => Ok(base),
-            Declarator::Identifier(_) => Err("identifier not allowed in sizeof(type)".to_owned()),
-            Declarator::FunctionDeclarator { declarator, .. } => {
-                let ret_ty = self.apply_abstract_declarator(base, *declarator)?;
-                Ok(Ty::new_ptr(ret_ty, Mutability::Mut))
-            }
-            Declarator::PointerDeclarator { declarator, .. } => {
-                let inner = self.apply_abstract_declarator(base, *declarator)?;
-                Ok(Ty::new_ptr(inner, Mutability::Mut))
-            }
-            Declarator::ArrayDeclarator {
-                declarator,
-                subscription,
-            } => {
-                let inner = self.apply_abstract_declarator(base, *declarator)?;
-                if let Some(size) = subscription.0.constant_len() {
-                    Ty::try_new_array(inner, size)
-                        .map_err(|e| format!("failed to build array type for sizeof(type): {e}"))
-                } else {
-                    Ok(Ty::new_ptr(inner, Mutability::Mut))
-                }
             }
         }
     }
@@ -968,31 +893,36 @@ impl<R> HirCtx<'_, R> {
     ) -> Result<HirExpr, String> {
         self.lower_binop_from_lowered(lhs, rhs, op, span, true)
     }
-}
 
-fn initializer_tree_to_expr(tree: &InitializerTree, ty: Ty, span: RustSpan) -> Option<HirExpr> {
-    match tree {
-        InitializerTree::Leaf(expr) => Some(expr.clone()),
-        InitializerTree::Zeroed => Some(HirExpr {
-            kind: HirExprKind::Zeroed,
-            ty,
-            span,
-        }),
-        InitializerTree::Middle { children } => {
-            let field_tys = adt_field_tys(ty)?;
-            if children.len() != field_tys.len() {
-                return None;
-            }
-            let mut args = Vec::with_capacity(children.len());
-            for (child, field_ty) in children.iter().zip(field_tys.into_iter()) {
-                let expr = initializer_tree_to_expr(child, field_ty, span)?;
-                args.push(expr);
-            }
-            Some(HirExpr {
-                kind: HirExprKind::Aggregate { args },
+    pub(crate) fn initializer_tree_to_expr(
+        &self,
+        tree: &InitializerTree,
+        ty: Ty,
+        parser_span: co2_parser::Span,
+    ) -> HirExpr {
+        let span = self.to_rust_span(parser_span);
+        match tree {
+            InitializerTree::Leaf(expr) => expr.clone(),
+            InitializerTree::Zeroed => HirExpr {
+                kind: HirExprKind::Zeroed,
                 ty,
                 span,
-            })
+            },
+            InitializerTree::Middle { children } => {
+                let Some(field_tys) = adt_field_tys(ty) else {
+                    self.terminate_with_error(parser_span, "Can't compute adt fields");
+                };
+                let mut args = Vec::with_capacity(children.len());
+                for (child, field_ty) in children.iter().zip(field_tys.into_iter()) {
+                    let expr = self.initializer_tree_to_expr(child, field_ty, parser_span);
+                    args.push(expr);
+                }
+                HirExpr {
+                    kind: HirExprKind::Aggregate { args },
+                    ty,
+                    span,
+                }
+            }
         }
     }
 }

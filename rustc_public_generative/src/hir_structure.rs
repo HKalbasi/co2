@@ -1,9 +1,10 @@
 use rustc_public::ty::{AdtDef, FnDef, Span};
 
-use crate::{DefId, HirTy};
+use crate::{DefId, HirLifetime, HirTy};
 
 #[derive(Debug, Clone)]
 pub struct HirStructure {
+    pub no_main: bool,
     pub root: HirModule,
 }
 
@@ -54,6 +55,29 @@ pub enum HirModuleItem {
     },
 }
 
+impl HirModuleItem {
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            HirModuleItem::Function { name, .. }
+            | HirModuleItem::Adt { name, .. }
+            | HirModuleItem::TypeDef { name, .. }
+            | HirModuleItem::Static { name, .. } => Some(name),
+            HirModuleItem::Impl { .. } | HirModuleItem::ForeignMod { .. } => None,
+        }
+    }
+
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            HirModuleItem::Function { span, .. }
+            | HirModuleItem::Adt { span, .. }
+            | HirModuleItem::TypeDef { span, .. }
+            | HirModuleItem::Static { span, .. }
+            | HirModuleItem::Impl { span, .. } => Some(*span),
+            HirModuleItem::ForeignMod { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum HirAdtKind {
     Struct { fields: Vec<StructField> },
@@ -65,6 +89,7 @@ pub struct StructField {
     pub id: DefId,
     pub name: String,
     pub ty: HirTy,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -79,8 +104,8 @@ pub struct HirImplItem {
 pub enum HirSelfKind {
     Imm,
     Mut,
-    RefImm(DefId),
-    RefMut(DefId),
+    RefImm(HirLifetime),
+    RefMut(HirLifetime),
     None,
 }
 

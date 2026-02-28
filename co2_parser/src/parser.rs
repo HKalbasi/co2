@@ -30,9 +30,13 @@ where
                 inp.rewind(check_point);
                 Ok(())
             }
-            _ => Err(Rich::custom(
+            Some(t) => Err(Rich::custom(
                 inp.span_since(&before),
-                "failed to look ahead",
+                format!("expected {token}, found {t}"),
+            )),
+            None => Err(Rich::custom(
+                inp.span_since(&before),
+                format!("unexpected eof, expected {token}"),
             )),
         }
     })
@@ -501,7 +505,15 @@ where
                         body
                     }),
                 }),
-            rust_path().map(Expression::Identifier),
+            rust_path()
+                .filter(move |path| {
+                    match resolver.classify_path(&path.0) {
+                            TypeQueryResult::Type => false,
+                            TypeQueryResult::Unsure | TypeQueryResult::Expr => true,
+                        }
+                    }
+                )
+                .map(Expression::Identifier),
             select! {
                 Token::StringLit(s) => s,
             }
@@ -1020,6 +1032,18 @@ impl RustPath {
         }
     }
 
+    pub fn decompose(&self) -> (RustPath, Vec<RustPath>) {
+        let mut base = self.clone();
+        if let Some((RustPathSegment::Generics(_), _)) = base.segments.last() {
+            let Some((RustPathSegment::Generics(last), _)) = base.segments.pop() else {
+                unreachable!();
+            };
+            (base, last.into_iter().map(|x| x.0.clone()).collect())
+        } else {
+            (base, vec![])
+        }
+    }
+
     pub fn to_pretty(&self) -> String {
         self.segments
             .iter()
@@ -1415,6 +1439,7 @@ pub enum StorageClassSpecifier {
     Typedef,
     Extern,
     Static,
+    Atomic,
     ThreadLocal,
     Auto,
     Register,
@@ -1430,6 +1455,7 @@ where
         just(Token::Typedef).to(StorageClassSpecifier::Typedef),
         just(Token::Extern).to(StorageClassSpecifier::Extern),
         just(Token::Static).to(StorageClassSpecifier::Static),
+        just(Token::Atomic).to(StorageClassSpecifier::Atomic),
         // just(Token::ThreadLocal).to(StorageClassSpecifier::ThreadLocal),
         just(Token::Auto).to(StorageClassSpecifier::Auto),
         just(Token::Register).to(StorageClassSpecifier::Register),
@@ -1655,6 +1681,27 @@ pub enum Declarator {
     },
 }
 
+impl Declarator {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Declarator::Identifier(_) | Declarator::Abstract)
+    }
+
+    pub fn is_function(&self) -> bool {
+        match self {
+            Declarator::FunctionDeclarator { declarator, .. } => {
+                if declarator.0.is_terminal() {
+                    true
+                } else {
+                    declarator.0.is_function()
+                }
+            }
+            Declarator::Identifier(_) | Declarator::Abstract => false,
+            Declarator::PointerDeclarator { declarator, .. } => declarator.0.is_function(),
+            Declarator::ArrayDeclarator { declarator, .. } => declarator.0.is_function(),
+        }
+    }
+}
+
 fn declarator<'src, 'r: 'src, I>(
     resolver: &'r dyn TypeResolver,
     expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
@@ -1857,15 +1904,6 @@ fn declarator_has_name(decl: &Declarator) -> bool {
     }
 }
 
-fn declarator_is_function(decl: &Declarator) -> bool {
-    match decl {
-        Declarator::FunctionDeclarator { .. } => true,
-        Declarator::Identifier(_) | Declarator::Abstract => false,
-        Declarator::PointerDeclarator { declarator, .. } => declarator_is_function(&declarator.0),
-        Declarator::ArrayDeclarator { declarator, .. } => declarator_is_function(&declarator.0),
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Declaration {
     FunctionDefinition {
@@ -1897,7 +1935,7 @@ where
         declarator
             .clone()
             .filter(|decl| declarator_has_name(&decl.0))
-            .filter(|decl| declarator_is_function(&decl.0))
+            .filter(|decl| decl.0.is_function())
             .then_ignore(look_ahead(Token::LBrace))
             .then(lazy_compound_statement()),
         declaration_specifier(declarator.clone(), expr.clone(), resolver, true),

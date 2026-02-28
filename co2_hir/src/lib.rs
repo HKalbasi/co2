@@ -10,7 +10,9 @@ mod ty;
 
 pub use decl::HirDecl;
 pub use expr::{HirBinOp, HirExpr, HirExprKind, HirLogicalOp, ReturnSemantic};
-pub use item::{HirBody, HirLabel, HirLocal, LabelId, LocalId, lower_function_body};
+pub use item::{
+    HirBody, HirLabel, HirLocal, LabelId, LocalId, lower_function_body, lower_static_body,
+};
 pub use resolver::{HirCtx, ResolvedValue};
 pub use stmt::HirStmt;
 pub use ty::primitive_type;

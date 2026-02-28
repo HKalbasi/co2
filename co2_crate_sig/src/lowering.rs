@@ -1,0 +1,322 @@
+use std::collections::HashMap;
+
+use co2_parser::{
+    Declaration, DeclarationSpecifier, InitDeclarator, StorageClassSpecifier, StructOrUnionKind,
+    TypeQueryResult, TypeResolver,
+};
+use rustc_public_generative::{
+    DefData, FileId, ForeignModItem, FunctionAbi, FunctionSignature, HirAdtKind, HirGenericArg,
+    HirImplItem, HirImplItemKind, HirLifetime, HirModule, HirModuleItem, HirSelfKind, HirStructure,
+    HirStructureCtx, HirTy,
+    rustc_public::{
+        DefId,
+        ty::{AdtDef, FnDef},
+    },
+};
+
+use crate::{
+    CrateSigCtx, MirOwnerInfo,
+    resolver::Resolver,
+    struct_manager::{StructData, StructManager},
+};
+
+pub fn lower_crate_sig(
+    ctx: HirStructureCtx<'_>,
+    source_name: String,
+    src_static: &'static str,
+    file_id: FileId,
+    no_main: bool,
+) -> (HirStructure, HashMap<DefId, MirOwnerInfo>, Resolver) {
+    let span = ctx.span_in_file(file_id, 0, 0);
+    let deps = ctx.dependencies();
+
+    struct TranslationUnitParseResolver;
+    impl TypeResolver for TranslationUnitParseResolver {
+        fn classify_path(&self, path: &co2_parser::RustPath) -> TypeQueryResult {
+            let _ = path;
+            TypeQueryResult::Unsure
+        }
+    }
+
+    let parse_resolver = TranslationUnitParseResolver;
+    let tu = co2_parser::parse_translation_unit(source_name.clone(), src_static, &parse_resolver)
+        .expect("failed to parse co2 source")
+        .0;
+
+    let foreign_mod = ctx.allocate_def_id(ctx.root_crate_def_id(), DefData::ForeignMod);
+    let mut foreign_items = Vec::new();
+
+    let mut ctx = CrateSigCtx {
+        resolver: Resolver::new(&ctx, deps, &tu, foreign_mod),
+        hir_ctx: ctx,
+        source_name,
+        source: src_static,
+        file_id,
+        struct_manager: StructManager::default(),
+        unrepresentable_typedefs: HashMap::new(),
+        mir_owners: HashMap::new(),
+        hir_items: vec![],
+    };
+
+    {
+        let name = "__builtin_va_list";
+        let id = ctx.resolver.resolve("__builtin_va_list").unwrap().0;
+        let adt = ctx.resolver.resolve("std::ffi::VaList").unwrap().0;
+        let ty = HirTy::adt(
+            adt,
+            vec![HirGenericArg::Lifetime(HirLifetime::Static)],
+            span,
+        );
+        ctx.hir_items.push(HirModuleItem::TypeDef {
+            name: name.to_owned(),
+            id,
+            span,
+            ty,
+        });
+    }
+
+    for (item, parser_span) in tu.items {
+        let span = ctx.co2_span_to_rustc(parser_span);
+        match item {
+            Declaration::FunctionDefinition {
+                declaration_specifiers,
+                declarator,
+                body,
+            } => {
+                if has_static_storage(&declaration_specifiers) {
+                    continue;
+                }
+                let base = ctx.base_ty_of_decl(declaration_specifiers, parser_span);
+                let (name, mut sig, param_names) = ctx
+                    .lower_function_signature(base, declarator)
+                    .expect("failed to lower function signature");
+                let id = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                if name == "main" && !no_main {
+                    sig.abi = FunctionAbi::Rust;
+                }
+                let id = FnDef(id);
+                ctx.hir_items.push(HirModuleItem::Function {
+                    name,
+                    id,
+                    sig,
+                    no_mangle: true,
+                    span,
+                });
+                ctx.mir_owners.insert(
+                    id.0,
+                    MirOwnerInfo::Fn {
+                        def: id,
+                        param_names,
+                        body_tokens: body.0.tokens.0,
+                    },
+                );
+            }
+            Declaration::Declaration {
+                declaration_specifiers,
+                declarators,
+            } => {
+                let mut is_typedef = false;
+                let mut cleaned_specs = Vec::new();
+                for (spec, sp) in declaration_specifiers {
+                    match spec {
+                        DeclarationSpecifier::StorageSpecifier((
+                            StorageClassSpecifier::Typedef,
+                            _,
+                        )) => {
+                            is_typedef = true;
+                        }
+                        _ => cleaned_specs.push((spec, sp)),
+                    }
+                }
+
+                let base = ctx.base_ty_of_decl(cleaned_specs, parser_span);
+
+                for init in declarators {
+                    let InitDeclarator {
+                        declarator,
+                        initializer,
+                    } = init.0;
+
+                    if is_typedef {
+                        let result =
+                            ctx.try_lower_value_decl_type(base.clone(), declarator.clone());
+                        let (name, ty) = match result {
+                            Ok(pair) => pair,
+                            Err(e) => {
+                                // May be a function-type typedef (e.g. `typedef Ret fn_t(args)`).
+                                // Store as FnPtr; skip emitting a TypeDef item (not needed for fn types).
+                                if let Ok((fn_name, sig, _)) =
+                                    ctx.lower_function_signature(base.clone(), declarator.clone())
+                                {
+                                    ctx.unrepresentable_typedefs.insert(fn_name, sig);
+                                    continue;
+                                }
+                                ctx.terminate_with_error(init.1, &e);
+                            }
+                        };
+                        let type_def = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                        ctx.hir_items.push(HirModuleItem::TypeDef {
+                            name,
+                            id: type_def,
+                            span,
+                            ty,
+                        });
+                        continue;
+                    }
+
+                    if !declarator.0.is_function() {
+                        let (name, ty) =
+                            ctx.lower_value_decl_type(base.clone(), declarator.clone());
+                        let (id, _) = ctx.resolver.resolve_in_current([&*name]).unwrap();
+                        if let Some(initializer) = initializer {
+                            ctx.mir_owners
+                                .insert(id, MirOwnerInfo::Static { initializer });
+                        } else {
+                            ctx.mir_owners.insert(id, MirOwnerInfo::StaticZeroed);
+                        }
+                        ctx.hir_items.push(HirModuleItem::Static {
+                            name,
+                            id,
+                            ty,
+                            mutable: true,
+                            span,
+                        });
+                        continue;
+                    } else {
+                        match ctx.lower_function_signature(base.clone(), declarator.clone()) {
+                            Ok((name, sig, _param_names)) => {
+                                let def_id = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                                let span = ctx.co2_span_to_rustc(init.1);
+                                foreign_items.push(ForeignModItem::ForeignFunction {
+                                    name,
+                                    id: FnDef(def_id),
+                                    sig,
+                                    span,
+                                });
+                            }
+                            Err(e) => {
+                                ctx.terminate_with_error(parser_span, &e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ctx.hir_items.push(HirModuleItem::ForeignMod {
+        id: foreign_mod,
+        items: foreign_items,
+    });
+
+    let clone_trait = ctx
+        .resolver
+        .resolve_in_deps("core", ["clone", "Clone"])
+        .unwrap()
+        .0;
+    let copy_trait = ctx
+        .resolver
+        .resolve_in_deps("core", ["marker", "Copy"])
+        .unwrap()
+        .0;
+    let clone_trait_fn = ctx
+        .resolver
+        .resolve_in_deps("core", ["clone", "Clone", "clone"])
+        .unwrap()
+        .0;
+
+    for StructData {
+        def_id: def,
+        name,
+        kind,
+        fields,
+        span,
+    } in ctx.emit_structs()
+    {
+        let Some(fields) = fields else {
+            // TODO: lower to extern types
+            ctx.hir_items.push(HirModuleItem::Adt {
+                name,
+                id: AdtDef(def),
+                kind: HirAdtKind::Struct { fields: vec![] },
+                span,
+            });
+            continue;
+        };
+        let kind = match kind {
+            StructOrUnionKind::Struct => HirAdtKind::Struct { fields },
+            StructOrUnionKind::Union => HirAdtKind::Union { fields },
+        };
+
+        ctx.hir_items.push(HirModuleItem::Adt {
+            name,
+            id: AdtDef(def),
+            kind,
+            span,
+        });
+
+        let self_ty_hir = HirTy::adt(def, vec![], span);
+
+        let root_crate = ctx.root_crate_def_id();
+        let clone_impl_def = ctx.allocate_def_id(root_crate, DefData::Impl);
+        let clone_method_def =
+            ctx.allocate_def_id(clone_impl_def, DefData::ValueNs("clone".to_owned()));
+        let clone_self_lifetime =
+            ctx.allocate_def_id(clone_method_def, DefData::LifetimeNs("a".to_owned()));
+        let clone_sig = FunctionSignature {
+            lifetimes: vec![clone_self_lifetime],
+            inputs: Vec::new(),
+            output: self_ty_hir.clone(),
+            abi: FunctionAbi::Rust,
+            is_unsafe: false,
+        };
+        ctx.hir_items.push(HirModuleItem::Impl {
+            id: clone_impl_def,
+            self_ty: self_ty_hir.clone(),
+            trait_def: Some(clone_trait),
+            items: vec![HirImplItem {
+                name: "clone".to_owned(),
+                id: clone_method_def,
+                kind: HirImplItemKind::Fn {
+                    sig: clone_sig,
+                    self_kind: HirSelfKind::RefImm(HirLifetime::Param(clone_self_lifetime)),
+                    trait_item_def_id: Some(clone_trait_fn),
+                },
+                span,
+            }],
+            span,
+        });
+        ctx.mir_owners
+            .insert(clone_method_def, MirOwnerInfo::CloneMethod(AdtDef(def)));
+
+        let copy_impl_def = ctx.allocate_def_id(root_crate, DefData::Impl);
+        ctx.hir_items.push(HirModuleItem::Impl {
+            id: copy_impl_def,
+            self_ty: self_ty_hir.clone(),
+            trait_def: Some(copy_trait),
+            items: Vec::new(),
+            span,
+        });
+    }
+
+    (
+        HirStructure {
+            root: HirModule {
+                span,
+                items: ctx.hir_items,
+            },
+            no_main,
+        },
+        ctx.mir_owners,
+        ctx.resolver,
+    )
+}
+
+fn has_static_storage(specifiers: &[co2_parser::Spanned<DeclarationSpecifier>]) -> bool {
+    specifiers.iter().any(|(spec, _)| {
+        matches!(
+            spec,
+            DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Static, _))
+        )
+    })
+}

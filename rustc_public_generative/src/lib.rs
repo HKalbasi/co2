@@ -36,7 +36,7 @@ pub use hir_structure::{
     ForeignModItem, FunctionAbi, FunctionSignature, HirAdtKind, HirImplItem, HirImplItemKind,
     HirModule, HirModuleItem, HirSelfKind, HirStructure, StructField,
 };
-pub use hir_ty::{HirGenericArg, HirTy, HirTyKind};
+pub use hir_ty::{HirGenericArg, HirLifetime, HirTy, HirTyKind};
 
 /// Summary of crates loaded as dependencies by rustc.
 #[derive(Debug, Clone, Default)]
@@ -122,6 +122,7 @@ pub fn generate_with_args<S: CrateGeneratorState>(args: Vec<String>) {
     internal::generate_with_args::<S>(args);
 }
 
+#[derive(Debug)]
 pub enum DefData {
     ForeignMod,
     ValueNs(String),

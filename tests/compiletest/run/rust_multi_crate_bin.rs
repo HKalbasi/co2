@@ -14,8 +14,8 @@ fn main() {
     assert_eq!(add(4, -1), 3);
     assert_eq!(hypot(p), 17);
     
-    let u = Union1 { a: 12 };
+    let u = Union1 { b: 12 };
     unsafe { 
-        assert_eq!(u.b, 12);
+        assert_eq!(u.a, 12);
     }
 }

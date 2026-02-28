@@ -3,43 +3,25 @@ use std::collections::{BTreeMap, HashMap};
 use co2_hir::{HirBody, LabelId, LocalId};
 use rustc_public_generative as rustc_gen;
 use rustc_public_generative::rustc_public::{
-    mir::{
-        Body, CastKind, ConstOperand, LocalDecl as MirLocalDecl, Mutability, Operand as MirOperand,
-        Rvalue, Statement as MirStatement, StatementKind as MirStatementKind,
-    },
+    mir::{Body, ConstOperand, LocalDecl as MirLocalDecl, Mutability},
     ty::{
-        FnDef, GenericArgKind, GenericArgs, IntTy, MirConst, RigidTy, Span as RustSpan, Ty, TyKind,
-        UintTy, VariantIdx,
+        FnDef, GenericArgKind, GenericArgs, MirConst, RigidTy, Span as RustSpan, Ty, TyKind,
+        VariantIdx,
     },
 };
-
-use crate::place::place;
 
 pub fn build_mir_for_body(
     body: &HirBody,
     deps: &rustc_gen::DependencyInfo,
     ctx: &rustc_gen::HirStructureCtx,
     file_id: rustc_gen::FileId,
-    is_rust_entry_main: bool,
 ) -> Body {
     let span = ctx.span_in_file(file_id, 0, 0);
-    let exit_fn = if is_rust_entry_main {
-        Some(dep_fn_any(
-            deps,
-            &["std::process::exit", "core::process::exit"],
-        ))
-    } else {
-        None
-    };
 
     let mut locals = Vec::with_capacity(body.locals.len());
     let mut local_indices = HashMap::new();
     for (idx, (local_id, local)) in body.locals.iter().enumerate() {
-        let ty = if is_rust_entry_main && idx == 0 {
-            Ty::new_tuple(&[])
-        } else {
-            local.ty
-        };
+        let ty = local.ty;
         locals.push(MirLocalDecl {
             ty,
             span: local.span,
@@ -58,32 +40,7 @@ pub fn build_mir_for_body(
         label_blocks: HashMap::new(),
         pending_gotos: Vec::new(),
         span,
-        is_rust_entry_main,
-        exit_fn,
-        exit_code_local: None,
     };
-
-    if is_rust_entry_main {
-        let i32_ty = Ty::signed_ty(IntTy::I32);
-        let local = builder.new_temp(i32_ty, Mutability::Mut, span);
-        let zero = MirConst::try_from_uint(0, UintTy::U32).expect("failed to build zero const");
-        builder.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(local),
-                Rvalue::Cast(
-                    CastKind::IntToInt,
-                    MirOperand::Constant(ConstOperand {
-                        span,
-                        user_ty: None,
-                        const_: zero,
-                    }),
-                    i32_ty,
-                ),
-            ),
-            span,
-        });
-        builder.exit_code_local = Some(local);
-    }
 
     for stmt in &body.stmts {
         builder.lower_stmt(stmt);
@@ -112,9 +69,6 @@ pub(crate) struct Builder<'a> {
     pub(crate) label_blocks: HashMap<LabelId, usize>,
     pub(crate) pending_gotos: Vec<(usize, LabelId)>,
     pub(crate) span: RustSpan,
-    pub(crate) is_rust_entry_main: bool,
-    pub(crate) exit_fn: Option<FnDef>,
-    pub(crate) exit_code_local: Option<usize>,
 }
 
 pub(crate) fn variant_idx(id: usize) -> VariantIdx {

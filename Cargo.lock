@@ -188,9 +188,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "co2_crate_sig"
+version = "0.1.0"
+dependencies = [
+ "co2_parser",
+ "rustc_public_generative",
+]
+
+[[package]]
 name = "co2_driver_lib"
 version = "0.1.0"
 dependencies = [
+ "co2_crate_sig",
  "co2_hir",
  "co2_mir",
  "co2_parser",

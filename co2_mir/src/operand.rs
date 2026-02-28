@@ -205,12 +205,7 @@ impl Builder<'_> {
             }
             HirExprKind::Local(local) => {
                 let local_index = self.local_to_index(*local);
-                match self.locals[local_index].ty.kind() {
-                    TyKind::RigidTy(RigidTy::Adt(_, _) | RigidTy::Array(_, _)) => {
-                        MirOperand::Move(place(local_index))
-                    }
-                    _ => MirOperand::Copy(place(local_index)),
-                }
+                MirOperand::Copy(place(local_index))
             }
             HirExprKind::ConstInt(v) => {
                 let span = expr.span;
@@ -240,12 +235,7 @@ impl Builder<'_> {
                 let place = self
                     .lower_expr_to_place(expr)
                     .expect("field expression should be place-expressible");
-                match expr.ty.kind() {
-                    TyKind::RigidTy(RigidTy::Adt(_, _) | RigidTy::Array(_, _)) => {
-                        MirOperand::Move(place)
-                    }
-                    _ => MirOperand::Copy(place),
-                }
+                MirOperand::Copy(place)
             }
             HirExprKind::PtrOffset { base, index } => {
                 let base_op = self.lower_expr_to_operand(base);
@@ -361,7 +351,7 @@ impl Builder<'_> {
                         ),
                         span: expr.span,
                     });
-                    return MirOperand::Move(place(tmp));
+                    return MirOperand::Copy(place(tmp));
                 }
                 let tmp = self.new_temp(expr.ty, Mutability::Mut, expr.span);
                 self.stmts.push(MirStatement {
@@ -371,7 +361,7 @@ impl Builder<'_> {
                     ),
                     span: expr.span,
                 });
-                MirOperand::Move(place(tmp))
+                MirOperand::Copy(place(tmp))
             }
             HirExprKind::Logical { op, lhs, rhs } => {
                 self.lower_logical_expr(*op, lhs, rhs, expr.span, expr.ty)
@@ -409,7 +399,7 @@ impl Builder<'_> {
                     ),
                     span: expr.span,
                 });
-                MirOperand::Move(place(tmp))
+                MirOperand::Copy(place(tmp))
             }
             HirExprKind::Aggregate { args } => {
                 let TyKind::RigidTy(RigidTy::Adt(adt, adt_args)) = expr.ty.kind() else {
@@ -430,7 +420,7 @@ impl Builder<'_> {
                     ),
                     span: expr.span,
                 });
-                MirOperand::Move(place(tmp))
+                MirOperand::Copy(place(tmp))
             }
             HirExprKind::ConstStr(s) => self.lower_const_string(s, expr.span),
             HirExprKind::Path(path) => match path {
@@ -1144,6 +1134,6 @@ impl Builder<'_> {
             ),
             span: arg.span,
         });
-        MirOperand::Move(place(ref_local))
+        MirOperand::Copy(place(ref_local))
     }
 }

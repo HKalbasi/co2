@@ -5,9 +5,12 @@ use co2_parser::{
     TypeResolver as ParserTypeResolver, parse_compound_statement,
 };
 use la_arena::{Arena, Idx};
-use rustc_public_generative::rustc_public::ty::{FnDef, FnSig, Span as RustSpan, Ty};
+use rustc_public_generative::rustc_public::{
+    CrateItem, DefId,
+    ty::{FnDef, FnSig, Span as RustSpan, Ty},
+};
 
-use crate::{HirStmt, resolver::HirCtx};
+use crate::{HirStmt, primitive_type, resolver::HirCtx};
 
 #[derive(Clone, Debug)]
 pub struct HirLocal {
@@ -34,24 +37,68 @@ pub struct HirBody {
     pub span: RustSpan,
 }
 
+impl HirBody {
+    pub fn new_dummy(ty: Ty, span: RustSpan) -> Self {
+        let mut locals = Arena::new();
+        locals.alloc(HirLocal {
+            name: "_ret".to_owned(),
+            ty,
+            span,
+        });
+        Self {
+            locals,
+            labels: Arena::new(),
+            params: vec![],
+            stmts: vec![],
+            span,
+        }
+    }
+}
+
 pub fn lower_function_body<R>(
     tokens: &[Spanned<Token>],
-    source_name: &str,
-    source: &'static str,
     def: FnDef,
     param_names: &[String],
     prelude_decls: &[Declaration],
     hir_ctx: &HirCtx<'_, R>,
 ) -> Result<HirBody, String> {
-    hir_ctx.lower_function_body(tokens, source_name, source, def, param_names, prelude_decls)
+    hir_ctx.lower_function_body(tokens, def, param_names, prelude_decls)
+}
+
+pub fn lower_static_body<R>(
+    (initializer, parser_span): Spanned<co2_parser::Initializer>,
+    def: DefId,
+    hir_ctx: &HirCtx<'_, R>,
+) -> Result<HirBody, String> {
+    let body_span = hir_ctx.to_rust_span(parser_span);
+    let mut locals = Arena::new();
+    let mut local_map: HashMap<String, LocalId> = HashMap::new();
+    locals.alloc(HirLocal {
+        name: "_ret".to_owned(),
+        ty: CrateItem(def).ty(),
+        span: body_span,
+    });
+    let target_ty = CrateItem(def).ty();
+    let tree = hir_ctx.lower_to_initializer_tree(
+        target_ty,
+        (initializer, parser_span),
+        &mut locals,
+        &mut local_map,
+    );
+    let init_expr = hir_ctx.initializer_tree_to_expr(&tree, target_ty, parser_span);
+    Ok(HirBody {
+        locals,
+        labels: hir_ctx.take_labels(),
+        params: vec![],
+        stmts: vec![HirStmt::Return(Some(init_expr), body_span)],
+        span: body_span,
+    })
 }
 
 impl<R> HirCtx<'_, R> {
-    pub fn lower_function_body(
+    pub(crate) fn lower_function_body(
         &self,
         tokens: &[Spanned<Token>],
-        source_name: &str,
-        source: &'static str,
         def: FnDef,
         param_names: &[String],
         prelude_decls: &[Declaration],
@@ -62,8 +109,11 @@ impl<R> HirCtx<'_, R> {
         }
         impl<R> ParserTypeResolver for BodyParseResolver<'_, R> {
             fn classify_path(&self, path: &RustPath) -> TypeQueryResult {
+                let (path, _) = path.decompose();
                 let path = path.to_pretty();
-                if self.hir_ctx.resolve_type(&path).is_some() {
+                if let Some((_, r)) = self.hir_ctx.resolve(&path) {
+                    r
+                } else if primitive_type(&path).is_some() {
                     TypeQueryResult::Type
                 } else {
                     TypeQueryResult::Expr
@@ -72,9 +122,13 @@ impl<R> HirCtx<'_, R> {
         }
 
         let parse_resolver = BodyParseResolver { hir_ctx: self };
-        let parsed =
-            parse_compound_statement(tokens, source_name.to_owned(), source, &parse_resolver)
-                .ok_or_else(|| "failed to parse function body".to_owned())?;
+        let parsed = parse_compound_statement(
+            tokens,
+            self.source_name.to_owned(),
+            self.source,
+            &parse_resolver,
+        )
+        .ok_or_else(|| "failed to parse function body".to_owned())?;
         self.lower_compound_statement(
             parsed,
             &def.fn_sig().skip_binder(),

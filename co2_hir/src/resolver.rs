@@ -1,6 +1,7 @@
+use co2_parser::{RustPath, TypeQueryResult};
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
-    ty::{FnDef, Span as RustSpan, Ty},
+    ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, RigidTy, Span as RustSpan, Ty, TyKind},
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,7 +22,7 @@ pub(crate) struct SwitchScope {
 pub enum ResolvedValue {
     Fn(FnDef),
     ConstInt(i64),
-    Static { def: DefId, ty: Option<Ty> },
+    Static(DefId),
 }
 
 impl ResolvedValue {
@@ -31,7 +32,7 @@ impl ResolvedValue {
             ResolvedValue::ConstInt(_) => {
                 Ty::signed_ty(rustc_public_generative::rustc_public::ty::IntTy::I32)
             }
-            ResolvedValue::Static { def, ty } => ty.unwrap_or_else(|| CrateItem(*def).ty()),
+            ResolvedValue::Static(def) => CrateItem(*def).ty(),
         }
     }
 }
@@ -40,24 +41,22 @@ type ParserSpan = co2_parser::Span;
 
 pub struct HirCtx<'a, R> {
     resolver: &'a R,
-    resolve_value: fn(&R, &str) -> Option<ResolvedValue>,
-    resolve_type: fn(&R, &str) -> Option<Ty>,
+    pub(crate) resolve: fn(&R, &str) -> Option<(DefId, TypeQueryResult)>,
     span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
     labels: RefCell<Arena<HirLabel>>,
     named_labels: RefCell<HashMap<String, LabelId>>,
     continue_labels: RefCell<Vec<LabelId>>,
     break_labels: RefCell<Vec<LabelId>>,
     switch_scopes: RefCell<Vec<SwitchScope>>,
-    source_name: String,
-    source: &'static str,
+    pub(crate) source_name: String,
+    pub(crate) source: &'static str,
     pub(crate) ret_ty: Ty,
 }
 
 impl<'a, R> HirCtx<'a, R> {
     pub fn new(
         resolver: &'a R,
-        resolve_value: fn(&R, &str) -> Option<ResolvedValue>,
-        resolve_type: fn(&R, &str) -> Option<Ty>,
+        resolve: fn(&R, &str) -> Option<(DefId, TypeQueryResult)>,
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
         source: &'static str,
         source_name: String,
@@ -65,8 +64,7 @@ impl<'a, R> HirCtx<'a, R> {
     ) -> Self {
         Self {
             resolver,
-            resolve_value,
-            resolve_type,
+            resolve,
             span_converter,
             labels: RefCell::new(Arena::new()),
             named_labels: RefCell::new(HashMap::new()),
@@ -79,12 +77,45 @@ impl<'a, R> HirCtx<'a, R> {
         }
     }
 
-    pub(crate) fn resolve_value(&self, path: &str) -> Option<ResolvedValue> {
-        (self.resolve_value)(self.resolver, path)
+    pub(crate) fn resolve(&self, path: &str) -> Option<(DefId, TypeQueryResult)> {
+        (self.resolve)(self.resolver, path)
     }
 
-    pub(crate) fn resolve_type(&self, path: &str) -> Option<Ty> {
-        (self.resolve_type)(self.resolver, path)
+    pub(crate) fn resolve_value(&self, path: &str) -> Option<ResolvedValue> {
+        let (def_id, namespace) = self.resolve(path)?;
+        if namespace == TypeQueryResult::Type {
+            return None;
+        }
+        let ty = CrateItem(def_id).ty();
+        if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnDef(..))) {
+            Some(ResolvedValue::Fn(FnDef(def_id)))
+        } else {
+            Some(ResolvedValue::Static(def_id))
+        }
+    }
+
+    pub(crate) fn resolve_type(&self, path: &RustPath) -> Option<Ty> {
+        let (base, generics) = path.decompose();
+        let base = base.to_pretty();
+        if let Some(prim) = crate::primitive_type(&base) {
+            return Some(prim);
+        }
+        let (def_id, namespace) = self.resolve(&base)?;
+        if namespace == TypeQueryResult::Expr {
+            return None;
+        }
+        if generics.is_empty() {
+            Some(CrateItem(def_id).ty())
+        } else {
+            let generics = generics
+                .into_iter()
+                .map(|x| Some(GenericArgKind::Type(self.resolve_type(&x)?)))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Ty::from_rigid_kind(RigidTy::Adt(
+                AdtDef(def_id),
+                GenericArgs(generics),
+            )))
+        }
     }
 
     pub(crate) fn to_rust_span(&self, span: ParserSpan) -> RustSpan {

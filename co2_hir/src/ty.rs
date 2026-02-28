@@ -81,10 +81,6 @@ pub(crate) fn is_array_ty(ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::RigidTy(RigidTy::Array(_, _)))
 }
 
-pub(crate) fn is_sized_array_ty(ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::RigidTy(RigidTy::Array(_, _)))
-}
-
 pub(crate) fn is_condition_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
@@ -182,6 +178,9 @@ pub(crate) fn is_union_ty(ty: Ty) -> bool {
 }
 
 pub(crate) fn adt_field_tys(base: Ty) -> Option<Vec<Ty>> {
+    if is_maybe_uninit_fn_ptr_ty(base).is_some() {
+        return None;
+    }
     let TyKind::RigidTy(RigidTy::Adt(adt, args)) = base.kind() else {
         return None;
     };

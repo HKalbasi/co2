@@ -1,5 +1,5 @@
 //@ mode: c
-//@ ui-error: unresolved type path: unknown_type
+//@ ui-error: Failed to resolve type
 
 typedef struct {
   union {

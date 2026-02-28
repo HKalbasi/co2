@@ -4,7 +4,7 @@ use co2_parser::{Designator, Expression, Initializer, InitializerItem, Spanned};
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
     mir::Mutability,
-    ty::{IntTy, RigidTy, Ty, TyKind},
+    ty::{IntTy, Ty},
 };
 
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     resolver::HirCtx,
     stmt::HirStmt,
     ty::{
-        adt_field_tys, array_elem_ty, is_array_ty, is_integer_ty, is_maybe_uninit_fn_ptr_ty,
-        is_union_ty, resolve_field_path_in_adt, ty_matches_expected,
+        adt_field_tys, array_elem_ty, is_array_ty, is_integer_ty, is_union_ty, needs_implicit_cast,
+        resolve_field_path_in_adt,
     },
 };
 
@@ -23,14 +23,6 @@ pub(crate) enum InitializerTree {
     Middle { children: Vec<InitializerTree> },
     Leaf(HirExpr),
     Zeroed,
-}
-
-pub(crate) fn tree_contains_zeroed(tree: &InitializerTree) -> bool {
-    match tree {
-        InitializerTree::Zeroed => true,
-        InitializerTree::Leaf(_) => false,
-        InitializerTree::Middle { children } => children.iter().any(tree_contains_zeroed),
-    }
 }
 
 #[derive(Debug)]
@@ -89,7 +81,7 @@ impl InitializerCursor {
                         cursor.stack.push((index, next_ty));
                         cursor_ty = next_ty;
                     }
-                    current_ty = field_ty;
+                    assert_eq!(cursor_ty, field_ty);
                 }
             }
         }
@@ -214,38 +206,9 @@ fn coerce_expr_to_type(expr: HirExpr, expected_ty: Ty) -> Result<HirExpr, String
     if expr.ty == expected_ty {
         return Ok(expr);
     }
-    if is_maybe_uninit_fn_ptr_ty(expected_ty).is_some()
-        && matches!(
-            expr.ty.kind(),
-            TyKind::RigidTy(
-                RigidTy::FnDef(_, _) | RigidTy::FnPtr(_) | RigidTy::Int(_) | RigidTy::Uint(_)
-            )
-        )
-    {
+    if needs_implicit_cast(expected_ty, expr.ty) {
         return Ok(HirExpr {
             kind: HirExprKind::Cast(Box::new(expr.clone())),
-            ty: expected_ty,
-            span: expr.span,
-        });
-    }
-    if matches!(expected_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)))
-        && matches!(expr.ty.kind(), TyKind::RigidTy(RigidTy::FnDef(_, _)))
-    {
-        return Ok(HirExpr {
-            kind: HirExprKind::Cast(Box::new(expr.clone())),
-            ty: expected_ty,
-            span: expr.span,
-        });
-    }
-    if ty_matches_expected(expected_ty, expr.ty) {
-        return Ok(expr);
-    }
-    if matches!(expr.kind, HirExprKind::ConstInt(_))
-        && is_integer_ty(expr.ty)
-        && is_integer_ty(expected_ty)
-    {
-        return Ok(HirExpr {
-            kind: expr.kind,
             ty: expected_ty,
             span: expr.span,
         });
@@ -270,6 +233,26 @@ impl<R> HirCtx<'_, R> {
     pub(crate) fn lower_to_initializer_tree(
         &self,
         expected_ty: Ty,
+        (initializer, span): Spanned<Initializer>,
+        locals: &mut Arena<HirLocal>,
+        local_map: &mut HashMap<String, LocalId>,
+    ) -> InitializerTree {
+        match self.try_lower_to_initializer_tree(
+            expected_ty,
+            (initializer, span),
+            locals,
+            local_map,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                self.terminate_with_error(span, &e);
+            }
+        }
+    }
+
+    fn try_lower_to_initializer_tree(
+        &self,
+        expected_ty: Ty,
         initializer: Spanned<Initializer>,
         locals: &mut Arena<HirLocal>,
         local_map: &mut HashMap<String, LocalId>,
@@ -285,12 +268,12 @@ impl<R> HirCtx<'_, R> {
                     )
                 {
                     let list = self.initializer_list_from_string(expected_ty, expr.clone());
-                    return self.lower_to_initializer_tree(
+                    return Ok(self.lower_to_initializer_tree(
                         expected_ty,
                         (Initializer::List(list), initializer.1),
                         locals,
                         local_map,
-                    );
+                    ));
                 }
                 let expr = self.lower_expr(expr, locals, local_map)?;
                 let coerced = coerce_expr_to_type(expr, expected_ty)?;
@@ -305,12 +288,12 @@ impl<R> HirCtx<'_, R> {
                     if first.0.designators.is_some() {
                         return Err("designators are invalid for scalar initializer".to_owned());
                     }
-                    return self.lower_to_initializer_tree(
+                    return Ok(self.lower_to_initializer_tree(
                         expected_ty,
                         first.0.initializer,
                         locals,
                         local_map,
-                    );
+                    ));
                 }
 
                 // Preserve legacy behavior used by existing tests:
@@ -419,7 +402,7 @@ impl<R> HirCtx<'_, R> {
                         item.initializer,
                         locals,
                         local_map,
-                    )?;
+                    );
                     cursor.insert_to_tree(&mut result, node);
                     cursor.go_next(span)?;
                 }

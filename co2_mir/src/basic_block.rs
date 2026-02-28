@@ -4,7 +4,7 @@ use rustc_public_generative::rustc_public::{
         Rvalue, Statement as MirStatement, StatementKind as MirStatementKind, SwitchTargets,
         Terminator as MirTerminator, TerminatorKind, UnwindAction,
     },
-    ty::{GenericArgKind, IntTy, RigidTy, Span as RustSpan, Ty, TyKind},
+    ty::{GenericArgKind, RigidTy, Span as RustSpan, Ty, TyKind},
 };
 
 use crate::{build::Builder, place::place};
@@ -77,37 +77,7 @@ impl Builder<'_> {
             }
             HirStmt::Return(expr, span) => {
                 if let Some(expr) = expr {
-                    if self.is_rust_entry_main {
-                        let mut value = self.lower_expr_to_operand(expr);
-                        if expr.ty != Ty::signed_ty(IntTy::I32) {
-                            let cast_local = self.new_temp(
-                                Ty::signed_ty(IntTy::I32),
-                                rustc_public_generative::rustc_public::mir::Mutability::Mut,
-                                expr.span,
-                            );
-                            self.stmts.push(MirStatement {
-                                kind: MirStatementKind::Assign(
-                                    place(cast_local),
-                                    Rvalue::Cast(
-                                        rustc_public_generative::rustc_public::mir::CastKind::IntToInt,
-                                        value,
-                                        Ty::signed_ty(IntTy::I32),
-                                    ),
-                                ),
-                                span: expr.span,
-                            });
-                            value = rustc_public_generative::rustc_public::mir::Operand::Copy(
-                                place(cast_local),
-                            );
-                        }
-                        self.stmts.push(MirStatement {
-                            kind: MirStatementKind::Assign(
-                                place(self.exit_code_local.expect("missing exit code local")),
-                                Rvalue::Use(value),
-                            ),
-                            span: expr.span,
-                        });
-                    } else if let HirExprKind::Call { func, args } = &expr.kind {
+                    if let HirExprKind::Call { func, args } = &expr.kind {
                         self.lower_call_to_destination(
                             func,
                             args,
@@ -124,11 +94,7 @@ impl Builder<'_> {
                     }
                 }
 
-                if self.is_rust_entry_main {
-                    self.push_exit_terminator(*span);
-                } else {
-                    self.push_terminator(TerminatorKind::Return, *span);
-                }
+                self.push_terminator(TerminatorKind::Return, *span);
             }
             HirStmt::If {
                 cond,
@@ -203,11 +169,7 @@ impl Builder<'_> {
     }
 
     pub(crate) fn terminate_fallthrough(&mut self) {
-        if self.is_rust_entry_main {
-            self.push_exit_terminator(self.span);
-        } else {
-            self.push_terminator(TerminatorKind::Return, self.span);
-        }
+        self.push_terminator(TerminatorKind::Return, self.span);
         self.patch_pending_gotos();
     }
 
@@ -254,28 +216,6 @@ impl Builder<'_> {
                     span,
                 },
             });
-    }
-
-    pub(crate) fn push_exit_terminator(
-        &mut self,
-        span: rustc_public_generative::rustc_public::ty::Span,
-    ) {
-        self.push_terminator(
-            TerminatorKind::Call {
-                func: crate::build::fn_const_operand(
-                    self.exit_fn.expect("missing exit fn"),
-                    vec![],
-                    span,
-                ),
-                args: vec![rustc_public_generative::rustc_public::mir::Operand::Copy(
-                    place(self.exit_code_local.expect("missing exit code local")),
-                )],
-                destination: place(0),
-                target: None,
-                unwind: UnwindAction::Continue,
-            },
-            span,
-        );
     }
 
     pub(crate) fn push_terminator(

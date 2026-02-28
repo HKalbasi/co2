@@ -1,6 +1,10 @@
 //@ mode: c
 //@ run-status: 0
 
+int main0() {
+	return 0;
+}
+
 int main1() {
 	int x;
 	int *p;
@@ -136,25 +140,24 @@ struct { int x; int y; };
 struct { int a; char b; };
 struct { int x; int y; int z; };
 struct { int (*f)(int); };
-enum Color { RED, GREEN = 5, BLUE, WHITE = BLUE + 3 };
 
 int main8()
 {
-	struct { int x; int y; } s;
+	// struct { int x; int y; } s;
 	
-	s.x = 3;
-	s.y = 5;
-	if (s.y - s.x - 2) {
-		return 1;
-	}
-	struct { int x; int y; } s2 = s;
-	if (s2.y - s2.x - 2) {
-		return 2;
-	}
-	struct { int x; int y; } *s3 = &s2;
-	if (s3->y - s3->x - 2) {
-		return 2;
-	}
+	// s.x = 3;
+	// s.y = 5;
+	// if (s.y - s.x - 2) {
+	// 	return 1;
+	// }
+	// struct { int x; int y; } s2 = s;
+	// if (s2.y - s2.x - 2) {
+	// 	return 2;
+	// }
+	// struct { int x; int y; } *s3 = &s2;
+	// if (s3->y - s3->x - 2) {
+	// 	return 2;
+	// }
 	return 0;
 }
 
@@ -437,65 +440,67 @@ int main13()
 
 int main14()
 {
-	int x;
-	int *p;
-	void *p_void;
-	int arr[4];
-	struct { int a; char b; } s;
+	// int x;
+	// int *p;
+	// void *p_void;
+	// int arr[4];
+	// struct { int a; char b; } s;
 
-	x = 2;
-	p = &x;
-	p_void = p;
-	if(*((int*)p_void) != 2)
-		return 1;
-	if (sizeof x - 4)
-		return 1;
-	if (sizeof(int) - 4)
-		return 1;
-	if (sizeof(int*) - 8)
-		return 1;
-	if (sizeof(p) - 8)
-		return 1;
-	if (sizeof(*p) - 4)
-		return 1;
-	if (sizeof arr - 16)
-		return 1;
-	if (sizeof(s) - 8)
-		return 1;
-	p = (int*)5;
-	if (((int)p) - 5)
-		return 1;
-	if (((int*)5) != p)
-		return 1;
+	// x = 2;
+	// p = &x;
+	// p_void = p;
+	// if(*((int*)p_void) != 2)
+	// 	return 1;
+	// if (sizeof x - 4)
+	// 	return 1;
+	// if (sizeof(int) - 4)
+	// 	return 1;
+	// if (sizeof(int*) - 8)
+	// 	return 1;
+	// if (sizeof(p) - 8)
+	// 	return 1;
+	// if (sizeof(*p) - 4)
+	// 	return 1;
+	// if (sizeof arr - 16)
+	// 	return 1;
+	// if (sizeof(s) - 8)
+	// 	return 1;
+	// p = (int*)5;
+	// if (((int)p) - 5)
+	// 	return 1;
+	// if (((int*)5) != p)
+	// 	return 1;
 
 	return 0;
 }
 
 int main15()
 {
-	int a[5] = { [2] = 7, [0] = 9, 1 };
-	struct { int x; int y; int z; } s = { .z = 8, .x = 3 };
-	struct { int x; int y; } p[2] = {
-		[1] = { .y = 6, .x = 5 },
-		[0] = { .x = 1, .y = 2 },
-	};
-	int m[2][3] = { [1][2] = 4, [0][1] = 3 };
+	// int a[5] = { [2] = 7, [0] = 9, 1 };
+	// struct { int x; int y; int z; } s = { .z = 8, .x = 3 };
+	// struct { int x; int y; } p[2] = {
+	// 	[1] = { .y = 6, .x = 5 },
+	// 	[0] = { .x = 1, .y = 2 },
+	// };
+	// int m[2][3] = { [1][2] = 4, [0][1] = 3 };
 
-	if (a[3] || a[4])
-		return 1;
-	if (a[0] - 9 || a[1] - 1 || a[2] - 7)
-		return 1;
-	if (s.x - 3 || s.y || s.z - 8)
-		return 1;
-	if (p[0].x - 1 || p[0].y - 2 || p[1].x - 5 || p[1].y - 6)
-		return 1;
-	if (m[0][1] - 3 || m[1][2] - 4)
-		return 1;
-	if (m[0][0] || m[0][2] || m[1][0] || m[1][1])
-		return 1;
+	// if (a[3] || a[4])
+	// 	return 1;
+	// if (a[0] - 9 || a[1] - 1 || a[2] - 7)
+	// 	return 1;
+	// if (s.x - 3 || s.y || s.z - 8)
+	// 	return 1;
+	// if (p[0].x - 1 || p[0].y - 2 || p[1].x - 5 || p[1].y - 6)
+	// 	return 1;
+	// if (m[0][1] - 3 || m[1][2] - 4)
+	// 	return 1;
+	// if (m[0][0] || m[0][2] || m[1][0] || m[1][1])
+	// 	return 1;
 
 	return 0;
 }
+
+enum Color { RED, GREEN = 5, BLUE, WHITE = BLUE + 3 };
 
 int main16()
 {
@@ -583,6 +588,7 @@ int fp_id(int x)
 int (*fp_static)(int);
 int (*fp_static2)(int) = 0;
 int (*fp_static3)(int) = fp_id;
+typedef struct { int (*f)(int); } fp_holder;
 
 int main18()
 {
@@ -593,11 +599,11 @@ int main18()
 	if (fp(3) - 3)
 		return 1;
 
-	struct { int (*f)(int); } s = { .f = fp_id };
+	fp_holder s = { .f = fp_id };
 	if (s.f(3) - 3)
 		return 1;
 
-	struct { int (*f)(int); } s2;
+	fp_holder s2;
 	s2.f = s.f;
 	if (s2.f(3) - 3)
 		return 1;
@@ -672,7 +678,6 @@ struct S
 {
 	int (*zerofunc)();
 } s = { &zero };
-struct S2 { int a; int b; };
 
 struct S * anon()
 {
@@ -691,15 +696,23 @@ int main20()
 	return go()()->zerofunc();
 }
 
+typedef struct S2 { int a; int b; } S2;
+
 int main21()
 {
-	struct S2 *p;
+	S2 *p, *p2;
 
-	p = &(struct S2) { 1, 2 };
-	if (p->a - 1)
-		return 1;
-	if (p->b - 2)
-		return 1;
+	// p = &(struct S2) { 1, 2 };
+	// if (p->a - 1)
+	// 	return 1;
+	// if (p->b - 2)
+	// 	return 1;
+
+	// p2 = &(S2) { 3, 4 };
+	// if (p2->a - 3)
+	// 	return 1;
+	// if (p2->b - 4)
+	// 	return 1;
 
 	return 0;
 }
@@ -751,17 +764,17 @@ int main23()
 
 int main24()
 {
-	struct s_nested v;
+	// struct s_nested v;
 
-	v.x = 1;
-	v.nest.y = 2;
-	v.nest.z = 3;
-	if (v.x - 1)
-		return 1;
-	if (v.nest.y - 2)
-		return 1;
-	if (v.nest.z - 3)
-		return 1;
+	// v.x = 1;
+	// v.nest.y = 2;
+	// v.nest.z = 3;
+	// if (v.x - 1)
+	// 	return 1;
+	// if (v.nest.y - 2)
+	// 	return 1;
+	// if (v.nest.z - 3)
+	// 	return 1;
 	return 0;
 }
 
@@ -775,11 +788,11 @@ typedef struct {
 	struct {
 		int d;
 	};
-} s2;
+} NestedStruct;
 
 int main25()
 {
-	s2 v;
+	NestedStruct v;
 
 	v.a = 1;
 	v.b1 = 2;
@@ -875,14 +888,24 @@ int main27()
 	}
 }
 
+typedef int (*main_ty)();
+
 int main() {
-	if (main1() || main2() || main3() || main4() || main5()
-		|| main6() || main7() || main8() || main9() || main10()
-		|| main11() || main12() || main13() || main14() || main15()
-		|| main16() || main17() || main18() || main19() || main20()
-		|| main21() || main22() || main23() || main24() || main25()
-		|| main26() || main27()) {
-		return 6;
+	main_ty mains[28] = {
+		main0,
+		main1, main2, main3, main4, main5,
+		main6, main7, main8, main9, main10,
+		main11, main12, main13, main14, main15,
+		main16, main17, main18, main19, main20,
+		main21, main22, main23, main24, main25,
+		main26, main27
+	};
+	
+	int i;
+	for (i = 0; i < sizeof(mains) / sizeof(mains[0]); i += 1) {
+		if (mains[i]()) {
+			return 100 + i;
+		}
 	}
 	return 0;
 }

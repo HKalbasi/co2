@@ -1,7 +1,7 @@
 use rustc_public::{
     DefId,
     mir::Mutability,
-    ty::{AdtDef, FloatTy, IntTy, Span, UintTy},
+    ty::{FloatTy, IntTy, Span, UintTy},
 };
 
 use crate::FunctionSignature;
@@ -13,16 +13,12 @@ pub enum HirTyKind {
     Int(IntTy),
     Uint(UintTy),
     Float(FloatTy),
-    Adt(AdtDef, Vec<HirGenericArg>),
+    Adt(DefId, Vec<HirGenericArg>),
     Tuple(Vec<HirTy>),
     RawPtr(Mutability, Box<HirTy>),
-    Ref(Mutability, DefId, Box<HirTy>),
+    Ref(Mutability, HirLifetime, Box<HirTy>),
     FnPtr(Box<FunctionSignature>),
-    Path(HirPath),
 }
-
-#[derive(Clone, Debug)]
-pub struct HirPath {}
 
 #[derive(Clone, Debug)]
 pub struct HirTy {
@@ -51,6 +47,13 @@ impl HirTy {
         }
     }
 
+    pub fn float_ty(f: FloatTy, span: Span) -> Self {
+        HirTy {
+            kind: HirTyKind::Float(f),
+            span,
+        }
+    }
+
     pub fn new_tuple(inner: Vec<HirTy>, span: Span) -> Self {
         HirTy {
             kind: HirTyKind::Tuple(inner),
@@ -65,14 +68,14 @@ impl HirTy {
         }
     }
 
-    pub fn new_ref(inner: HirTy, mutbl: Mutability, lifetime: DefId, span: Span) -> Self {
+    pub fn new_ref(inner: HirTy, mutbl: Mutability, lifetime: HirLifetime, span: Span) -> Self {
         HirTy {
             kind: HirTyKind::Ref(mutbl, lifetime, Box::new(inner)),
             span,
         }
     }
 
-    pub fn adt(adt: AdtDef, args: Vec<HirGenericArg>, span: Span) -> Self {
+    pub fn adt(adt: DefId, args: Vec<HirGenericArg>, span: Span) -> Self {
         HirTy {
             kind: HirTyKind::Adt(adt, args),
             span,
@@ -83,4 +86,11 @@ impl HirTy {
 #[derive(Clone, Debug)]
 pub enum HirGenericArg {
     Ty(HirTy),
+    Lifetime(HirLifetime),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HirLifetime {
+    Static,
+    Param(DefId),
 }

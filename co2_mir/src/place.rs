@@ -43,8 +43,8 @@ impl Builder<'_> {
                 base_place.projection.push(MirProjection::Deref);
                 Some(base_place)
             }
-            HirExprKind::Path(ResolvedValue::Static { def, ty }) => {
-                let value_ty = ty.unwrap_or_else(|| CrateItem(*def).ty());
+            HirExprKind::Path(ResolvedValue::Static(def)) => {
+                let value_ty = CrateItem(*def).ty();
                 let ptr_ty = Ty::new_ptr(value_ty, Mutability::Mut);
                 let tmp_ptr = self.new_temp(ptr_ty, Mutability::Mut, expr.span);
                 self.stmts.push(MirStatement {

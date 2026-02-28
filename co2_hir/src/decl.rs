@@ -2,67 +2,26 @@ use std::collections::HashMap;
 
 use co2_parser::{
     Constant, Declaration, DeclarationSpecifier, Declarator, Expression, InitDeclarator,
-    Initializer, Spanned,
+    Initializer, Spanned, TypeName,
 };
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
     mir::{Mutability, Safety},
     ty::{
-        Abi, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy, Span as RustSpan, Ty,
-        TyKind,
+        Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy, Span as RustSpan,
+        Ty, TyKind,
     },
 };
 
 use crate::expr::{HirExpr, HirExprKind};
-use crate::initializer_tree::{InitializerTree, tree_contains_zeroed};
 use crate::item::{HirLocal, LocalId};
 use crate::resolver::HirCtx;
 use crate::stmt::HirStmt;
-use crate::ty::{
-    adt_field_tys, array_elem_ty, is_maybe_uninit_fn_ptr_ty, is_sized_array_ty, ty_matches_expected,
-};
+use crate::ty::{array_elem_ty, is_array_ty, is_maybe_uninit_fn_ptr_ty, ty_matches_expected};
 
 pub enum TyOrFunction {
     Ty(Ty),
     Function(FnSig),
-}
-
-fn ty_contains_fn_ptr(ty: Ty) -> bool {
-    if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)))
-        || is_maybe_uninit_fn_ptr_ty(ty).is_some()
-    {
-        return true;
-    }
-    if let Some(elem) = array_elem_ty(ty) {
-        return ty_contains_fn_ptr(elem);
-    }
-    if let Some(fields) = adt_field_tys(ty) {
-        return fields.into_iter().any(ty_contains_fn_ptr);
-    }
-    false
-}
-
-fn tree_to_full_aggregate_expr(tree: &InitializerTree, ty: Ty, span: RustSpan) -> Option<HirExpr> {
-    match tree {
-        InitializerTree::Leaf(expr) => Some(expr.clone()),
-        InitializerTree::Zeroed => None,
-        InitializerTree::Middle { children } => {
-            let field_tys = adt_field_tys(ty)?;
-            if children.len() != field_tys.len() {
-                return None;
-            }
-            let mut args = Vec::with_capacity(children.len());
-            for (child, field_ty) in children.iter().zip(field_tys.into_iter()) {
-                let expr = tree_to_full_aggregate_expr(child, field_ty, span)?;
-                args.push(expr);
-            }
-            Some(HirExpr {
-                kind: HirExprKind::Aggregate { args },
-                ty,
-                span,
-            })
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -74,17 +33,11 @@ pub struct HirDecl {
 
 impl<R> HirCtx<'_, R> {
     fn maybe_uninit_of(&self, inner: Ty) -> Result<Ty, String> {
-        for path in ["core::mem::MaybeUninit", "std::mem::MaybeUninit"] {
-            if let Some(ty) = self.resolve_type(path)
-                && let TyKind::RigidTy(RigidTy::Adt(adt, _)) = ty.kind()
-            {
-                return Ok(Ty::from_rigid_kind(RigidTy::Adt(
-                    adt,
-                    GenericArgs(vec![GenericArgKind::Type(inner)]),
-                )));
-            }
-        }
-        Err("failed to resolve core/std MaybeUninit".to_owned())
+        let def_id = self.resolve("core::mem::MaybeUninit").unwrap().0;
+        return Ok(Ty::from_rigid_kind(RigidTy::Adt(
+            AdtDef(def_id),
+            GenericArgs(vec![GenericArgKind::Type(inner)]),
+        )));
     }
 
     pub(crate) fn lower_decl(
@@ -128,7 +81,7 @@ impl<R> HirCtx<'_, R> {
                         .is_some_and(|(init, _)| match init {
                             Initializer::List(_) => true,
                             Initializer::Expr((expr, _)) => {
-                                is_sized_array_ty(ty)
+                                is_array_ty(ty)
                                     || matches!(expr, Expression::Constant(Constant::String(_)))
                             }
                         });
@@ -145,26 +98,13 @@ impl<R> HirCtx<'_, R> {
                                     init.clone(),
                                     locals,
                                     local_map,
-                                )?;
-                                let needs_base_zero = tree_contains_zeroed(&tree);
-                                let can_skip_base_zero = !needs_base_zero && ty_contains_fn_ptr(ty);
-                                if can_skip_base_zero {
-                                    if let Some(aggregate_init) =
-                                        tree_to_full_aggregate_expr(&tree, ty, span)
-                                    {
-                                        Some(aggregate_init)
-                                    } else {
-                                        tree_initializer = Some(tree);
-                                        None
-                                    }
-                                } else {
-                                    tree_initializer = Some(tree);
-                                    Some(HirExpr {
-                                        kind: HirExprKind::Zeroed,
-                                        ty,
-                                        span,
-                                    })
-                                }
+                                );
+                                tree_initializer = Some(tree);
+                                Some(HirExpr {
+                                    kind: HirExprKind::Zeroed,
+                                    ty,
+                                    span,
+                                })
                             }
                             _ => Some(HirExpr {
                                 kind: HirExprKind::Zeroed,
@@ -172,7 +112,7 @@ impl<R> HirCtx<'_, R> {
                                 span,
                             }),
                         }
-                    } else if is_sized_array_ty(ty)
+                    } else if is_array_ty(ty)
                         || matches!(ty.kind(), TyKind::RigidTy(RigidTy::Adt(_, _)))
                     {
                         Some(HirExpr {
@@ -239,6 +179,44 @@ impl<R> HirCtx<'_, R> {
         }
     }
 
+    pub(crate) fn lower_type_name(
+        &self,
+        type_name: TypeName,
+        span: co2_parser::Span,
+    ) -> Result<Ty, String> {
+        let specifiers = type_name
+            .specifier_qualifier_list
+            .into_iter()
+            .map(|(s, span)| {
+                let s = match s {
+                    co2_parser::SpecifierQualifier::TypeSpecifier(t) => {
+                        DeclarationSpecifier::TypeSpecifier(t)
+                    }
+                    co2_parser::SpecifierQualifier::TypeQualifier(t) => {
+                        DeclarationSpecifier::TypeQualifier(t)
+                    }
+                };
+                (s, span)
+            })
+            .collect::<Vec<_>>();
+        let base = self.base_ty_of_decl(specifiers, span)?;
+        match type_name.abstract_declarator {
+            None => Ok(base),
+            Some(decl) => {
+                let (ty, name) = self.extract_decl_type(TyOrFunction::Ty(base), decl)?;
+                if let Some((_, span)) = name {
+                    self.terminate_with_error(span, "type name should not have name");
+                }
+                match ty {
+                    TyOrFunction::Ty(ty) => Ok(ty),
+                    TyOrFunction::Function(_) => {
+                        self.terminate_with_error(span, "Function is invalid as a type name");
+                    }
+                }
+            }
+        }
+    }
+
     fn base_ty_of_decl(
         &self,
         specifiers: Vec<Spanned<DeclarationSpecifier>>,
@@ -246,35 +224,16 @@ impl<R> HirCtx<'_, R> {
     ) -> Result<Ty, String> {
         for (specifier, _) in &specifiers {
             if let DeclarationSpecifier::TypeSpecifier((type_specifier, _)) = specifier {
-                if let co2_parser::TypeSpecifier::StructOrUnion { kind, specifier } = type_specifier
-                {
-                    return match specifier {
-                        co2_parser::StructOrUnionSpecifier::Declared { ident } => self
-                            .resolve_type(&ident.0)
-                            .ok_or_else(|| format!("unresolved struct/union tag: {}", ident.0)),
-                        co2_parser::StructOrUnionSpecifier::Defined { .. }
-                        | co2_parser::StructOrUnionSpecifier::Anonymous { .. } => {
-                            let key = specifier.canonical_field_set_key().ok_or_else(|| {
-                                "struct/union type is only supported when declared at top level"
-                                    .to_owned()
-                            })?;
-                            let key = format!("{kind:?}::{key}");
-                            self.resolve_type(&key).ok_or_else(|| {
-                                format!(
-                                    "anonymous struct/union type is not predeclared at top level: {key}"
-                                )
-                            })
-                        }
-                    };
+                if let co2_parser::TypeSpecifier::StructOrUnion { .. } = type_specifier {
+                    self.terminate_with_error(span, "todo!()");
                 }
                 if let Some(ty) = crate::ty::type_specifier_to_ty(type_specifier)? {
                     return Ok(ty);
                 }
                 if let co2_parser::TypeSpecifier::TypedefName(path) = type_specifier {
-                    let name = path.0.to_pretty();
                     return self
-                        .resolve_type(&name)
-                        .ok_or_else(|| format!("unresolved typedef path: {name}"));
+                        .resolve_type(&path.0)
+                        .ok_or_else(|| format!("unresolved typedef path: {}", path.0.to_pretty()));
                 }
             }
         }
@@ -318,7 +277,7 @@ impl<R> HirCtx<'_, R> {
                             inputs_and_output,
                             c_variadic: param_list.ellipsis,
                             safety: Safety::Safe,
-                            abi: Abi::Rust,
+                            abi: Abi::C { unwind: false },
                         })
                     }
                     TyOrFunction::Function(_) => {
