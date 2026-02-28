@@ -580,6 +580,10 @@ int fp_id(int x)
 	return x;
 }
 
+int (*fp_static)(int);
+int (*fp_static2)(int) = 0;
+int (*fp_static3)(int) = fp_id;
+
 int main18()
 {
 	int (*fp)(int);
@@ -593,9 +597,32 @@ int main18()
 	if (s.f(3) - 3)
 		return 1;
 
+	struct { int (*f)(int); } s2;
+	s2.f = s.f;
+	if (s2.f(3) - 3)
+		return 1;
+
 	fp = 0;
 	if (fp)
 		return 1;
+
+	if (fp_static)
+		return 1;
+	fp_static = s2.f;
+	if (fp_static(3) - 3)
+		return 1;
+
+	if (fp_static2)
+		return 1;
+	fp_static2 = s2.f;
+	if (fp_static2(3) - 3)
+		return 1;
+
+	if (fp_static3(4) - 4)
+		return 1;
+	fp_static3 = 0;
+	if (fp_static3)
+		return 1;	
 
 	return 0;
 }

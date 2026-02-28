@@ -48,6 +48,8 @@ pub struct HirCtx<'a, R> {
     continue_labels: RefCell<Vec<LabelId>>,
     break_labels: RefCell<Vec<LabelId>>,
     switch_scopes: RefCell<Vec<SwitchScope>>,
+    source_name: String,
+    source: &'static str,
     pub(crate) ret_ty: Ty,
 }
 
@@ -57,6 +59,8 @@ impl<'a, R> HirCtx<'a, R> {
         resolve_value: fn(&R, &str) -> Option<ResolvedValue>,
         resolve_type: fn(&R, &str) -> Option<Ty>,
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
+        source: &'static str,
+        source_name: String,
         ret_ty: Ty,
     ) -> Self {
         Self {
@@ -69,6 +73,8 @@ impl<'a, R> HirCtx<'a, R> {
             continue_labels: RefCell::new(Vec::new()),
             break_labels: RefCell::new(Vec::new()),
             switch_scopes: RefCell::new(Vec::new()),
+            source,
+            source_name,
             ret_ty,
         }
     }
@@ -83,6 +89,14 @@ impl<'a, R> HirCtx<'a, R> {
 
     pub(crate) fn to_rust_span(&self, span: ParserSpan) -> RustSpan {
         (self.span_converter)(span)
+    }
+
+    pub(crate) fn terminate_with_error(&self, span: co2_parser::Span, msg: &str) -> ! {
+        co2_parser::print_errors_and_terminate(
+            self.source_name.clone(),
+            self.source,
+            vec![co2_parser::Rich::custom(span, msg)],
+        );
     }
 
     pub(crate) fn reset_labels(&self) {

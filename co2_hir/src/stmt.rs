@@ -310,8 +310,7 @@ impl<R> HirCtx<'_, R> {
                 let mut body_stmts = Vec::new();
 
                 self.enter_switch_scope(discr_local, discr_ty, end_label);
-                let body_res =
-                    self.lower_stmt(body.0, body.1, &mut body_stmts, locals, local_map);
+                let body_res = self.lower_stmt(body.0, body.1, &mut body_stmts, locals, local_map);
                 let scope = self.exit_switch_scope();
                 body_res?;
 
@@ -323,7 +322,10 @@ impl<R> HirCtx<'_, R> {
                         span,
                     });
                 }
-                out.push(HirStmt::Goto(scope.default_label.unwrap_or(end_label), span));
+                out.push(HirStmt::Goto(
+                    scope.default_label.unwrap_or(end_label),
+                    span,
+                ));
                 out.extend(body_stmts);
                 out.push(HirStmt::Label(end_label, span));
             }

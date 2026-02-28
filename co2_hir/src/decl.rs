@@ -22,7 +22,7 @@ use crate::ty::{
     adt_field_tys, array_elem_ty, is_maybe_uninit_fn_ptr_ty, is_sized_array_ty, ty_matches_expected,
 };
 
-enum TyOrFunction {
+pub enum TyOrFunction {
     Ty(Ty),
     Function(FnSig),
 }
@@ -109,7 +109,10 @@ impl<R> HirCtx<'_, R> {
                     } = init.0;
                     let raw_initializer = initializer.clone();
                     let ((name, span), ty) =
-                        self.lower_value_decl_type(declaration_specifiers.clone(), declarator)?;
+                        self.lower_value_decl_type(declaration_specifiers.clone(), declarator);
+                    let TyOrFunction::Ty(ty) = ty else {
+                        continue;
+                    };
 
                     let span = self.to_rust_span(span);
 
@@ -213,19 +216,26 @@ impl<R> HirCtx<'_, R> {
         Ok(())
     }
 
+    pub(crate) fn try_lower_value_decl_type(
+        &self,
+        declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
+        declarator: Spanned<Declarator>,
+    ) -> Result<(Spanned<String>, TyOrFunction), String> {
+        let base = self.base_ty_of_decl(declaration_specifiers, declarator.1)?;
+        let (decl_ty, name) = self.extract_decl_type(TyOrFunction::Ty(base), declarator)?;
+        let name = name.ok_or_else(|| "missing declaration name".to_owned())?;
+        Ok((name, decl_ty))
+    }
+
     pub(crate) fn lower_value_decl_type(
         &self,
         declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
         declarator: Spanned<Declarator>,
-    ) -> Result<(Spanned<String>, Ty), String> {
-        let base = self.base_ty_of_decl(declaration_specifiers, declarator.1)?;
-        let (decl_ty, name) = self.extract_decl_type(TyOrFunction::Ty(base), declarator)?;
-        let name = name.ok_or_else(|| "missing declaration name".to_owned())?;
-        match decl_ty {
-            TyOrFunction::Ty(ty) => Ok((name, ty)),
-            TyOrFunction::Function(_) => {
-                Err("function is not a first-class declaration type in this context".to_owned())
-            }
+    ) -> (Spanned<String>, TyOrFunction) {
+        let span = declarator.1;
+        match self.try_lower_value_decl_type(declaration_specifiers, declarator) {
+            Ok(x) => x,
+            Err(e) => self.terminate_with_error(span, &e),
         }
     }
 

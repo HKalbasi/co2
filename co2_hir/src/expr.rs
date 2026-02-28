@@ -167,9 +167,12 @@ impl<R> HirCtx<'_, R> {
                     });
                 }
 
-                let resolved = self
-                    .resolve_value(&path_str)
-                    .ok_or_else(|| format!("unresolved value path: {path_str}"))?;
+                let Some(resolved) = self.resolve_value(&path_str) else {
+                    self.terminate_with_error(
+                        parser_span,
+                        &format!("unresolved value path: {path_str}"),
+                    )
+                };
                 Ok(HirExpr {
                     kind: HirExprKind::Path(resolved.clone()),
                     ty: resolved.ty(),

@@ -261,10 +261,13 @@ fn extract_decl_type(
                 TyOrFunction::Ty(inner) => {
                     TyOrFunction::Ty(HirTy::new_ptr(inner, Mutability::Mut, rust_span))
                 }
-                TyOrFunction::Function(sig) => TyOrFunction::Ty(HirTy {
-                    kind: HirTyKind::FnPtr(Box::new(sig)),
-                    span: rust_span,
-                }),
+                TyOrFunction::Function(sig) => TyOrFunction::Ty(maybe_uninit_of(
+                    ctx,
+                    HirTy {
+                        kind: HirTyKind::FnPtr(Box::new(sig)),
+                        span: rust_span,
+                    },
+                )?),
             };
             extract_decl_type(ctx, ptr_or_fn_ptr, *declarator, typedefs, typedef_hir_tys)
         }
@@ -280,6 +283,21 @@ fn extract_decl_type(
             extract_decl_type(ctx, array_ty, *declarator, typedefs, typedef_hir_tys)
         }
     }
+}
+
+fn maybe_uninit_of(_ctx: &CrateSigCtx, ty: HirTy) -> Result<HirTy, String> {
+    Ok(ty)
+    // for path in ["core::mem::MaybeUninit", "std::mem::MaybeUninit"] {
+    //     if let Some(ty) = self.resolve_type(path)
+    //         && let TyKind::RigidTy(RigidTy::Adt(adt, _)) = ty.kind()
+    //     {
+    //         return Ok(Ty::from_rigid_kind(RigidTy::Adt(
+    //             adt,
+    //             GenericArgs(vec![GenericArgKind::Type(inner)]),
+    //         )));
+    //     }
+    // }
+    // Err("failed to resolve core/std MaybeUninit".to_owned())
 }
 
 fn primitive_hir_type(

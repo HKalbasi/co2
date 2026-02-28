@@ -214,7 +214,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             .filter_map(|(item, _)| match item {
                 Declaration::Declaration {
                     declaration_specifiers,
-                    declarators,
+                    declarators: _,
                 } => {
                     let is_typedef = declaration_specifiers.iter().any(|(spec, _)| {
                         matches!(
@@ -225,8 +225,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                             ))
                         )
                     });
-                    let has_initializer = declarators.iter().any(|d| d.0.initializer.is_some());
-                    if !is_typedef && has_initializer {
+                    if !is_typedef {
                         Some(item.clone())
                     } else {
                         None
@@ -888,10 +887,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             );
         }
         if let Some(method) = self.impl_methods.get(&def) {
-            return build_clone_method_body(
-                method,
-                ctx.span_in_file(self.file_id, 0, 0),
-            );
+            return build_clone_method_body(method, ctx.span_in_file(self.file_id, 0, 0));
         }
         let func = self
             .pending_functions
@@ -914,6 +910,8 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             DriverResolver::resolve_value,
             DriverResolver::resolve_type,
             &span_converter,
+            self.src_static,
+            self.source_name.clone(),
             func.def.fn_sig().skip_binder().output(),
         );
         let body_identifiers = func
@@ -1737,9 +1735,7 @@ fn build_clone_method_body(
     let statements = vec![Statement {
         kind: StatementKind::Assign(
             return_place.clone(),
-            Rvalue::Use(
-                Operand::Copy(deref_place),
-            ),
+            Rvalue::Use(Operand::Copy(deref_place)),
         ),
         span,
     }];
@@ -1751,14 +1747,7 @@ fn build_clone_method_body(
             span,
         },
     };
-    Body::new(
-        vec![return_block],
-        locals,
-        1,
-        vec![],
-        None,
-        span,
-    )
+    Body::new(vec![return_block], locals, 1, vec![], None, span)
 }
 
 pub fn compile_co2_file(mode: CompileMode, co2_file: &Path) {
