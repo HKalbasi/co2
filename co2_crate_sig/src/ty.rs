@@ -8,7 +8,7 @@ use rustc_public_generative::{
     },
 };
 
-use crate::CrateSigCtx;
+use crate::{CrateSigCtx, LocalResolver, LocalResolverBase};
 
 #[derive(Debug, Clone)]
 pub(crate) enum TyOrFunction {
@@ -17,10 +17,52 @@ pub(crate) enum TyOrFunction {
 }
 
 impl CrateSigCtx<'_> {
-    pub fn lower_function_signature(
+    pub(crate) fn base_ty_of_decl(
+        &mut self,
+        specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
+        parser_span: Span,
+    ) -> TyOrFunction {
+        self.resolver
+            .borrow_mut()
+            .base_ty_of_decl(specifiers, parser_span)
+    }
+
+    pub(crate) fn lower_function_signature(
         &mut self,
         base: TyOrFunction,
-        declarator: Spanned<Declarator>,
+        declarator: Spanned<Declarator<LocalResolver>>,
+    ) -> Result<(String, FunctionSignature, Vec<String>), String> {
+        self.resolver
+            .borrow_mut()
+            .lower_function_signature(base, declarator)
+    }
+
+    pub(crate) fn try_lower_value_decl_type(
+        &mut self,
+        base: TyOrFunction,
+        declarator: Spanned<Declarator<LocalResolver>>,
+    ) -> Result<(String, HirTy), String> {
+        self.resolver
+            .borrow_mut()
+            .try_lower_value_decl_type(base, declarator)
+    }
+
+    pub(crate) fn lower_value_decl_type(
+        &mut self,
+        base: TyOrFunction,
+        declarator: Spanned<Declarator<LocalResolver>>,
+    ) -> (String, HirTy) {
+        self.resolver
+            .borrow_mut()
+            .lower_value_decl_type(base, declarator)
+    }
+}
+
+impl LocalResolverBase {
+    pub(crate) fn lower_function_signature(
+        &mut self,
+        base: TyOrFunction,
+        declarator: Spanned<Declarator<LocalResolver>>,
     ) -> Result<(String, FunctionSignature, Vec<String>), String> {
         let parsed_param_names = function_param_names(&declarator.0);
         let (decl_ty, name) = self.extract_decl_type(base, declarator)?;
@@ -37,10 +79,10 @@ impl CrateSigCtx<'_> {
         Ok((name, sig, names))
     }
 
-    pub fn lower_value_decl_type(
+    pub(crate) fn lower_value_decl_type(
         &mut self,
         base: TyOrFunction,
-        declarator: Spanned<Declarator>,
+        declarator: Spanned<Declarator<LocalResolver>>,
     ) -> (String, HirTy) {
         let span = declarator.1;
         match self.try_lower_value_decl_type(base, declarator) {
@@ -51,10 +93,10 @@ impl CrateSigCtx<'_> {
         }
     }
 
-    pub fn try_lower_value_decl_type(
+    pub(crate) fn try_lower_value_decl_type(
         &mut self,
         base: TyOrFunction,
-        declarator: Spanned<Declarator>,
+        declarator: Spanned<Declarator<LocalResolver>>,
     ) -> Result<(String, HirTy), String> {
         let (decl_ty, name) = self.extract_decl_type(base, declarator)?;
         let name = name.ok_or_else(|| "missing declaration name".to_owned())?;
@@ -68,7 +110,7 @@ impl CrateSigCtx<'_> {
 
     pub(crate) fn base_ty_of_decl(
         &mut self,
-        specifiers: Vec<Spanned<DeclarationSpecifier>>,
+        specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         parser_span: Span,
     ) -> TyOrFunction {
         let span = self.co2_span_to_rustc(parser_span);
@@ -87,25 +129,37 @@ impl CrateSigCtx<'_> {
                     TypeSpecifier::Float => HirTy::float_ty(FloatTy::F32, span),
                     TypeSpecifier::Double => HirTy::float_ty(FloatTy::F64, span),
                     TypeSpecifier::Signed | TypeSpecifier::Unsigned => continue,
-                    TypeSpecifier::Enum(e) => {
-                        self.collect_enum_constants(e, span);
-                        HirTy::signed_ty(IntTy::I32, span)
+                    TypeSpecifier::Enum(_) => HirTy::signed_ty(IntTy::I32, span),
+                    TypeSpecifier::StructOrUnion { kind: _, specifier } => {
+                        HirTy::adt(specifier.0, vec![], span)
                     }
-                    TypeSpecifier::StructOrUnion { kind, specifier } => {
-                        let def_id = self.lower_struct_specifier(kind, specifier, span);
-                        HirTy::adt(def_id, vec![], span)
-                    }
-                    TypeSpecifier::TypedefName((path, parser_span)) => {
-                        let path = path.to_pretty();
-                        if let Some(prim) = primitive_hir_type(&path, span) {
-                            prim
-                        } else if let Some((def_id, _)) = self.resolver.resolve(&path) {
-                            HirTy::adt(def_id, vec![], span)
-                        } else if let Some(sig) = self.unrepresentable_typedefs.get(&path) {
-                            return TyOrFunction::Function(sig.clone());
-                        } else {
-                            self.terminate_with_error(parser_span, "Failed to resolve type");
+                    TypeSpecifier::TypedefName((path, _)) => {
+                        match path {
+                            crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
+                            crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
+                            crate::DefOrLocal::Prim(primitive_ty) => match primitive_ty {
+                                PrimitiveTy::IntTy(int_ty) => HirTy::signed_ty(int_ty, span),
+                                PrimitiveTy::UintTy(uint_ty) => HirTy::unsigned_ty(uint_ty, span),
+                                PrimitiveTy::FloatTy(float_ty) => HirTy::float_ty(float_ty, span),
+                            },
+                            crate::DefOrLocal::UnrepresentableType(sig) => {
+                                return TyOrFunction::Function(sig);
+                            }
                         }
+                        // let path = path.to_pretty();
+                        // if let Some(prim) = PrimitiveTy::parse(&path) {
+                        //     match prim {
+                        //         PrimitiveTy::IntTy(int_ty) => HirTy::signed_ty(int_ty, span),
+                        //         PrimitiveTy::UintTy(uint_ty) => HirTy::unsigned_ty(uint_ty, span),
+                        //         PrimitiveTy::FloatTy(float_ty) => HirTy::float_ty(float_ty, span),
+                        //     }
+                        // } else if let Some((def_id, _)) = self.resolve(&path) {
+                        //     HirTy::adt(def_id, vec![], span)
+                        // } else if let Some(sig) = self.unrepresentable_typedefs.get(&path) {
+                        //     return TyOrFunction::Function(sig.clone());
+                        // } else {
+                        //     self.terminate_with_error(parser_span, "Failed to resolve type");
+                        // }
                     }
                 };
                 return TyOrFunction::Ty(ty);
@@ -120,12 +174,12 @@ impl CrateSigCtx<'_> {
     fn extract_decl_type(
         &mut self,
         current: TyOrFunction,
-        (decl, span): Spanned<Declarator>,
+        (decl, span): Spanned<Declarator<LocalResolver>>,
     ) -> Result<(TyOrFunction, Option<String>), String> {
         let rust_span = self.co2_span_to_rustc(span);
         match decl {
             Declarator::Abstract => Ok((current, None)),
-            Declarator::Identifier((ident, _)) => Ok((current, Some(ident))),
+            Declarator::Identifier((ident, _)) => Ok((current, Some(ident.1))),
             Declarator::FunctionDeclarator {
                 declarator,
                 param_list,
@@ -201,35 +255,23 @@ impl CrateSigCtx<'_> {
         }
         Err("failed to resolve core/std MaybeUninit".to_owned())
     }
-}
 
-fn primitive_hir_type(
-    name: &str,
-    span: rustc_public_generative::rustc_public::ty::Span,
-) -> Option<HirTy> {
-    match name {
-        "u8" => Some(HirTy::unsigned_ty(UintTy::U8, span)),
-        "i8" => Some(HirTy::signed_ty(IntTy::I8, span)),
-        "u16" => Some(HirTy::unsigned_ty(UintTy::U16, span)),
-        "i16" => Some(HirTy::signed_ty(IntTy::I16, span)),
-        "u32" => Some(HirTy::unsigned_ty(UintTy::U32, span)),
-        "i32" => Some(HirTy::signed_ty(IntTy::I32, span)),
-        "u64" => Some(HirTy::unsigned_ty(UintTy::U64, span)),
-        "i64" => Some(HirTy::signed_ty(IntTy::I64, span)),
-        "usize" => Some(HirTy::usize_ty(span)),
-        "isize" => Some(HirTy::signed_ty(IntTy::Isize, span)),
-        "_Float128" => Some(HirTy::float_ty(FloatTy::F128, span)),
-        _ => None,
+    pub(crate) fn terminate_with_error(&self, span: co2_ast::Span, msg: &str) -> ! {
+        co2_ast::print_errors_and_terminate(
+            self.source_name.clone(),
+            self.source,
+            vec![co2_ast::Rich::custom(span, msg)],
+        );
     }
 }
 
-fn function_param_names(decl: &Declarator) -> Option<Vec<Option<String>>> {
+fn function_param_names(decl: &Declarator<LocalResolver>) -> Option<Vec<Option<String>>> {
     match decl {
         Declarator::FunctionDeclarator { param_list, .. } => Some(
             param_list
                 .parameters
                 .iter()
-                .map(|param| declarator_name(&param.1.0))
+                .map(|param| Some(param.1.0.ident()?.1))
                 .collect(),
         ),
         Declarator::PointerDeclarator { declarator, .. }
@@ -238,17 +280,12 @@ fn function_param_names(decl: &Declarator) -> Option<Vec<Option<String>>> {
     }
 }
 
-fn declarator_name(decl: &Declarator) -> Option<String> {
-    match decl {
-        Declarator::Identifier((name, _)) => Some(name.clone()),
-        Declarator::PointerDeclarator { declarator, .. }
-        | Declarator::ArrayDeclarator { declarator, .. }
-        | Declarator::FunctionDeclarator { declarator, .. } => declarator_name(&declarator.0),
-        Declarator::Abstract => None,
-    }
-}
-
-fn parameter_is_void(param: &(Vec<Spanned<DeclarationSpecifier>>, Spanned<Declarator>)) -> bool {
+fn parameter_is_void(
+    param: &(
+        Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
+        Spanned<Declarator<LocalResolver>>,
+    ),
+) -> bool {
     let declarator_is_abstract = matches!(param.1.0, Declarator::Abstract);
     let has_void_type = param.0.iter().any(|(spec, _)| {
         matches!(
@@ -257,4 +294,30 @@ fn parameter_is_void(param: &(Vec<Spanned<DeclarationSpecifier>>, Spanned<Declar
         )
     });
     declarator_is_abstract && has_void_type
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PrimitiveTy {
+    IntTy(IntTy),
+    UintTy(UintTy),
+    FloatTy(FloatTy),
+}
+
+impl PrimitiveTy {
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        match name {
+            "u8" => Some(PrimitiveTy::UintTy(UintTy::U8)),
+            "i8" => Some(PrimitiveTy::IntTy(IntTy::I8)),
+            "u16" => Some(PrimitiveTy::UintTy(UintTy::U16)),
+            "i16" => Some(PrimitiveTy::IntTy(IntTy::I16)),
+            "u32" => Some(PrimitiveTy::UintTy(UintTy::U32)),
+            "i32" => Some(PrimitiveTy::IntTy(IntTy::I32)),
+            "u64" => Some(PrimitiveTy::UintTy(UintTy::U64)),
+            "i64" => Some(PrimitiveTy::IntTy(IntTy::I64)),
+            "usize" => Some(PrimitiveTy::UintTy(UintTy::Usize)),
+            "isize" => Some(PrimitiveTy::IntTy(IntTy::Isize)),
+            "_Float128" => Some(PrimitiveTy::FloatTy(FloatTy::F128)),
+            _ => None,
+        }
+    }
 }

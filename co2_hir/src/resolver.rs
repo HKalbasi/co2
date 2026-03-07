@@ -1,7 +1,6 @@
-use co2_ast::{RustPath, TypeQueryResult};
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
-    ty::{AdtDef, FnDef, GenericArgKind, GenericArgs, RigidTy, Span as RustSpan, Ty, TyKind},
+    ty::{FnDef, RigidTy, Span as RustSpan, Ty, TyKind},
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,9 +38,8 @@ impl ResolvedValue {
 
 type ParserSpan = co2_ast::Span;
 
-pub struct HirCtx<'a, R> {
-    resolver: &'a R,
-    pub(crate) resolve: fn(&R, &str) -> Option<(DefId, TypeQueryResult)>,
+pub struct HirCtx<'a> {
+    pub(crate) maybe_uninit_def: DefId,
     span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
     labels: RefCell<Arena<HirLabel>>,
     named_labels: RefCell<HashMap<String, LabelId>>,
@@ -53,18 +51,16 @@ pub struct HirCtx<'a, R> {
     pub(crate) ret_ty: Ty,
 }
 
-impl<'a, R> HirCtx<'a, R> {
+impl<'a> HirCtx<'a> {
     pub fn new(
-        resolver: &'a R,
-        resolve: fn(&R, &str) -> Option<(DefId, TypeQueryResult)>,
+        maybe_uninit_def: DefId,
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
         source: &'static str,
         source_name: String,
         ret_ty: Ty,
     ) -> Self {
         Self {
-            resolver,
-            resolve,
+            maybe_uninit_def,
             span_converter,
             labels: RefCell::new(Arena::new()),
             named_labels: RefCell::new(HashMap::new()),
@@ -77,44 +73,12 @@ impl<'a, R> HirCtx<'a, R> {
         }
     }
 
-    pub(crate) fn resolve(&self, path: &str) -> Option<(DefId, TypeQueryResult)> {
-        (self.resolve)(self.resolver, path)
-    }
-
-    pub(crate) fn resolve_value(&self, path: &str) -> Option<ResolvedValue> {
-        let (def_id, namespace) = self.resolve(path)?;
-        if namespace == TypeQueryResult::Type {
-            return None;
-        }
+    pub(crate) fn resolve_value(&self, def_id: DefId) -> ResolvedValue {
         let ty = CrateItem(def_id).ty();
         if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnDef(..))) {
-            Some(ResolvedValue::Fn(FnDef(def_id)))
+            ResolvedValue::Fn(FnDef(def_id))
         } else {
-            Some(ResolvedValue::Static(def_id))
-        }
-    }
-
-    pub(crate) fn resolve_type(&self, path: &RustPath) -> Option<Ty> {
-        let (base, generics) = path.decompose();
-        let base = base.to_pretty();
-        if let Some(prim) = crate::primitive_type(&base) {
-            return Some(prim);
-        }
-        let (def_id, namespace) = self.resolve(&base)?;
-        if namespace == TypeQueryResult::Expr {
-            return None;
-        }
-        if generics.is_empty() {
-            Some(CrateItem(def_id).ty())
-        } else {
-            let generics = generics
-                .into_iter()
-                .map(|x| Some(GenericArgKind::Type(self.resolve_type(&x)?)))
-                .collect::<Option<Vec<_>>>()?;
-            Some(Ty::from_rigid_kind(RigidTy::Adt(
-                AdtDef(def_id),
-                GenericArgs(generics),
-            )))
+            ResolvedValue::Static(def_id)
         }
     }
 

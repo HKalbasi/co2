@@ -4,8 +4,10 @@ use co2_ast::{
     Constant, Declaration, DeclarationSpecifier, Declarator, Expression, InitDeclarator,
     Initializer, Spanned, TypeName,
 };
+use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
+    CrateItem,
     mir::{Mutability, Safety},
     ty::{
         Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy, Span as RustSpan,
@@ -31,21 +33,20 @@ pub struct HirDecl {
     pub span: RustSpan,
 }
 
-impl<R> HirCtx<'_, R> {
+impl HirCtx<'_> {
     fn maybe_uninit_of(&self, inner: Ty) -> Result<Ty, String> {
-        let def_id = self.resolve("core::mem::MaybeUninit").unwrap().0;
         return Ok(Ty::from_rigid_kind(RigidTy::Adt(
-            AdtDef(def_id),
+            AdtDef(self.maybe_uninit_def),
             GenericArgs(vec![GenericArgKind::Type(inner)]),
         )));
     }
 
     pub(crate) fn lower_decl(
         &self,
-        decl: Declaration,
+        decl: Declaration<LocalResolver>,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<(), String> {
         match decl {
             Declaration::FunctionDefinition { .. } => {
@@ -70,11 +71,11 @@ impl<R> HirCtx<'_, R> {
                     let span = self.to_rust_span(span);
 
                     let local = locals.alloc(HirLocal {
-                        name: name.clone(),
+                        name: name.1.clone(),
                         ty,
                         span,
                     });
-                    local_map.insert(name, local);
+                    local_map.insert(name.0, local);
 
                     let needs_tree = raw_initializer
                         .as_ref()
@@ -158,9 +159,9 @@ impl<R> HirCtx<'_, R> {
 
     pub(crate) fn try_lower_value_decl_type(
         &self,
-        declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
-        declarator: Spanned<Declarator>,
-    ) -> Result<(Spanned<String>, TyOrFunction), String> {
+        declaration_specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
+        declarator: Spanned<Declarator<LocalResolver>>,
+    ) -> Result<(Spanned<(usize, String)>, TyOrFunction), String> {
         let base = self.base_ty_of_decl(declaration_specifiers, declarator.1)?;
         let (decl_ty, name) = self.extract_decl_type(TyOrFunction::Ty(base), declarator)?;
         let name = name.ok_or_else(|| "missing declaration name".to_owned())?;
@@ -169,9 +170,9 @@ impl<R> HirCtx<'_, R> {
 
     pub(crate) fn lower_value_decl_type(
         &self,
-        declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
-        declarator: Spanned<Declarator>,
-    ) -> (Spanned<String>, TyOrFunction) {
+        declaration_specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
+        declarator: Spanned<Declarator<LocalResolver>>,
+    ) -> (Spanned<(usize, String)>, TyOrFunction) {
         let span = declarator.1;
         match self.try_lower_value_decl_type(declaration_specifiers, declarator) {
             Ok(x) => x,
@@ -181,7 +182,7 @@ impl<R> HirCtx<'_, R> {
 
     pub(crate) fn lower_type_name(
         &self,
-        type_name: TypeName,
+        type_name: TypeName<LocalResolver>,
         span: co2_ast::Span,
     ) -> Result<Ty, String> {
         let specifiers = type_name
@@ -219,21 +220,42 @@ impl<R> HirCtx<'_, R> {
 
     fn base_ty_of_decl(
         &self,
-        specifiers: Vec<Spanned<DeclarationSpecifier>>,
+        specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         span: co2_ast::Span,
     ) -> Result<Ty, String> {
         for (specifier, _) in &specifiers {
             if let DeclarationSpecifier::TypeSpecifier((type_specifier, _)) = specifier {
-                if let co2_ast::TypeSpecifier::StructOrUnion { .. } = type_specifier {
-                    self.terminate_with_error(span, "todo!()");
+                if let co2_ast::TypeSpecifier::StructOrUnion { kind: _, specifier } = type_specifier
+                {
+                    return Ok(Ty::from_rigid_kind(RigidTy::Adt(
+                        AdtDef(specifier.0),
+                        GenericArgs(vec![]),
+                    )));
                 }
                 if let Some(ty) = crate::ty::type_specifier_to_ty(type_specifier)? {
                     return Ok(ty);
                 }
                 if let co2_ast::TypeSpecifier::TypedefName(path) = type_specifier {
-                    return self
-                        .resolve_type(&path.0)
-                        .ok_or_else(|| format!("unresolved typedef path: {}", path.0.to_pretty()));
+                    return Ok(match path.0 {
+                        co2_crate_sig::DefOrLocal::Def(def_id) => CrateItem(def_id).ty(),
+                        co2_crate_sig::DefOrLocal::Local(_) => {
+                            panic!("Invalid local in type position")
+                        }
+                        co2_crate_sig::DefOrLocal::Prim(primitive_ty) => match primitive_ty {
+                            co2_crate_sig::PrimitiveTy::IntTy(int_ty) => {
+                                Ty::from_rigid_kind(RigidTy::Int(int_ty))
+                            }
+                            co2_crate_sig::PrimitiveTy::UintTy(uint_ty) => {
+                                Ty::from_rigid_kind(RigidTy::Uint(uint_ty))
+                            }
+                            co2_crate_sig::PrimitiveTy::FloatTy(float_ty) => {
+                                Ty::from_rigid_kind(RigidTy::Float(float_ty))
+                            }
+                        },
+                        co2_crate_sig::DefOrLocal::UnrepresentableType(_) => {
+                            todo!("Function types are not supported in hir");
+                        }
+                    });
                 }
             }
         }
@@ -243,8 +265,8 @@ impl<R> HirCtx<'_, R> {
     fn extract_decl_type(
         &self,
         current: TyOrFunction,
-        (decl, span): Spanned<Declarator>,
-    ) -> Result<(TyOrFunction, Option<Spanned<String>>), String> {
+        (decl, span): Spanned<Declarator<LocalResolver>>,
+    ) -> Result<(TyOrFunction, Option<Spanned<(usize, String)>>), String> {
         match decl {
             Declarator::Abstract => Ok((current, None)),
             Declarator::Identifier(ident) => Ok((current, Some(ident))),

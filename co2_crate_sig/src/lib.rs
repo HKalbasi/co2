@@ -1,5 +1,6 @@
 #![feature(rustc_private)]
 
+mod ast_resolver;
 mod ctx;
 mod lowering;
 mod mir;
@@ -10,6 +11,8 @@ mod ty;
 
 pub(crate) use ctx::CrateSigCtx;
 
-pub use lowering::lower_crate_sig;
+pub use ast_resolver::{DefOrLocal, LocalResolver, LocalResolverBase};
+pub use lowering::{WellknownDefs, lower_crate_sig};
 pub use mir::MirOwnerInfo;
 pub use resolver::Resolver;
+pub use ty::PrimitiveTy;

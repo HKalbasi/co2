@@ -1,24 +1,30 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use co2_ast::{
-    Declaration, DeclarationSpecifier, InitDeclarator, StorageClassSpecifier, StructOrUnionKind,
-    TypeQueryResult, TypeResolver,
+    Declaration, DeclarationSpecifier, DoTransform as _, InitDeclarator, StatelessResolver,
+    StorageClassSpecifier, StructOrUnionKind,
 };
+use co2_parser::parse_compound_statement;
 use rustc_public_generative::{
     DefData, FileId, ForeignModItem, FunctionAbi, FunctionSignature, HirAdtKind, HirGenericArg,
     HirImplItem, HirImplItemKind, HirLifetime, HirModule, HirModuleItem, HirSelfKind, HirStructure,
     HirStructureCtx, HirTy,
     rustc_public::{
         DefId,
-        ty::{AdtDef, FnDef},
+        ty::{AdtDef, FnDef, IntTy},
     },
 };
 
 use crate::{
-    CrateSigCtx, MirOwnerInfo,
+    CrateSigCtx, LocalResolver, LocalResolverBase, MirOwnerInfo,
     resolver::Resolver,
-    struct_manager::{StructData, StructManager},
+    struct_manager::{PendingEnum, StructData, StructManager},
 };
+
+pub struct WellknownDefs {
+    pub maybe_uninit: DefId,
+    pub zeroed: FnDef,
+}
 
 pub fn lower_crate_sig(
     ctx: HirStructureCtx<'_>,
@@ -26,42 +32,44 @@ pub fn lower_crate_sig(
     src_static: &'static str,
     file_id: FileId,
     no_main: bool,
-) -> (HirStructure, HashMap<DefId, MirOwnerInfo>, Resolver) {
+) -> (HirStructure, HashMap<DefId, MirOwnerInfo>, WellknownDefs) {
     let span = ctx.span_in_file(file_id, 0, 0);
     let deps = ctx.dependencies();
 
-    struct TranslationUnitParseResolver;
-    impl TypeResolver for TranslationUnitParseResolver {
-        fn classify_path(&self, path: &co2_ast::RustPath) -> TypeQueryResult {
-            let _ = path;
-            TypeQueryResult::Unsure
-        }
-    }
-
-    let parse_resolver = TranslationUnitParseResolver;
-    let tu = co2_parser::parse_translation_unit(source_name.clone(), src_static, &parse_resolver)
+    let tu = co2_parser::parse_translation_unit(source_name.clone(), src_static, StatelessResolver)
         .expect("failed to parse co2 source")
         .0;
 
     let foreign_mod = ctx.allocate_def_id(ctx.root_crate_def_id(), DefData::ForeignMod);
     let mut foreign_items = Vec::new();
 
+    let ctx = &*Box::leak(Box::new(ctx));
+
     let mut ctx = CrateSigCtx {
-        resolver: Resolver::new(&ctx, deps, &tu, foreign_mod),
+        resolver: Rc::new(RefCell::new(LocalResolverBase {
+            resolver: Resolver::new(&ctx, deps, &tu, foreign_mod),
+            local_counter: 0,
+            fake_defs_counter: 0,
+            pending_typedefs: vec![],
+            hir_ctx: unsafe { std::mem::transmute(ctx) },
+            file_id,
+            source_name: source_name.clone(),
+            source: src_static,
+            struct_manager: StructManager::default(),
+            unrepresentable_typedefs: HashMap::new(),
+        })),
         hir_ctx: ctx,
         source_name,
         source: src_static,
         file_id,
-        struct_manager: StructManager::default(),
-        unrepresentable_typedefs: HashMap::new(),
         mir_owners: HashMap::new(),
         hir_items: vec![],
     };
 
     {
         let name = "__builtin_va_list";
-        let id = ctx.resolver.resolve("__builtin_va_list").unwrap().0;
-        let adt = ctx.resolver.resolve("std::ffi::VaList").unwrap().0;
+        let id = ctx.resolve("__builtin_va_list").unwrap().0;
+        let adt = ctx.resolve("std::ffi::VaList").unwrap().0;
         let ty = HirTy::adt(
             adt,
             vec![HirGenericArg::Lifetime(HirLifetime::Static)],
@@ -86,11 +94,14 @@ pub fn lower_crate_sig(
                 if has_static_storage(&declaration_specifiers) {
                     continue;
                 }
-                let base = ctx.base_ty_of_decl(declaration_specifiers, parser_span);
+
+                let mut resolver = LocalResolver::new(ctx.resolver.clone());
+                let base =
+                    ctx.base_ty_of_decl(declaration_specifiers.transform(&resolver), parser_span);
                 let (name, mut sig, param_names) = ctx
-                    .lower_function_signature(base, declarator)
+                    .lower_function_signature(base, declarator.transform(&resolver))
                     .expect("failed to lower function signature");
-                let id = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                let id = ctx.resolve_in_current([&*name]).unwrap().0;
                 if name == "main" && !no_main {
                     sig.abi = FunctionAbi::Rust;
                 }
@@ -102,12 +113,26 @@ pub fn lower_crate_sig(
                     no_mangle: true,
                     span,
                 });
+                let param_names = param_names
+                    .into_iter()
+                    .map(|name| {
+                        let id = resolver.add_local(name.clone());
+                        (id, name)
+                    })
+                    .collect();
+                let body = parse_compound_statement(
+                    &body.0.tokens.0,
+                    ctx.source_name.clone(),
+                    ctx.source,
+                    resolver,
+                );
+
                 ctx.mir_owners.insert(
                     id.0,
                     MirOwnerInfo::Fn {
                         def: id,
                         param_names,
-                        body_tokens: body.0.tokens.0,
+                        body,
                     },
                 );
             }
@@ -129,7 +154,8 @@ pub fn lower_crate_sig(
                     }
                 }
 
-                let base = ctx.base_ty_of_decl(cleaned_specs, parser_span);
+                let resolver = LocalResolver::new(ctx.resolver.clone());
+                let base = ctx.base_ty_of_decl(cleaned_specs.transform(&resolver), parser_span);
 
                 for init in declarators {
                     let InitDeclarator {
@@ -138,23 +164,29 @@ pub fn lower_crate_sig(
                     } = init.0;
 
                     if is_typedef {
-                        let result =
-                            ctx.try_lower_value_decl_type(base.clone(), declarator.clone());
+                        let result = ctx.try_lower_value_decl_type(
+                            base.clone(),
+                            declarator.transform(&resolver),
+                        );
                         let (name, ty) = match result {
                             Ok(pair) => pair,
                             Err(e) => {
                                 // May be a function-type typedef (e.g. `typedef Ret fn_t(args)`).
                                 // Store as FnPtr; skip emitting a TypeDef item (not needed for fn types).
-                                if let Ok((fn_name, sig, _)) =
-                                    ctx.lower_function_signature(base.clone(), declarator.clone())
-                                {
-                                    ctx.unrepresentable_typedefs.insert(fn_name, sig);
+                                if let Ok((fn_name, sig, _)) = ctx.lower_function_signature(
+                                    base.clone(),
+                                    declarator.transform(&resolver),
+                                ) {
+                                    ctx.resolver
+                                        .borrow_mut()
+                                        .unrepresentable_typedefs
+                                        .insert(fn_name, sig);
                                     continue;
                                 }
                                 ctx.terminate_with_error(init.1, &e);
                             }
                         };
-                        let type_def = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                        let type_def = ctx.resolve_in_current([&*name]).unwrap().0;
                         ctx.hir_items.push(HirModuleItem::TypeDef {
                             name,
                             id: type_def,
@@ -165,10 +197,12 @@ pub fn lower_crate_sig(
                     }
 
                     if !declarator.0.is_function() {
-                        let (name, ty) =
-                            ctx.lower_value_decl_type(base.clone(), declarator.clone());
-                        let (id, _) = ctx.resolver.resolve_in_current([&*name]).unwrap();
-                        if let Some(initializer) = initializer {
+                        let (name, ty) = ctx
+                            .lower_value_decl_type(base.clone(), declarator.transform(&resolver));
+                        let (id, _) = ctx.resolve_in_current([&*name]).unwrap();
+                        if let Some((initializer, span)) = initializer {
+                            let initializer = initializer.transform(&resolver);
+                            let initializer = (initializer, span);
                             ctx.mir_owners
                                 .insert(id, MirOwnerInfo::Static { initializer });
                         } else {
@@ -183,9 +217,11 @@ pub fn lower_crate_sig(
                         });
                         continue;
                     } else {
-                        match ctx.lower_function_signature(base.clone(), declarator.clone()) {
+                        match ctx
+                            .lower_function_signature(base.clone(), declarator.transform(&resolver))
+                        {
                             Ok((name, sig, _param_names)) => {
-                                let def_id = ctx.resolver.resolve_in_current([&*name]).unwrap().0;
+                                let def_id = ctx.resolve_in_current([&*name]).unwrap().0;
                                 let span = ctx.co2_span_to_rustc(init.1);
                                 foreign_items.push(ForeignModItem::ForeignFunction {
                                     name,
@@ -209,29 +245,27 @@ pub fn lower_crate_sig(
         items: foreign_items,
     });
 
-    let clone_trait = ctx
-        .resolver
-        .resolve_in_deps("core", ["clone", "Clone"])
-        .unwrap()
-        .0;
-    let copy_trait = ctx
-        .resolver
-        .resolve_in_deps("core", ["marker", "Copy"])
-        .unwrap()
-        .0;
-    let clone_trait_fn = ctx
-        .resolver
-        .resolve_in_deps("core", ["clone", "Clone", "clone"])
-        .unwrap()
-        .0;
+    let clone_trait = ctx.resolve("core::clone::Clone").unwrap().0;
+    let copy_trait = ctx.resolve("core::marker::Copy").unwrap().0;
+    let clone_trait_fn = ctx.resolve("core::clone::Clone::clone").unwrap().0;
 
+    let pending_typedefs = std::mem::take(&mut ctx.resolver.borrow_mut().pending_typedefs);
+    for (id, name, specifiers, declarator, parser_span) in pending_typedefs {
+        let span = ctx.co2_span_to_rustc(parser_span);
+        let ty = ctx.base_ty_of_decl(specifiers, parser_span);
+        let (_, ty) = ctx.lower_value_decl_type(ty, (declarator, parser_span));
+        ctx.hir_items
+            .push(HirModuleItem::TypeDef { name, id, ty, span });
+    }
+
+    let structs = ctx.resolver.borrow_mut().emit_structs().collect::<Vec<_>>();
     for StructData {
         def_id: def,
         name,
         kind,
         fields,
         span,
-    } in ctx.emit_structs()
+    } in structs
     {
         let Some(fields) = fields else {
             // TODO: lower to extern types
@@ -299,6 +333,28 @@ pub fn lower_crate_sig(
         });
     }
 
+    let enums = ctx.resolver.borrow_mut().emit_enums().collect::<Vec<_>>();
+    for PendingEnum {
+        name,
+        def_id,
+        mir_info,
+    } in enums
+    {
+        ctx.hir_items
+            .push(rustc_public_generative::HirModuleItem::Static {
+                name: name.clone(),
+                id: def_id,
+                ty: HirTy::signed_ty(IntTy::I32, span),
+                mutable: false,
+                span,
+            });
+        ctx.mir_owners.insert(def_id, mir_info);
+    }
+
+    let defs = WellknownDefs {
+        maybe_uninit: ctx.resolve("core::mem::MaybeUninit").unwrap().0,
+        zeroed: FnDef(ctx.resolve("core::mem::zeroed").unwrap().0),
+    };
     (
         HirStructure {
             root: HirModule {
@@ -308,11 +364,13 @@ pub fn lower_crate_sig(
             no_main,
         },
         ctx.mir_owners,
-        ctx.resolver,
+        defs,
     )
 }
 
-fn has_static_storage(specifiers: &[co2_ast::Spanned<DeclarationSpecifier>]) -> bool {
+fn has_static_storage(
+    specifiers: &[co2_ast::Spanned<DeclarationSpecifier<StatelessResolver>>],
+) -> bool {
     specifiers.iter().any(|(spec, _)| {
         matches!(
             spec,

@@ -1,5 +1,5 @@
 //@ mode: c
-//@ ui-error: Failed to resolve type
+//@ ui-error: Unresolved name
 
 typedef struct {
   union {

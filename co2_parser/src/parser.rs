@@ -1,9 +1,9 @@
-use co2_ast::TypeResolver;
-use co2_ast::*;
 use chumsky::{
     input::{SliceInput, ValueInput},
     prelude::*,
 };
+use co2_ast::TypeResolver;
+use co2_ast::*;
 
 fn look_ahead<'src, I>(
     token: Token,
@@ -62,49 +62,94 @@ where
     })
 }
 
-pub(crate) fn compound_statement<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
+fn repeated_statement_with_modified_resolver<'src, I, R: TypeResolver>(
+    item_parser: impl Parser<
+        'src,
+        I,
+        (Spanned<StatementOrDeclaration<R>>, R),
+        extra::Err<Rich<'src, Token, Span>>,
+    > + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<CompoundStatement>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Vec<Spanned<StatementOrDeclaration<R>>>, extra::Err<Rich<'src, Token, Span>>>
++ Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    statement_or_declaration(resolver, stmt_rec)
-        .repeated()
-        .collect()
+    fn is_finished<'src, I>(
+        inp: &mut chumsky::input::InputRef<'src, '_, I, extra::Full<Rich<'src, Token>, (), ()>>,
+    ) -> bool
+    where
+        I: ValueInput<'src, Token = Token, Span = Span>
+            + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
+    {
+        let check_point = inp.save();
+        let is_finished = inp.next() == Some(Token::RBrace);
+        inp.rewind(check_point);
+        is_finished
+    }
+    custom(move |inp| {
+        if is_finished(inp) {
+            return Ok(vec![]);
+        }
+        let (first, mut current_resolver) = inp.parse(item_parser.clone())?;
+        let mut result = vec![first];
+        loop {
+            if is_finished(inp) {
+                return Ok(result);
+            }
+            let (item, nr) = inp.parse(statement_or_declaration(
+                current_resolver.clone(),
+                statement(current_resolver),
+            ))?;
+            current_resolver = nr;
+            result.push(item);
+        }
+    })
+}
+
+pub(crate) fn compound_statement<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
+    + Clone
+    + 'src,
+) -> impl Parser<'src, I, Spanned<CompoundStatement<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>
+        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
+{
+    repeated_statement_with_modified_resolver(statement_or_declaration(resolver, stmt_rec))
         .map(|statements| CompoundStatement { statements })
         .map_with(|r, e| (r, e.span()))
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
 }
 
-fn statement_or_declaration<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+fn statement_or_declaration<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<StatementOrDeclaration>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, (Spanned<StatementOrDeclaration<R>>, R), extra::Err<Rich<'src, Token, Span>>>
++ Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    declaration(resolver, true, stmt_rec.clone())
-        .map(StatementOrDeclaration::Declaration)
-        .or(stmt_rec.map(StatementOrDeclaration::Statement))
-        .map_with(|r, e| (r, e.span()))
+    declaration(resolver.clone(), stmt_rec.clone())
+        .map(|(v, r)| (StatementOrDeclaration::Declaration(v), r))
+        .or(stmt_rec.map(move |v| (StatementOrDeclaration::Statement(v), resolver.clone())))
+        .map_with(|(v, r), e| ((v, e.span()), r))
 }
 
-pub(crate) fn statement<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-) -> impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>> + Clone
+pub(crate) fn statement<'src, I, R: TypeResolver>(
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     recursive(|stmt_rec| {
-        let expression_rec = expression(resolver, stmt_rec.clone());
+        let expression_rec = expression(resolver.clone(), stmt_rec.clone());
         let jump_statement = just(Token::Return)
             .ignore_then(expression_rec.clone().or_not())
             .map(|exp| Statement::Return(exp))
@@ -242,35 +287,34 @@ where
     })
 }
 
-pub(crate) fn expression<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+pub(crate) fn expression<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    expression_with_type_paths(resolver, stmt_rec, false)
+    expression_with_type_paths(resolver, stmt_rec)
 }
 
-fn expression_with_type_paths<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+fn expression_with_type_paths<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    allow_path_types_in_type_name: bool,
-) -> impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     recursive(|rec| {
         #[derive(Clone)]
-        enum PostfixPart {
-            Subscript(Spanned<Expression>),
-            Call(Vec<Spanned<Expression>>),
+        enum PostfixPart<R: TypeResolver> {
+            Subscript(Spanned<Expression<R>>),
+            Call(Vec<Spanned<Expression<R>>>),
             Dot(Spanned<String>),
             Arrow(Spanned<String>),
             PostInc,
@@ -317,22 +361,17 @@ where
             choice((list, expr))
         });
 
-        let compound_literal = type_name(
-            resolver,
-            rec.clone(),
-            allow_path_types_in_type_name,
-            allow_path_types_in_type_name,
-        )
-        .delimited_by(just(Token::LParen), just(Token::RParen))
-        .then(
-            compound_initializer
-                .clone()
-                .filter(|(init, _)| matches!(init, Initializer::List(_))),
-        )
-        .map(|(type_name, initializer)| Expression::CompoundLiteral {
-            type_name: Box::new(type_name),
-            initializer: Box::new(initializer),
-        });
+        let compound_literal = type_name(resolver.clone(), rec.clone())
+            .delimited_by(just(Token::LParen), just(Token::RParen))
+            .then(
+                compound_initializer
+                    .clone()
+                    .filter(|(init, _)| matches!(init, Initializer::List(_))),
+            )
+            .map(|(type_name, initializer)| Expression::CompoundLiteral {
+                type_name: Box::new(type_name),
+                initializer: Box::new(initializer),
+            });
 
         let primary_expression = choice((
             compound_literal,
@@ -349,14 +388,18 @@ where
                     }),
                 }),
             rust_path()
-                .filter(move |path| {
-                    match resolver.classify_path(&path.0) {
-                            TypeQueryResult::Type => false,
-                            TypeQueryResult::Unsure | TypeQueryResult::Expr => true,
-                        }
+                .map({
+                    let resolver = resolver.clone();
+                    move |path| (resolver.classify_path(&path.0), path.1)
+                })
+                .filter(|r| {
+                    let Some(r) = &r.0 else { return false };
+                    match r.0 {
+                        TypeQueryResult::Type => false,
+                        TypeQueryResult::Unsure | TypeQueryResult::Expr => true,
                     }
-                )
-                .map(Expression::Identifier),
+                })
+                .map(|r| Expression::Identifier((r.0.unwrap().1, r.1))),
             select! {
                 Token::StringLit(s) => s,
             }
@@ -374,7 +417,7 @@ where
             },
             rec.clone()
                 .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map(|x: (Expression, SimpleSpan)| x.0),
+                .map(|x: (Expression<R>, SimpleSpan)| x.0),
         ))
         .map_with(|r, e| (r, e.span()));
 
@@ -383,23 +426,23 @@ where
                 choice((
                     rec.clone()
                         .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                        .map(PostfixPart::Subscript),
+                        .map(PostfixPart::<R>::Subscript),
                     rec.clone()
                         .separated_by(just(Token::Comma))
                         .collect()
-                        .map(PostfixPart::Call)
+                        .map(PostfixPart::<R>::Call)
                         .delimited_by(just(Token::LParen), just(Token::RParen)),
                     just(Token::Dot)
                         .ignore_then(identifier())
-                        .map(PostfixPart::Dot),
+                        .map(PostfixPart::<R>::Dot),
                     just(Token::Arrow)
                         .ignore_then(identifier())
-                        .map(PostfixPart::Arrow),
-                    just(Token::Inc).to(PostfixPart::PostInc),
-                    just(Token::Dec).to(PostfixPart::PostDec),
+                        .map(PostfixPart::<R>::Arrow),
+                    just(Token::Inc).to(PostfixPart::<R>::PostInc),
+                    just(Token::Dec).to(PostfixPart::<R>::PostDec),
                 ))
                 .repeated()
-                .collect::<Vec<PostfixPart>>(),
+                .collect::<Vec<PostfixPart<R>>>(),
             )
             .map(|(mut main, posts)| {
                 for post in posts {
@@ -443,13 +486,8 @@ where
             let unary_expression = recursive(|unary| {
                 let sizeof_type_expression = just(Token::Sizeof)
                     .ignore_then(
-                        type_name(
-                            resolver,
-                            rec.clone(),
-                            allow_path_types_in_type_name,
-                            allow_path_types_in_type_name,
-                        )
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
+                        type_name(resolver.clone(), rec.clone())
+                            .delimited_by(just(Token::LParen), just(Token::RParen)),
                     )
                     .map(|ty| Expression::SizeofType(Box::new(ty)))
                     .map_with(|r, e| (r, e.span()));
@@ -492,19 +530,14 @@ where
                 ))
             });
 
-            let cast_type_expression = type_name(
-                resolver,
-                rec.clone(),
-                allow_path_types_in_type_name,
-                allow_path_types_in_type_name,
-            )
-            .delimited_by(just(Token::LParen), just(Token::RParen))
-            .then(cast_expr.clone())
-            .map(|(type_name, expr)| Expression::Cast {
-                type_name: Box::new(type_name),
-                expr: Box::new(expr),
-            })
-            .map_with(|r, e| (r, e.span()));
+            let cast_type_expression = type_name(resolver.clone(), rec.clone())
+                .delimited_by(just(Token::LParen), just(Token::RParen))
+                .then(cast_expr.clone())
+                .map(|(type_name, expr)| Expression::Cast {
+                    type_name: Box::new(type_name),
+                    expr: Box::new(expr),
+                })
+                .map_with(|r, e| (r, e.span()));
 
             choice((cast_type_expression, unary_expression))
         });
@@ -853,18 +886,18 @@ where
     )
 }
 
-fn struct_or_union_fields<'src, 'r, I>(
+fn struct_or_union_fields<'src, I, R: TypeResolver>(
     type_specifier_rec: impl Parser<
         'src,
         I,
-        Spanned<TypeSpecifier>,
+        Spanned<TypeSpecifier<R>>,
         extra::Err<Rich<'src, Token, Span>>,
     > + Clone
     + 'src,
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Vec<Spanned<StructOrUnionField>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Vec<Spanned<StructOrUnionField<R>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -887,18 +920,15 @@ where
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
 }
 
-fn type_specifier<'src, 'r: 'src, I>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+fn type_specifier<'src, I, R: TypeResolver>(
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    resolver: &'r dyn TypeResolver,
-    allow_unsure_paths: bool,
-    allow_path_types: bool,
-    allow_enum_definition: bool,
-) -> impl Parser<'src, I, Spanned<TypeSpecifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<TypeSpecifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -915,9 +945,19 @@ where
                 struct_or_union_fields(rec, declarator_rec)
                     .map(|fields| StructOrUnionSpecifier::Anonymous { fields }),
                 identifier().map(|ident| StructOrUnionSpecifier::Declared { ident }),
-            )),
+            ))
+            .map_with(|r, e| (r, e.span())),
         ))
-        .map(|(kind, specifier)| TypeSpecifier::StructOrUnion { kind, specifier });
+        .map({
+            let resolver = resolver.clone();
+            move |(kind, (specifier, span))| TypeSpecifier::StructOrUnion {
+                kind,
+                specifier: (
+                    resolver.register_struct_or_union_specifier(kind, (specifier, span)),
+                    span,
+                ),
+            }
+        });
 
         let enumerator = identifier()
             .then(just(Token::Assign).ignore_then(expression_rec).or_not())
@@ -928,9 +968,9 @@ where
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LBrace), just(Token::RBrace));
-        let enum_specifier = if allow_enum_definition {
-            just(Token::Enum)
-                .ignore_then(choice((
+        let enum_specifier = just(Token::Enum)
+            .ignore_then(
+                choice((
                     identifier()
                         .then(enum_body.clone())
                         .map(|(ident, enumerators)| EnumSpecifier::Defined { ident, enumerators }),
@@ -938,15 +978,16 @@ where
                         .clone()
                         .map(|enumerators| EnumSpecifier::Anonymous { enumerators }),
                     identifier().map(|ident| EnumSpecifier::Declared { ident }),
-                )))
-                .map(TypeSpecifier::Enum)
-                .boxed()
-        } else {
-            just(Token::Enum)
-                .ignore_then(identifier().map(|ident| EnumSpecifier::Declared { ident }))
-                .map(TypeSpecifier::Enum)
-                .boxed()
-        };
+                ))
+                .map_with(|r, e| (r, e.span())),
+            )
+            .map({
+                let resolver = resolver.clone();
+                move |(x, span)| {
+                    TypeSpecifier::Enum((resolver.register_enum_specifier((x, span)), span))
+                }
+            })
+            .boxed();
 
         choice([
             just(Token::Int).to(TypeSpecifier::Int),
@@ -963,17 +1004,18 @@ where
         .or(struct_or_union_specifier)
         .or(enum_specifier)
         .or(rust_path()
-            .filter(move |path| {
-                if !allow_path_types {
-                    return false;
-                }
-                match resolver.classify_path(&path.0) {
-                    TypeQueryResult::Type => true,
-                    TypeQueryResult::Unsure => allow_unsure_paths,
+            .map({
+                let resolver = resolver.clone();
+                move |path| (resolver.classify_path(&path.0), path.1)
+            })
+            .filter(|r| {
+                let Some(r) = &r.0 else { return false };
+                match r.0 {
                     TypeQueryResult::Expr => false,
+                    TypeQueryResult::Unsure | TypeQueryResult::Type => true,
                 }
             })
-            .map(TypeSpecifier::TypedefName))
+            .map(|r| TypeSpecifier::TypedefName((r.0.unwrap().1, r.1))))
         .map_with(|r, e| (r, e.span()))
         .labelled("Type specifier")
     })
@@ -1013,59 +1055,42 @@ where
     .map_with(|r, e| (r, e.span()))
 }
 
-fn specifier_qualifier<'src, 'r: 'src, I>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+fn specifier_qualifier<'src, I, R: TypeResolver>(
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    resolver: &'r dyn TypeResolver,
-    allow_path_types: bool,
-    allow_unsure_paths: bool,
-) -> impl Parser<'src, I, Spanned<SpecifierQualifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<SpecifierQualifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     choice((
-        type_specifier(
-            declarator_rec,
-            expression_rec,
-            resolver,
-            allow_unsure_paths,
-            allow_path_types,
-            false,
-        )
-        .map(SpecifierQualifier::TypeSpecifier),
+        type_specifier(declarator_rec, expression_rec, resolver)
+            .map(SpecifierQualifier::TypeSpecifier),
         type_qualifier().map(SpecifierQualifier::TypeQualifier),
     ))
     .map_with(|r, e| (r, e.span()))
 }
 
-fn type_name<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+fn type_name<'src, I, R: TypeResolver>(
+    resolver: R,
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    allow_path_types: bool,
-    allow_unsure_paths: bool,
-) -> impl Parser<'src, I, TypeName, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, TypeName<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    let declarator = declarator(resolver, expression_rec.clone());
-    let sq = specifier_qualifier(
-        declarator.clone(),
-        expression_rec,
-        resolver,
-        allow_path_types,
-        allow_unsure_paths,
-    )
-    .repeated()
-    .at_least(1)
-    .collect::<Vec<_>>();
+    let declarator = declarator(resolver.clone(), expression_rec.clone());
+    let sq = specifier_qualifier(declarator.clone(), expression_rec, resolver)
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>();
     sq.then(declarator.or_not())
         .map(|(specifier_qualifier_list, abstract_declarator)| TypeName {
             specifier_qualifier_list,
@@ -1079,30 +1104,22 @@ where
         })
 }
 
-fn declaration_specifier<'src, 'r: 'src, I>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+fn declaration_specifier<'src, I, R: TypeResolver>(
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    resolver: &'r dyn TypeResolver,
-    allow_enum_definition: bool,
-) -> impl Parser<'src, I, Spanned<DeclarationSpecifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<DeclarationSpecifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     choice((
-        type_specifier(
-            declarator_rec,
-            expression_rec,
-            resolver,
-            true,
-            true,
-            allow_enum_definition,
-        )
-        .map(DeclarationSpecifier::TypeSpecifier),
+        type_specifier(declarator_rec, expression_rec, resolver)
+            .map(DeclarationSpecifier::TypeSpecifier),
         type_qualifier().map(DeclarationSpecifier::TypeQualifier),
         storage_class_specifier().map(DeclarationSpecifier::StorageSpecifier),
     ))
@@ -1135,15 +1152,15 @@ where
     .map_with(|r, e| (r, e.span()))
 }
 
-fn parameter_type_list<'src, 'r: 'src, I>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+fn parameter_type_list<'src, I, R: TypeResolver>(
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-    resolver: &'r dyn TypeResolver,
-) -> impl Parser<'src, I, ParameterList, extra::Err<Rich<'src, Token, Span>>> + Clone
+    resolver: R,
+) -> impl Parser<'src, I, ParameterList<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -1152,7 +1169,7 @@ where
         declarator_rec
             .clone()
             .then_ignore(look_ahead(Token::RParen).or(look_ahead(Token::Comma))),
-        declaration_specifier(declarator_rec, expression_rec, resolver, false),
+        declaration_specifier(declarator_rec, expression_rec, resolver),
     );
     single
         .separated_by(just(Token::Comma))
@@ -1165,19 +1182,25 @@ where
         .delimited_by(just(Token::LParen), just(Token::RParen))
 }
 
-fn declarator<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    expression_rec: impl Parser<'src, I, Spanned<Expression>, extra::Err<Rich<'src, Token, Span>>>
+fn declarator<'src, I, R: TypeResolver>(
+    resolver: R,
+    expression_rec: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     recursive(|rec| {
         let ident = identifier()
-            .map(Declarator::Identifier)
+            .map({
+                let resolver = resolver.clone();
+                move |(name, span)| {
+                    let ident = resolver.register_ident(name);
+                    Declarator::Identifier((ident, span))
+                }
+            })
             .or(empty().to(Declarator::Abstract))
             .map_with(|r, e| (r, e.span()));
         let grouped = rec
@@ -1228,10 +1251,10 @@ where
     })
 }
 
-fn struct_declarator<'src, I>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator>, extra::Err<Rich<'src, Token, Span>>>
+fn struct_declarator<'src, I, R: TypeResolver>(
+    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone,
-) -> impl Parser<'src, I, Spanned<StructDeclarator>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Spanned<StructDeclarator<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -1242,20 +1265,19 @@ where
         .map_with(|r, e| (r, e.span()))
 }
 
-fn initializer<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    allow_path_types_in_type_name: bool,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+fn initializer<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<Initializer>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Spanned<Initializer<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     recursive(|init_rec| {
         let designator = choice((
-            expression(resolver, stmt_rec.clone())
+            expression(resolver.clone(), stmt_rec.clone())
                 .delimited_by(just(Token::LBracket), just(Token::RBracket))
                 .map(Designator::Subscript),
             just(Token::Dot)
@@ -1285,7 +1307,7 @@ where
             .map(Initializer::List)
             .map_with(|r, e| (r, e.span()));
 
-        let expr = expression_with_type_paths(resolver, stmt_rec, allow_path_types_in_type_name)
+        let expr = expression_with_type_paths(resolver, stmt_rec)
             .map(Initializer::Expr)
             .map_with(|r, e| (r, e.span()));
 
@@ -1293,29 +1315,24 @@ where
     })
 }
 
-fn init_declarator_list<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    allow_path_types_in_type_name: bool,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+fn init_declarator_list<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Vec<Spanned<InitDeclarator>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, Vec<Spanned<InitDeclarator<R>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     declarator(
-        resolver,
-        expression_with_type_paths(resolver, stmt_rec.clone(), allow_path_types_in_type_name),
+        resolver.clone(),
+        expression_with_type_paths(resolver.clone(), stmt_rec.clone()),
     )
     .filter(|decl| declarator_has_name(&decl.0))
     .then(
         just(Token::Assign)
-            .ignore_then(initializer(
-                resolver,
-                allow_path_types_in_type_name,
-                stmt_rec.clone(),
-            ))
+            .ignore_then(initializer(resolver, stmt_rec.clone()))
             .or_not(),
     )
     .map(|(declarator, initializer)| InitDeclarator {
@@ -1327,7 +1344,7 @@ where
     .collect()
 }
 
-fn declarator_has_name(decl: &Declarator) -> bool {
+fn declarator_has_name<R: TypeResolver>(decl: &Declarator<R>) -> bool {
     match decl {
         Declarator::Identifier(_) => true,
         Declarator::Abstract => false,
@@ -1337,20 +1354,18 @@ fn declarator_has_name(decl: &Declarator) -> bool {
     }
 }
 
-fn declaration<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-    allow_path_types_in_type_name: bool,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement>, extra::Err<Rich<'src, Token, Span>>>
+fn declaration<'src, I, R: TypeResolver>(
+    resolver: R,
+    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
-) -> impl Parser<'src, I, Spanned<Declaration>, extra::Err<Rich<'src, Token, Span>>> + Clone
+) -> impl Parser<'src, I, (Spanned<Declaration<R>>, R), extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    let expr =
-        expression_with_type_paths(resolver, stmt_rec.clone(), allow_path_types_in_type_name);
-    let declarator = declarator(resolver, expr.clone());
+    let expr = expression_with_type_paths(resolver.clone(), stmt_rec.clone());
+    let declarator = declarator(resolver.clone(), expr.clone());
     let function = left_recursion(
         declarator
             .clone()
@@ -1358,7 +1373,7 @@ where
             .filter(|decl| decl.0.is_function())
             .then_ignore(look_ahead(Token::LBrace))
             .then(lazy_compound_statement()),
-        declaration_specifier(declarator.clone(), expr.clone(), resolver, true),
+        declaration_specifier(declarator.clone(), expr.clone(), resolver.clone()),
     )
     .map(
         |(declaration_specifiers, (declarator, body))| Declaration::FunctionDefinition {
@@ -1369,9 +1384,8 @@ where
     );
 
     let simple = left_recursion(
-        init_declarator_list(resolver, allow_path_types_in_type_name, stmt_rec)
-            .then_ignore(just(Token::Semicolon)),
-        declaration_specifier(declarator, expr, resolver, true),
+        init_declarator_list(resolver.clone(), stmt_rec).then_ignore(just(Token::Semicolon)),
+        declaration_specifier(declarator, expr, resolver.clone()),
     )
     .map(
         |(declaration_specifiers, declarators)| Declaration::Declaration {
@@ -1380,7 +1394,10 @@ where
         },
     );
 
-    choice((function, simple)).map_with(|r, e| (r, e.span()))
+    choice((function, simple)).map_with(move |v, e| {
+        let nr = resolver.register_decl(&v);
+        ((v, e.span()), nr)
+    })
 }
 
 fn use_item<'src, I>()
@@ -1400,9 +1417,9 @@ where
         .map_with(|r, e| (r, e.span()))
 }
 
-pub fn translation_unit<'src, 'r: 'src, I>(
-    resolver: &'r dyn TypeResolver,
-) -> impl Parser<'src, I, Spanned<TranslationUnit>, extra::Err<Rich<'src, Token, Span>>> + Clone
+pub fn translation_unit<'src, I, R: TypeResolver>(
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<TranslationUnit<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -1411,7 +1428,8 @@ where
         .repeated()
         .collect()
         .then(
-            declaration(resolver, true, statement(resolver))
+            declaration(resolver.clone(), statement(resolver.clone()))
+                .map(|x| x.0)
                 .repeated()
                 .collect(),
         )
@@ -1429,7 +1447,7 @@ where
 #[test]
 fn parser_is_constructible() {
     use chumsky::input::Input;
-    let parser = translation_unit(&crate::AllowAllTypes);
+    let parser = translation_unit(&crate::StatelessResolver);
     parser.parse((&[]).map(
         SimpleSpan {
             start: 1,

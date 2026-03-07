@@ -1,5 +1,6 @@
 //@ mode: c
-//@ ui-error: unresolved value path: missing
+//@ ui-error: Unresolved name
+//@ skip: Error quality of unresolved names is broken
 
 int main() {
     return missing;

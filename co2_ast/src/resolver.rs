@@ -1,0 +1,63 @@
+use std::fmt::Debug;
+
+use crate::{
+    Declaration, EnumSpecifier, RustPath, Spanned, StructOrUnionKind, StructOrUnionSpecifier,
+    TypeQueryResult,
+};
+
+pub trait TypeResolver: Clone + 'static {
+    type ResolvedRustPath: Debug + Clone;
+    type DeclarationIdent: Debug + Clone;
+    type StructOrUnionIdentifier: Debug + Clone;
+    type EnumIdentifier: Debug + Clone;
+
+    fn classify_path(&self, path: &RustPath) -> Option<(TypeQueryResult, Self::ResolvedRustPath)>;
+    fn register_ident(&self, name: String) -> Self::DeclarationIdent;
+    fn register_decl(&self, decl: &Declaration<Self>) -> Self;
+    fn register_struct_or_union_specifier(
+        &self,
+        kind: StructOrUnionKind,
+        specifier: Spanned<StructOrUnionSpecifier<Self>>,
+    ) -> Self::StructOrUnionIdentifier;
+    fn register_enum_specifier(
+        &self,
+        specifier: Spanned<EnumSpecifier<Self>>,
+    ) -> Self::EnumIdentifier;
+}
+
+#[derive(Debug, Clone)]
+pub struct StatelessResolver;
+
+impl TypeResolver for StatelessResolver {
+    type ResolvedRustPath = RustPath;
+    type DeclarationIdent = String;
+    type StructOrUnionIdentifier = StructOrUnionSpecifier<Self>;
+    type EnumIdentifier = EnumSpecifier<Self>;
+
+    fn classify_path(&self, path: &RustPath) -> Option<(TypeQueryResult, RustPath)> {
+        Some((TypeQueryResult::Unsure, path.clone()))
+    }
+
+    fn register_ident(&self, name: String) -> Self::DeclarationIdent {
+        name
+    }
+
+    fn register_decl(&self, _decl: &Declaration<Self>) -> Self {
+        self.clone()
+    }
+
+    fn register_struct_or_union_specifier(
+        &self,
+        _kind: StructOrUnionKind,
+        spec: Spanned<StructOrUnionSpecifier<Self>>,
+    ) -> Self::StructOrUnionIdentifier {
+        spec.0
+    }
+
+    fn register_enum_specifier(
+        &self,
+        specifier: Spanned<EnumSpecifier<Self>>,
+    ) -> Self::EnumIdentifier {
+        specifier.0
+    }
+}

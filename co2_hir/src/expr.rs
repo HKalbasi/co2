@@ -4,6 +4,7 @@ use co2_ast::{
     BinOp as ParsedBinOp, Constant, Expression, IntegerSuffix, Spanned, Statement,
     StatementOrDeclaration, UnaryOp as ParsedUnaryOp, UpdateOp as ParsedUpdateOp,
 };
+use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
     mir::Mutability,
@@ -130,7 +131,7 @@ pub enum HirLogicalOp {
     And,
 }
 
-impl<R> HirCtx<'_, R> {
+impl HirCtx<'_> {
     fn array_to_pointer_decay_if_array(&self, expr: &mut HirExpr) {
         if !is_array_ty(expr.ty) {
             return;
@@ -149,35 +150,35 @@ impl<R> HirCtx<'_, R> {
 
     pub(crate) fn lower_expr(
         &self,
-        (expr, parser_span): Spanned<Expression>,
+        (expr, parser_span): Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<HirExpr, String> {
         let span = self.to_rust_span(parser_span);
         match expr {
-            Expression::Identifier(path) => {
-                let path_str = path.0.to_pretty();
-                if let Some(local) = local_map.get(&path_str) {
-                    let local_decl = &locals[*local];
+            Expression::Identifier(path) => match path.0 {
+                co2_crate_sig::DefOrLocal::Def(def_id) => {
+                    let resolved = self.resolve_value(def_id);
+                    Ok(HirExpr {
+                        kind: HirExprKind::Path(resolved.clone()),
+                        ty: resolved.ty(),
+                        span,
+                    })
+                }
+                co2_crate_sig::DefOrLocal::Local(l) => {
+                    let local = *local_map.get(&(l as usize)).unwrap();
+                    let local_decl = &locals[local];
                     return Ok(HirExpr {
-                        kind: HirExprKind::Local(*local),
+                        kind: HirExprKind::Local(local),
                         ty: local_decl.ty,
                         span,
                     });
                 }
-
-                let Some(resolved) = self.resolve_value(&path_str) else {
-                    self.terminate_with_error(
-                        parser_span,
-                        &format!("unresolved value path: {path_str}"),
-                    )
-                };
-                Ok(HirExpr {
-                    kind: HirExprKind::Path(resolved.clone()),
-                    ty: resolved.ty(),
-                    span,
-                })
-            }
+                co2_crate_sig::DefOrLocal::Prim(_)
+                | co2_crate_sig::DefOrLocal::UnrepresentableType(_) => {
+                    panic!("Invalid type in expression")
+                }
+            },
             Expression::Constant(Constant::Int(v, suffix)) => Ok(HirExpr {
                 kind: HirExprKind::ConstInt(v),
                 ty: int_suffix_ty(suffix),
@@ -710,7 +711,7 @@ impl<R> HirCtx<'_, R> {
     }
 }
 
-impl<R> HirCtx<'_, R> {
+impl HirCtx<'_> {
     fn lower_binop_from_lowered(
         &self,
         mut lhs: HirExpr,

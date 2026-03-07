@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use ariadne::{sources, Color, Label, Report, ReportKind};
+use ariadne::{Color, Label, Report, ReportKind, sources};
 use chumsky::{error::Rich, span::SimpleSpan};
 
 use crate::Token;

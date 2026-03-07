@@ -1,4 +1,5 @@
 use co2_ast::{Span, TypeSpecifier};
+use co2_crate_sig::LocalResolver;
 use rustc_public_generative::rustc_public::ty::{
     Binder, FnSig, GenericArgKind, IntTy, RigidTy, Ty, TyKind, UintTy, VariantIdx,
 };
@@ -194,7 +195,9 @@ pub(crate) fn adt_field_tys(base: Ty) -> Option<Vec<Ty>> {
     )
 }
 
-pub(crate) fn type_specifier_to_ty(type_specifier: &TypeSpecifier) -> Result<Option<Ty>, String> {
+pub(crate) fn type_specifier_to_ty(
+    type_specifier: &TypeSpecifier<LocalResolver>,
+) -> Result<Option<Ty>, String> {
     let ty = match type_specifier {
         TypeSpecifier::Int => Some(Ty::signed_ty(IntTy::I32)),
         TypeSpecifier::Bool => Some(Ty::bool_ty()),

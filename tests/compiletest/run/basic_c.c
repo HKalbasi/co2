@@ -136,28 +136,23 @@ int main7()
 	return arr[0] + arr[1] + arr[2] + arr[3] - 15;
 }
 
-struct { int x; int y; };
-struct { int a; char b; };
-struct { int x; int y; int z; };
-struct { int (*f)(int); };
-
 int main8()
 {
-	// struct { int x; int y; } s;
+	struct { int x; int y; } s, s2, *s3;
 	
-	// s.x = 3;
-	// s.y = 5;
-	// if (s.y - s.x - 2) {
-	// 	return 1;
-	// }
-	// struct { int x; int y; } s2 = s;
-	// if (s2.y - s2.x - 2) {
-	// 	return 2;
-	// }
-	// struct { int x; int y; } *s3 = &s2;
-	// if (s3->y - s3->x - 2) {
-	// 	return 2;
-	// }
+	s.x = 3;
+	s.y = 5;
+	if (s.y - s.x - 2) {
+		return 1;
+	}
+	s2 = s;
+	if (s2.y - s2.x - 2) {
+		return 2;
+	}
+	s3 = &s2;
+	if (s3->y - s3->x - 2) {
+		return 2;
+	}
 	return 0;
 }
 
@@ -440,62 +435,62 @@ int main13()
 
 int main14()
 {
-	// int x;
-	// int *p;
-	// void *p_void;
-	// int arr[4];
-	// struct { int a; char b; } s;
+	int x;
+	int *p;
+	void *p_void;
+	int arr[4];
+	struct { int a; char b; } s;
 
-	// x = 2;
-	// p = &x;
-	// p_void = p;
-	// if(*((int*)p_void) != 2)
-	// 	return 1;
-	// if (sizeof x - 4)
-	// 	return 1;
-	// if (sizeof(int) - 4)
-	// 	return 1;
-	// if (sizeof(int*) - 8)
-	// 	return 1;
-	// if (sizeof(p) - 8)
-	// 	return 1;
-	// if (sizeof(*p) - 4)
-	// 	return 1;
-	// if (sizeof arr - 16)
-	// 	return 1;
-	// if (sizeof(s) - 8)
-	// 	return 1;
-	// p = (int*)5;
-	// if (((int)p) - 5)
-	// 	return 1;
-	// if (((int*)5) != p)
-	// 	return 1;
+	x = 2;
+	p = &x;
+	p_void = p;
+	if(*((int*)p_void) != 2)
+		return 1;
+	if (sizeof x - 4)
+		return 1;
+	if (sizeof(int) - 4)
+		return 1;
+	if (sizeof(int*) - 8)
+		return 1;
+	if (sizeof(p) - 8)
+		return 1;
+	if (sizeof(*p) - 4)
+		return 1;
+	if (sizeof arr - 16)
+		return 1;
+	if (sizeof(s) - 8)
+		return 1;
+	p = (int*)5;
+	if (((int)p) - 5)
+		return 1;
+	if (((int*)5) != p)
+		return 1;
 
 	return 0;
 }
 
 int main15()
 {
-	// int a[5] = { [2] = 7, [0] = 9, 1 };
-	// struct { int x; int y; int z; } s = { .z = 8, .x = 3 };
-	// struct { int x; int y; } p[2] = {
-	// 	[1] = { .y = 6, .x = 5 },
-	// 	[0] = { .x = 1, .y = 2 },
-	// };
-	// int m[2][3] = { [1][2] = 4, [0][1] = 3 };
+	int a[5] = { [2] = 7, [0] = 9, 1 };
+	struct { int x; int y; int z; } s = { .z = 8, .x = 3 };
+	struct { int x; int y; } p[2] = {
+		[1] = { .y = 6, .x = 5 },
+		[0] = { .x = 1, .y = 2 },
+	};
+	int m[2][3] = { [1][2] = 4, [0][1] = 3 };
 
-	// if (a[3] || a[4])
-	// 	return 1;
-	// if (a[0] - 9 || a[1] - 1 || a[2] - 7)
-	// 	return 1;
-	// if (s.x - 3 || s.y || s.z - 8)
-	// 	return 1;
-	// if (p[0].x - 1 || p[0].y - 2 || p[1].x - 5 || p[1].y - 6)
-	// 	return 1;
-	// if (m[0][1] - 3 || m[1][2] - 4)
-	// 	return 1;
-	// if (m[0][0] || m[0][2] || m[1][0] || m[1][1])
-	// 	return 1;
+	if (a[3] || a[4])
+		return 1;
+	if (a[0] - 9 || a[1] - 1 || a[2] - 7)
+		return 1;
+	if (s.x - 3 || s.y || s.z - 8)
+		return 1;
+	if (p[0].x - 1 || p[0].y - 2 || p[1].x - 5 || p[1].y - 6)
+		return 1;
+	if (m[0][1] - 3 || m[1][2] - 4)
+		return 1;
+	if (m[0][0] || m[0][2] || m[1][0] || m[1][1])
+		return 1;
 
 	return 0;
 }
@@ -702,17 +697,17 @@ int main21()
 {
 	S2 *p, *p2;
 
-	// p = &(struct S2) { 1, 2 };
-	// if (p->a - 1)
-	// 	return 1;
-	// if (p->b - 2)
-	// 	return 1;
+	p = &(struct S2) { 1, 2 };
+	if (p->a - 1)
+		return 1;
+	if (p->b - 2)
+		return 1;
 
-	// p2 = &(S2) { 3, 4 };
-	// if (p2->a - 3)
-	// 	return 1;
-	// if (p2->b - 4)
-	// 	return 1;
+	p2 = &(S2) { 3, 4 };
+	if (p2->a - 3)
+		return 1;
+	if (p2->b - 4)
+		return 1;
 
 	return 0;
 }
@@ -764,17 +759,17 @@ int main23()
 
 int main24()
 {
-	// struct s_nested v;
+	struct s_nested v;
 
-	// v.x = 1;
-	// v.nest.y = 2;
-	// v.nest.z = 3;
-	// if (v.x - 1)
-	// 	return 1;
-	// if (v.nest.y - 2)
-	// 	return 1;
-	// if (v.nest.z - 3)
-	// 	return 1;
+	v.x = 1;
+	v.nest.y = 2;
+	v.nest.z = 3;
+	if (v.x - 1)
+		return 1;
+	if (v.nest.y - 2)
+		return 1;
+	if (v.nest.z - 3)
+		return 1;
 	return 0;
 }
 

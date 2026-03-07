@@ -1,10 +1,7 @@
 use ariadne::{Color, Label, Report, ReportKind, sources};
 use chumsky::{Parser as _, input::Input as _};
 
-use crate::{
-    lexer::lexer,
-    parser::{translation_unit},
-};
+use crate::{lexer::lexer, parser::translation_unit};
 
 mod exp;
 mod lexer;
@@ -14,11 +11,11 @@ pub(crate) use co2_ast::*;
 
 pub(crate) use co2_ast::{Span, Spanned};
 
-pub fn parse_translation_unit(
+pub fn parse_translation_unit<R: TypeResolver>(
     filename: String,
     src: &'static str,
-    resolver: &dyn TypeResolver,
-) -> Option<Spanned<TranslationUnit>> {
+    resolver: R,
+) -> Option<Spanned<TranslationUnit<R>>> {
     let (tokens, errs) = lexer().parse(src).into_output_errors();
 
     if let Some(tokens) = tokens {
@@ -59,23 +56,27 @@ pub fn parse_translation_unit(
     print_errors_and_terminate(filename, src, errs);
 }
 
-pub fn parse_items(filename: String, src: &'static str) -> Option<Spanned<TranslationUnit>> {
-    parse_translation_unit(filename, src, &AllowAllTypes)
+pub fn parse_items(
+    filename: String,
+    src: &'static str,
+) -> Option<Spanned<TranslationUnit<StatelessResolver>>> {
+    parse_translation_unit(filename, src, StatelessResolver)
 }
 
-pub fn parse_compound_statement(
+pub fn parse_compound_statement<R: TypeResolver>(
     tokens: &[Spanned<Token>],
     filename: String,
     src: &'static str,
-    resolver: &dyn TypeResolver,
-) -> Option<Spanned<CompoundStatement>> {
-    let (ast, parse_errs) = parser::compound_statement(resolver, parser::statement(resolver))
-        .parse(tokens.map((src.len()..src.len()).into(), |(t, s)| (t, s)))
-        .into_output_errors();
+    resolver: R,
+) -> Spanned<CompoundStatement<R>> {
+    let (ast, parse_errs) =
+        parser::compound_statement(resolver.clone(), parser::statement(resolver))
+            .parse(tokens.map((src.len()..src.len()).into(), |(t, s)| (t, s)))
+            .into_output_errors();
 
     if parse_errs.is_empty() {
         if let Some(ast) = ast {
-            return Some(ast);
+            return ast;
         }
     } else {
         for err in parse_errs {

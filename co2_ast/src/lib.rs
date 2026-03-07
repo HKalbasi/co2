@@ -3,6 +3,8 @@ use std::fmt::Display;
 use itertools::Itertools;
 
 mod diagnostic;
+mod resolver;
+mod transform;
 
 // Type definitions
 pub type Span = chumsky::span::SimpleSpan<usize>;
@@ -10,52 +12,53 @@ pub type Spanned<T> = (T, Span);
 
 pub use chumsky::prelude::Rich;
 pub use diagnostic::{print_errors_and_terminate, take_errors};
+pub use resolver::{StatelessResolver, TypeResolver};
+pub use transform::{DoTransform, Transformable};
 
 #[derive(Debug, Clone)]
-pub enum Statement {
+pub enum Statement<R: TypeResolver> {
     Empty,
     Goto(Spanned<String>),
     Break,
     Continue,
     Switch {
-        expr: Spanned<Expression>,
-        body: Box<Spanned<Statement>>,
+        expr: Spanned<Expression<R>>,
+        body: Box<Spanned<Statement<R>>>,
     },
     Case {
-        expr: Spanned<Expression>,
-        statement: Box<Spanned<Statement>>,
+        expr: Spanned<Expression<R>>,
+        statement: Box<Spanned<Statement<R>>>,
     },
     Default {
-        statement: Box<Spanned<Statement>>,
+        statement: Box<Spanned<Statement<R>>>,
     },
     Label {
         name: Spanned<String>,
-        statement: Box<Spanned<Statement>>,
+        statement: Box<Spanned<Statement<R>>>,
     },
-    Return(Option<Spanned<Expression>>),
-    Expression(Spanned<Expression>),
-    Compound(Spanned<CompoundStatement>),
+    Return(Option<Spanned<Expression<R>>>),
+    Expression(Spanned<Expression<R>>),
+    Compound(Spanned<CompoundStatement<R>>),
     If {
-        cond: Spanned<Expression>,
-        then_branch: Box<Spanned<Statement>>,
-        else_branch: Option<Box<Spanned<Statement>>>,
+        cond: Spanned<Expression<R>>,
+        then_branch: Box<Spanned<Statement<R>>>,
+        else_branch: Option<Box<Spanned<Statement<R>>>>,
     },
     While {
-        cond: Spanned<Expression>,
-        body: Box<Spanned<Statement>>,
+        cond: Spanned<Expression<R>>,
+        body: Box<Spanned<Statement<R>>>,
     },
     DoWhile {
-        body: Box<Spanned<Statement>>,
-        cond: Spanned<Expression>,
+        body: Box<Spanned<Statement<R>>>,
+        cond: Spanned<Expression<R>>,
     },
     For {
-        init: Option<Spanned<Expression>>,
-        cond: Option<Spanned<Expression>>,
-        post: Option<Spanned<Expression>>,
-        body: Box<Spanned<Statement>>,
+        init: Option<Spanned<Expression<R>>>,
+        cond: Option<Spanned<Expression<R>>>,
+        post: Option<Spanned<Expression<R>>>,
+        body: Box<Spanned<Statement<R>>>,
     },
 }
-
 
 #[derive(Debug, Clone)]
 pub enum Constant {
@@ -66,46 +69,50 @@ pub enum Constant {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression {
+pub enum Expression<R: TypeResolver> {
     Empty,
     Constant(Constant),
-    Identifier(Spanned<RustPath>),
-    Field(Box<Spanned<Expression>>, Spanned<String>),
-    Arrow(Box<Spanned<Expression>>, Spanned<String>),
-    Subscript(Box<Spanned<Expression>>, Box<Spanned<Expression>>),
+    Identifier(Spanned<R::ResolvedRustPath>),
+    Field(Box<Spanned<Expression<R>>>, Spanned<String>),
+    Arrow(Box<Spanned<Expression<R>>>, Spanned<String>),
+    Subscript(Box<Spanned<Expression<R>>>, Box<Spanned<Expression<R>>>),
     Call {
-        func: Box<Spanned<Expression>>,
-        params: Vec<Spanned<Expression>>,
+        func: Box<Spanned<Expression<R>>>,
+        params: Vec<Spanned<Expression<R>>>,
     },
     Update {
-        expr: Box<Spanned<Expression>>,
+        expr: Box<Spanned<Expression<R>>>,
         op: UpdateOp,
         is_postfix: bool,
     },
     AssignWithOp {
-        lhs: Box<Spanned<Expression>>,
+        lhs: Box<Spanned<Expression<R>>>,
         op: BinOp,
-        rhs: Box<Spanned<Expression>>,
+        rhs: Box<Spanned<Expression<R>>>,
     },
     Cast {
-        type_name: Box<TypeName>,
-        expr: Box<Spanned<Expression>>,
+        type_name: Box<TypeName<R>>,
+        expr: Box<Spanned<Expression<R>>>,
     },
-    SizeofType(Box<TypeName>),
-    Sizeof(Box<Spanned<Expression>>),
-    UnaryOp(UnaryOp, Box<Spanned<Expression>>),
-    BinOp(Box<Spanned<Expression>>, BinOp, Box<Spanned<Expression>>),
+    SizeofType(Box<TypeName<R>>),
+    Sizeof(Box<Spanned<Expression<R>>>),
+    UnaryOp(UnaryOp, Box<Spanned<Expression<R>>>),
+    BinOp(
+        Box<Spanned<Expression<R>>>,
+        BinOp,
+        Box<Spanned<Expression<R>>>,
+    ),
     Conditional {
-        cond: Box<Spanned<Expression>>,
-        then_expr: Box<Spanned<Expression>>,
-        else_expr: Box<Spanned<Expression>>,
+        cond: Box<Spanned<Expression<R>>>,
+        then_expr: Box<Spanned<Expression<R>>>,
+        else_expr: Box<Spanned<Expression<R>>>,
     },
     CompoundLiteral {
-        type_name: Box<TypeName>,
-        initializer: Box<Spanned<Initializer>>,
+        type_name: Box<TypeName<R>>,
+        initializer: Box<Spanned<Initializer<R>>>,
     },
     GnuStatementExpr {
-        body: Box<Spanned<CompoundStatement>>,
+        body: Box<Spanned<CompoundStatement<R>>>,
     },
 }
 
@@ -148,15 +155,14 @@ pub enum BinOp {
     Shr,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct LazyCompoundStatement {
     pub tokens: Spanned<Vec<Spanned<Token>>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct CompoundStatement {
-    pub statements: Vec<Spanned<StatementOrDeclaration>>,
+pub struct CompoundStatement<R: TypeResolver> {
+    pub statements: Vec<Spanned<StatementOrDeclaration<R>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -173,7 +179,6 @@ pub enum IntegerSuffix {
 pub struct RustPath {
     pub segments: Vec<Spanned<RustPathSegment>>,
 }
-
 
 #[derive(Debug, Clone)]
 pub enum RustPathSegment {
@@ -247,7 +252,7 @@ pub enum TypeQueryResult {
 }
 
 #[derive(Debug, Clone)]
-pub enum TypeSpecifier {
+pub enum TypeSpecifier<R: TypeResolver> {
     Int,
     Bool,
     Void,
@@ -260,35 +265,35 @@ pub enum TypeSpecifier {
     Unsigned,
     StructOrUnion {
         kind: StructOrUnionKind,
-        specifier: StructOrUnionSpecifier,
+        specifier: Spanned<R::StructOrUnionIdentifier>,
     },
-    Enum(EnumSpecifier),
-    TypedefName(Spanned<RustPath>),
+    Enum(Spanned<R::EnumIdentifier>),
+    TypedefName(Spanned<R::ResolvedRustPath>),
 }
 
 #[derive(Debug, Clone)]
-pub struct StructOrUnionField {
-    pub specifiers: Vec<Spanned<TypeSpecifier>>,
-    pub declarators: Vec<Spanned<StructDeclarator>>,
+pub struct StructOrUnionField<R: TypeResolver> {
+    pub specifiers: Vec<Spanned<TypeSpecifier<R>>>,
+    pub declarators: Vec<Spanned<StructDeclarator<R>>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct StructDeclarator {
-    pub declarator: Spanned<Declarator>,
+pub struct StructDeclarator<R: TypeResolver> {
+    pub declarator: Spanned<Declarator<R>>,
     pub bits: Option<Spanned<String>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum StructOrUnionSpecifier {
+pub enum StructOrUnionSpecifier<R: TypeResolver> {
     Defined {
         ident: Spanned<String>,
-        fields: Vec<Spanned<StructOrUnionField>>,
+        fields: Vec<Spanned<StructOrUnionField<R>>>,
     },
     Declared {
         ident: Spanned<String>,
     },
     Anonymous {
-        fields: Vec<Spanned<StructOrUnionField>>,
+        fields: Vec<Spanned<StructOrUnionField<R>>>,
     },
 }
 
@@ -299,26 +304,26 @@ pub enum StructOrUnionKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct Enumerator {
+pub struct Enumerator<R: TypeResolver> {
     pub ident: Spanned<String>,
-    pub value: Option<Spanned<Expression>>,
+    pub value: Option<Spanned<Expression<R>>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum EnumSpecifier {
+pub enum EnumSpecifier<R: TypeResolver> {
     Defined {
         ident: Spanned<String>,
-        enumerators: Vec<Spanned<Enumerator>>,
+        enumerators: Vec<Spanned<Enumerator<R>>>,
     },
     Declared {
         ident: Spanned<String>,
     },
     Anonymous {
-        enumerators: Vec<Spanned<Enumerator>>,
+        enumerators: Vec<Spanned<Enumerator<R>>>,
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum TypeQualifier {
     Const,
     Restrict,
@@ -326,42 +331,40 @@ pub enum TypeQualifier {
 }
 
 #[derive(Debug, Clone)]
-pub enum SpecifierQualifier {
-    TypeSpecifier(Spanned<TypeSpecifier>),
+pub enum SpecifierQualifier<R: TypeResolver> {
+    TypeSpecifier(Spanned<TypeSpecifier<R>>),
     TypeQualifier(Spanned<TypeQualifier>),
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeName {
-    pub specifier_qualifier_list: Vec<Spanned<SpecifierQualifier>>,
-    pub abstract_declarator: Option<Spanned<Declarator>>,
-}
-
-
-#[derive(Debug, Clone)]
-pub struct InitDeclarator {
-    pub declarator: Spanned<Declarator>,
-    pub initializer: Option<Spanned<Initializer>>,
+pub struct TypeName<R: TypeResolver> {
+    pub specifier_qualifier_list: Vec<Spanned<SpecifierQualifier<R>>>,
+    pub abstract_declarator: Option<Spanned<Declarator<R>>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Designator {
-    Subscript(Spanned<Expression>),
+pub struct InitDeclarator<R: TypeResolver> {
+    pub declarator: Spanned<Declarator<R>>,
+    pub initializer: Option<Spanned<Initializer<R>>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Designator<R: TypeResolver> {
+    Subscript(Spanned<Expression<R>>),
     Field(Spanned<String>),
 }
 
 #[derive(Debug, Clone)]
-pub struct InitializerItem {
-    pub designators: Option<Vec<Spanned<Designator>>>,
-    pub initializer: Spanned<Initializer>,
+pub struct InitializerItem<R: TypeResolver> {
+    pub designators: Option<Vec<Spanned<Designator<R>>>>,
+    pub initializer: Spanned<Initializer<R>>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Initializer {
-    Expr(Spanned<Expression>),
-    List(Vec<Spanned<InitializerItem>>),
+pub enum Initializer<R: TypeResolver> {
+    Expr(Spanned<Expression<R>>),
+    List(Vec<Spanned<InitializerItem<R>>>),
 }
-
 
 // C Token types
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -615,25 +618,25 @@ impl Display for Token {
 }
 
 #[derive(Debug, Clone)]
-pub enum StatementOrDeclaration {
-    Declaration(Spanned<Declaration>),
-    Statement(Spanned<Statement>),
+pub enum StatementOrDeclaration<R: TypeResolver> {
+    Declaration(Spanned<Declaration<R>>),
+    Statement(Spanned<Statement<R>>),
 }
 
 #[derive(Debug, Clone)]
-pub enum Declaration {
+pub enum Declaration<R: TypeResolver> {
     FunctionDefinition {
-        declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
-        declarator: Spanned<Declarator>,
+        declaration_specifiers: Vec<Spanned<DeclarationSpecifier<R>>>,
+        declarator: Spanned<Declarator<R>>,
         body: Spanned<LazyCompoundStatement>,
     },
     Declaration {
-        declaration_specifiers: Vec<Spanned<DeclarationSpecifier>>,
-        declarators: Vec<Spanned<InitDeclarator>>,
+        declaration_specifiers: Vec<Spanned<DeclarationSpecifier<R>>>,
+        declarators: Vec<Spanned<InitDeclarator<R>>>,
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum StorageClassSpecifier {
     Typedef,
     Extern,
@@ -683,30 +686,33 @@ impl LazySubscription {
 }
 
 #[derive(Debug, Clone)]
-pub struct ParameterList {
-    pub parameters: Vec<(Vec<Spanned<DeclarationSpecifier>>, Spanned<Declarator>)>,
+pub struct ParameterList<R: TypeResolver> {
+    pub parameters: Vec<(
+        Vec<Spanned<DeclarationSpecifier<R>>>,
+        Spanned<Declarator<R>>,
+    )>,
     pub ellipsis: bool,
 }
 
 #[derive(Debug, Clone)]
-pub enum Declarator {
+pub enum Declarator<R: TypeResolver> {
     Abstract,
-    Identifier(Spanned<String>),
+    Identifier(Spanned<R::DeclarationIdent>),
     FunctionDeclarator {
-        declarator: Box<Spanned<Declarator>>,
-        param_list: ParameterList,
+        declarator: Box<Spanned<Declarator<R>>>,
+        param_list: ParameterList<R>,
     },
     PointerDeclarator {
-        declarator: Box<Spanned<Declarator>>,
+        declarator: Box<Spanned<Declarator<R>>>,
         qualifiers: Vec<Spanned<TypeQualifier>>,
     },
     ArrayDeclarator {
-        declarator: Box<Spanned<Declarator>>,
+        declarator: Box<Spanned<Declarator<R>>>,
         subscription: Spanned<LazySubscription>,
     },
 }
 
-impl Declarator {
+impl<R: TypeResolver> Declarator<R> {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Declarator::Identifier(_) | Declarator::Abstract)
     }
@@ -725,36 +731,46 @@ impl Declarator {
             Declarator::ArrayDeclarator { declarator, .. } => declarator.0.is_function(),
         }
     }
+
+    pub fn ident(&self) -> Option<R::DeclarationIdent> {
+        match self {
+            Declarator::Abstract => None,
+            Declarator::Identifier(ident) => Some(ident.0.clone()),
+            Declarator::FunctionDeclarator { declarator, .. }
+            | Declarator::PointerDeclarator { declarator, .. }
+            | Declarator::ArrayDeclarator { declarator, .. } => declarator.0.ident(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum DeclarationSpecifier {
-    TypeSpecifier(Spanned<TypeSpecifier>),
+pub enum DeclarationSpecifier<R: TypeResolver> {
+    TypeSpecifier(Spanned<TypeSpecifier<R>>),
     TypeQualifier(Spanned<TypeQualifier>),
     StorageSpecifier(Spanned<StorageClassSpecifier>),
 }
 
+impl<R: TypeResolver> DeclarationSpecifier<R> {
+    pub fn is_typedef(&self) -> bool {
+        match self {
+            DeclarationSpecifier::TypeSpecifier(_) => false,
+            DeclarationSpecifier::TypeQualifier(_) => false,
+            DeclarationSpecifier::StorageSpecifier(c) => {
+                matches!(c.0, StorageClassSpecifier::Typedef)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct TranslationUnit {
+pub struct TranslationUnit<R: TypeResolver> {
     pub rust_use_items: Vec<Spanned<UseItem>>,
-    pub items: Vec<Spanned<Declaration>>,
+    pub items: Vec<Spanned<Declaration<R>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UseItem {
     pub path: Vec<Spanned<String>>,
-}
-
-pub trait TypeResolver {
-    fn classify_path(&self, path: &RustPath) -> TypeQueryResult;
-}
-
-pub struct AllowAllTypes;
-
-impl TypeResolver for AllowAllTypes {
-    fn classify_path(&self, _path: &RustPath) -> TypeQueryResult {
-        TypeQueryResult::Type
-    }
 }
 
 pub fn parse_unsigned_integer_constant(text: &str) -> Result<u64, String> {

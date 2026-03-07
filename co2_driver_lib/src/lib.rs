@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use co2_crate_sig::{MirOwnerInfo, Resolver};
-use co2_hir::{HirBody, HirCtx, HirExpr, HirStmt, ResolvedValue};
 use co2_ast::Initializer;
+use co2_crate_sig::{LocalResolver, MirOwnerInfo, WellknownDefs};
+use co2_hir::{HirBody, HirCtx, HirExpr, HirStmt, ResolvedValue};
 use rustc_public_generative::rustc_public::ty::IntTy;
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
@@ -41,7 +41,7 @@ struct Co2GeneratorState {
     source_name: String,
     src_static: &'static str,
     pending_mirs: HashMap<DefId, MirOwnerInfo>,
-    resolver: Resolver,
+    wellknown_defs: WellknownDefs,
 }
 
 unsafe impl Send for Co2GeneratorState {}
@@ -60,7 +60,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
         let source_name = pending.source_path.to_string_lossy().into_owned();
         let src_static: &'static str = Box::leak(pending.source.into_boxed_str());
 
-        let (result, pending_mirs, resolver) = co2_crate_sig::lower_crate_sig(
+        let (result, pending_mirs, wellknown_defs) = co2_crate_sig::lower_crate_sig(
             ctx,
             source_name.clone(),
             src_static,
@@ -71,11 +71,13 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
         (
             Co2GeneratorState {
                 deps,
+                wellknown_defs,
                 file_id,
                 pending_mirs,
                 source_name,
                 src_static,
-                resolver,
+                // resolver,
+                // resolver: Rc::new(RefCell::new(LocalResolverBase { resolver, local_counter: 0 })),
             },
             result,
         )
@@ -100,7 +102,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             }
             MirOwnerInfo::StaticZeroed | MirOwnerInfo::EnumConstZeroed => {
                 build_zeroed_static_initializer_body(
-                    &self.resolver,
+                    &self.wellknown_defs,
                     CrateItem(def).ty(),
                     ctx.span_in_file(self.file_id, 0, 0),
                 )
@@ -108,23 +110,20 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             MirOwnerInfo::Fn {
                 def,
                 param_names,
-                body_tokens,
+                body,
             } => {
                 let span_converter = |span: co2_ast::Span| {
                     ctx.span_in_file(self.file_id, span.start as u32, span.end as u32)
                 };
                 let hir_ctx = HirCtx::new(
-                    &self.resolver,
-                    Resolver::resolve,
+                    self.wellknown_defs.maybe_uninit,
                     &span_converter,
                     self.src_static,
                     self.source_name.clone(),
                     def.fn_sig().skip_binder().output(),
                 );
 
-                let hir =
-                    co2_hir::lower_function_body(&body_tokens, def, &param_names, &[], &hir_ctx)
-                        .unwrap();
+                let hir = co2_hir::lower_function_body(body, def, &param_names, &hir_ctx).unwrap();
 
                 co2_mir::build_mir_for_body(&hir, &self.deps, &ctx, self.file_id)
             }
@@ -137,14 +136,13 @@ impl Co2GeneratorState {
         &mut self,
         ctx: &HirStructureCtx<'_>,
         def: DefId,
-        initializer: co2_ast::Spanned<Initializer>,
+        initializer: co2_ast::Spanned<Initializer<LocalResolver>>,
     ) -> Body {
         let span_converter = |span: co2_ast::Span| {
             ctx.span_in_file(self.file_id, span.start as u32, span.end as u32)
         };
         let hir_ctx = HirCtx::new(
-            &self.resolver,
-            Resolver::resolve,
+            self.wellknown_defs.maybe_uninit,
             &span_converter,
             self.src_static,
             self.source_name.clone(),
@@ -238,11 +236,11 @@ fn collect_param_bindings(expected: Ty, actual: Ty, out: &mut BTreeMap<u32, Ty>)
 }
 
 fn build_zeroed_static_initializer_body(
-    resolver: &Resolver,
+    wellknown_defs: &WellknownDefs,
     ty: Ty,
     span: rustc_public_generative::rustc_public::ty::Span,
 ) -> Body {
-    let zeroed_fn = FnDef(resolver.resolve("core::mem::zeroed").unwrap().0);
+    let zeroed_fn = wellknown_defs.zeroed;
     let sig = zeroed_fn
         .ty()
         .kind()

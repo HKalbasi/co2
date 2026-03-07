@@ -2,17 +2,14 @@ use std::collections::HashMap;
 
 use co2_ast::{
     DeclarationSpecifier, Declarator, EnumSpecifier, StructOrUnionField, StructOrUnionKind,
-    StructOrUnionSpecifier, TypeQueryResult,
+    StructOrUnionSpecifier,
 };
 use rustc_public_generative::{
-    DefData, HirTy, StructField,
-    rustc_public::{
-        DefId,
-        ty::{IntTy, Span},
-    },
+    DefData, StructField,
+    rustc_public::{DefId, ty::Span},
 };
 
-use crate::{CrateSigCtx, MirOwnerInfo, ty::TyOrFunction};
+use crate::{LocalResolver, LocalResolverBase, MirOwnerInfo, ty::TyOrFunction};
 
 pub(crate) struct StructData {
     pub(crate) def_id: DefId,
@@ -22,21 +19,28 @@ pub(crate) struct StructData {
     pub(crate) fields: Option<Vec<StructField>>,
 }
 
+pub(crate) struct PendingEnum {
+    pub(crate) name: String,
+    pub(crate) def_id: DefId,
+    pub(crate) mir_info: MirOwnerInfo,
+}
+
 #[derive(Default)]
 pub(crate) struct StructManager {
     name_to_def: HashMap<String, DefId>,
     definitions: HashMap<DefId, StructData>,
+    pending_enum_consts: Vec<PendingEnum>,
 }
 
 const ANON_FIELD_PREFIX: &str = "__anon_field_";
 
-impl CrateSigCtx<'_> {
+impl LocalResolverBase {
     fn allocate_undef(&mut self, kind: StructOrUnionKind, span: Span, hint: &str) -> DefId {
         let name = format!(
             "__co2_c_adt_{hint}_{}",
             self.struct_manager.definitions.len()
         );
-        let def_id = self.allocate_def_id(
+        let def_id = self.hir_ctx.allocate_def_id(
             self.hir_ctx.root_crate_def_id(),
             DefData::TypeNs(name.clone()),
         );
@@ -66,9 +70,10 @@ impl CrateSigCtx<'_> {
     pub(crate) fn lower_struct_specifier(
         &mut self,
         kind: StructOrUnionKind,
-        specifier: StructOrUnionSpecifier,
-        span: Span,
+        specifier: StructOrUnionSpecifier<LocalResolver>,
+        parser_span: co2_ast::Span,
     ) -> DefId {
+        let span = self.co2_span_to_rustc(parser_span);
         match specifier {
             StructOrUnionSpecifier::Defined { ident, fields } => {
                 let def = self.def_id_of_named(&ident.0, kind, span);
@@ -91,10 +96,15 @@ impl CrateSigCtx<'_> {
         taken.into_values()
     }
 
+    pub(crate) fn emit_enums(&mut self) -> impl Iterator<Item = PendingEnum> + use<> {
+        let taken = std::mem::take(&mut self.struct_manager.pending_enum_consts);
+        taken.into_iter()
+    }
+
     fn define_def(
         &mut self,
         def: DefId,
-        fields: &[(StructOrUnionField, co2_ast::Span)],
+        fields: &[co2_ast::Spanned<StructOrUnionField<LocalResolver>>],
         _span: Span,
     ) {
         let data = self.struct_manager.definitions.get(&def).unwrap();
@@ -133,7 +143,9 @@ impl CrateSigCtx<'_> {
                             self.lower_value_decl_type(base.clone(), declarator.declarator)
                         };
 
-                        let id = self.allocate_def_id(def, DefData::ValueNs(name.clone()));
+                        let id = self
+                            .hir_ctx
+                            .allocate_def_id(def, DefData::ValueNs(name.clone()));
                         StructField { id, name, ty, span }
                     })
                     .collect::<Vec<_>>()
@@ -147,7 +159,11 @@ impl CrateSigCtx<'_> {
         data.fields = Some(fields);
     }
 
-    pub(crate) fn collect_enum_constants(&mut self, specifier: EnumSpecifier, _span: Span) {
+    pub(crate) fn collect_enum_constants(
+        &mut self,
+        specifier: EnumSpecifier<LocalResolver>,
+        span: co2_ast::Span,
+    ) {
         match specifier {
             EnumSpecifier::Declared { ident: _ } => (),
             EnumSpecifier::Defined {
@@ -155,32 +171,25 @@ impl CrateSigCtx<'_> {
                 enumerators,
             }
             | EnumSpecifier::Anonymous { enumerators } => {
+                let span = self.co2_span_to_rustc(span);
                 let mut prev = None;
-                for (e, parser_span) in enumerators {
-                    let span = self.co2_span_to_rustc(parser_span);
-                    let name = &e.ident.0;
-                    let def_id = self.allocate_def_id(
-                        self.hir_ctx.root_crate_def_id(),
-                        DefData::ValueNs(name.clone()),
-                    );
-                    self.resolver
-                        .insert_into_current(name, Some((def_id, TypeQueryResult::Expr)));
-                    self.hir_items
-                        .push(rustc_public_generative::HirModuleItem::Static {
-                            name: name.clone(),
-                            id: def_id,
-                            ty: HirTy::signed_ty(IntTy::I32, span),
-                            mutable: false,
-                            span,
-                        });
+                for (e, _) in enumerators {
+                    let def_id = self.resolver.resolve_in_current([&*e.ident.0]).unwrap().0;
                     let mir_info = match e.value {
-                        Some(initializer) => MirOwnerInfo::EnumConstExplicit { initializer },
+                        Some((initializer, span)) => {
+                            let initializer = (initializer, span);
+                            MirOwnerInfo::EnumConstExplicit { initializer }
+                        }
                         None => match prev {
                             Some(prev) => MirOwnerInfo::EnumConstPrevPlus(prev, span),
                             None => MirOwnerInfo::EnumConstZeroed,
                         },
                     };
-                    self.mir_owners.insert(def_id, mir_info);
+                    self.struct_manager.pending_enum_consts.push(PendingEnum {
+                        name: e.ident.0.clone(),
+                        def_id,
+                        mir_info,
+                    });
                     prev = Some(def_id);
                 }
             }

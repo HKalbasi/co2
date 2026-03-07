@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use co2_ast::{Designator, Expression, Initializer, InitializerItem, Spanned};
+use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
     mir::Mutability,
@@ -32,13 +33,13 @@ struct InitializerCursor {
 }
 
 impl InitializerCursor {
-    fn from_designators<R>(
-        ctx: &HirCtx<'_, R>,
-        designators: &[Spanned<Designator>],
+    fn from_designators(
+        ctx: &HirCtx<'_>,
+        designators: &[Spanned<Designator<LocalResolver>>],
         base_ty: Ty,
         span: rustc_public_generative::rustc_public::ty::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<Self, String> {
         let mut current_ty = base_ty;
         let mut cursor = InitializerCursor {
@@ -229,13 +230,13 @@ fn array_len_from_layout(ty: Ty) -> Option<usize> {
     Some((total / elem_sz) as usize)
 }
 
-impl<R> HirCtx<'_, R> {
+impl HirCtx<'_> {
     pub(crate) fn lower_to_initializer_tree(
         &self,
         expected_ty: Ty,
-        (initializer, span): Spanned<Initializer>,
+        (initializer, span): Spanned<Initializer<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> InitializerTree {
         match self.try_lower_to_initializer_tree(
             expected_ty,
@@ -253,19 +254,16 @@ impl<R> HirCtx<'_, R> {
     fn try_lower_to_initializer_tree(
         &self,
         expected_ty: Ty,
-        initializer: Spanned<Initializer>,
+        initializer: Spanned<Initializer<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<InitializerTree, String> {
         let span = self.to_rust_span(initializer.1);
         match initializer.0 {
             Initializer::Expr(expr) => {
                 // C string literal can initialize char arrays.
                 if is_array_ty(expected_ty)
-                    && matches!(
-                        expr.0,
-                        Expression::Constant(co2_ast::Constant::String(_))
-                    )
+                    && matches!(expr.0, Expression::Constant(co2_ast::Constant::String(_)))
                 {
                     let list = self.initializer_list_from_string(expected_ty, expr.clone());
                     return Ok(self.lower_to_initializer_tree(
@@ -414,8 +412,8 @@ impl<R> HirCtx<'_, R> {
     fn initializer_list_from_string(
         &self,
         expected_ty: Ty,
-        expr: Spanned<Expression>,
-    ) -> Vec<Spanned<InitializerItem>> {
+        expr: Spanned<Expression<LocalResolver>>,
+    ) -> Vec<Spanned<InitializerItem<LocalResolver>>> {
         let Expression::Constant(co2_ast::Constant::String(s)) = expr.0 else {
             return vec![];
         };

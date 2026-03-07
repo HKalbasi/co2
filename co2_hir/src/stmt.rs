@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use co2_ast::{CompoundStatement, Statement, StatementOrDeclaration};
+use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::ty::{IntTy, Span as RustSpan, Ty};
 
@@ -25,13 +26,13 @@ pub enum HirStmt {
     },
 }
 
-impl<R> HirCtx<'_, R> {
+impl HirCtx<'_> {
     pub(crate) fn lower_compound_items(
         &self,
-        compound: CompoundStatement,
+        compound: CompoundStatement<LocalResolver>,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<(), String> {
         for (stmt_or_decl, _) in compound.statements {
             match stmt_or_decl {
@@ -48,11 +49,11 @@ impl<R> HirCtx<'_, R> {
 
     pub(crate) fn lower_stmt(
         &self,
-        stmt: Statement,
+        stmt: Statement<LocalResolver>,
         parser_span: co2_ast::Span,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<String, LocalId>,
+        local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<(), String> {
         let span = self.to_rust_span(parser_span);
         match stmt {

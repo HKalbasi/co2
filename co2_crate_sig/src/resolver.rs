@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use co2_ast::{
-    Declaration, DeclarationSpecifier, Declarator, TranslationUnit, StorageClassSpecifier,
-    TypeQueryResult,
+    Declaration, DeclarationSpecifier, Declarator, StatelessResolver, StorageClassSpecifier,
+    TranslationUnit, TypeQueryResult,
 };
 use rustc_public_generative::{DefData, DependencyInfo, HirStructureCtx, rustc_public::DefId};
 
@@ -12,7 +12,7 @@ struct ModuleData {
     items: HashMap<String, ModuleData>,
 }
 
-fn extract_decl_name(decl: &Declarator) -> Option<String> {
+fn extract_decl_name(decl: &Declarator<StatelessResolver>) -> Option<String> {
     match decl {
         Declarator::Abstract => None,
         Declarator::Identifier((name, _)) => Some(name.clone()),
@@ -58,7 +58,7 @@ impl ModuleData {
 
     fn forward_pass_parsed_module(
         ctx: &HirStructureCtx<'_>,
-        ast: &TranslationUnit,
+        ast: &TranslationUnit<StatelessResolver>,
         parent: DefId,
         foreign_mod: DefId,
     ) -> Self {
@@ -157,7 +157,7 @@ impl Resolver {
     pub(crate) fn new(
         ctx: &HirStructureCtx<'_>,
         deps: DependencyInfo,
-        p: &TranslationUnit,
+        p: &TranslationUnit<StatelessResolver>,
         foreign_mod: DefId,
     ) -> Self {
         let mut this = Self::default();
