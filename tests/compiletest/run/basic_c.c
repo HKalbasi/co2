@@ -1012,6 +1012,24 @@ int main34() {
 	return declared_static - declared_func();
 }
 
+int main35() {
+	float x = 1;
+	x += 1.3;
+	x += 0.4;
+	int y = x;
+	x += y;
+	x++;
+	if (x < 5.65 || x > 5.75) {
+		return 1;
+	}
+
+	if (0.6 + 0.7 < 1.2) {
+		return 2;
+	}
+
+	return 0;
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1023,7 +1041,7 @@ int main() {
 		main16, main17, main18, main19, main20,
 		main21, main22, main23, main24, main25,
 		main26, main27, main28, main29, main30,
-		main31, main32, main33, main34,
+		main31, main32, main33, main34, main35,
 	};
 	
 	int i;

@@ -1,19 +1,21 @@
 use co2_ast::{Span, TypeSpecifier};
 use co2_crate_sig::LocalResolver;
 use rustc_public_generative::rustc_public::ty::{
-    Binder, FnSig, GenericArgKind, IntTy, RigidTy, Ty, TyKind, UintTy, VariantIdx,
+    Binder, FloatTy, FnSig, GenericArgKind, IntTy, RigidTy, Ty, TyKind, UintTy, VariantIdx,
 };
 
 const ANON_FIELD_PREFIX: &str = "__anon_field_";
 
-pub(crate) fn is_integer_ty(ty: Ty) -> bool {
+pub(crate) fn is_numeric_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
-        TyKind::RigidTy(RigidTy::Int(_)) | TyKind::RigidTy(RigidTy::Uint(_))
+        TyKind::RigidTy(RigidTy::Int(_))
+            | TyKind::RigidTy(RigidTy::Uint(_))
+            | TyKind::RigidTy(RigidTy::Float(_))
     )
 }
 
-fn integer_rank(ty: Ty) -> Option<(u8, bool)> {
+fn numeric_rank(ty: Ty) -> Option<(u8, bool)> {
     match ty.kind() {
         TyKind::RigidTy(RigidTy::Int(int_ty)) => {
             let rank = match int_ty {
@@ -37,13 +39,22 @@ fn integer_rank(ty: Ty) -> Option<(u8, bool)> {
             };
             Some((rank, true))
         }
+        TyKind::RigidTy(RigidTy::Float(float_ty)) => {
+            let rank = match float_ty {
+                FloatTy::F16 => 101,
+                FloatTy::F32 => 102,
+                FloatTy::F64 => 103,
+                FloatTy::F128 => 104,
+            };
+            Some((rank, false))
+        }
         _ => None,
     }
 }
 
-pub(crate) fn common_integer_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
-    let (lhs_rank, lhs_unsigned) = integer_rank(lhs)?;
-    let (rhs_rank, rhs_unsigned) = integer_rank(rhs)?;
+pub(crate) fn common_numeric_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
+    let (lhs_rank, lhs_unsigned) = numeric_rank(lhs)?;
+    let (rhs_rank, rhs_unsigned) = numeric_rank(rhs)?;
 
     let (rank, unsigned) = if lhs_rank == rhs_rank {
         (lhs_rank, lhs_unsigned || rhs_unsigned)
@@ -66,6 +77,10 @@ pub(crate) fn common_integer_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
         (4, true) => Ty::unsigned_ty(UintTy::U64),
         (5, true) => Ty::unsigned_ty(UintTy::Usize),
         (6, true) => Ty::unsigned_ty(UintTy::U128),
+        (101, _) => Ty::from_rigid_kind(RigidTy::Float(FloatTy::F16)),
+        (102, _) => Ty::from_rigid_kind(RigidTy::Float(FloatTy::F32)),
+        (103, _) => Ty::from_rigid_kind(RigidTy::Float(FloatTy::F64)),
+        (104, _) => Ty::from_rigid_kind(RigidTy::Float(FloatTy::F128)),
         _ => return None,
     };
     Some(ty)
@@ -140,7 +155,7 @@ pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
                 RigidTy::Int(_) | RigidTy::Uint(_) | RigidTy::FnDef(_, _) | RigidTy::FnPtr(_)
             )
         ))
-        || (is_integer_ty(dst) && is_integer_ty(src))
+        || (is_numeric_ty(dst) && is_numeric_ty(src))
 }
 
 pub(crate) fn resolve_field_path_in_adt(base: Ty, field: &str) -> Option<(Vec<usize>, Ty)> {
@@ -205,8 +220,8 @@ pub(crate) fn type_specifier_to_ty(
         TypeSpecifier::Char => Some(Ty::signed_ty(IntTy::I8)),
         TypeSpecifier::Short => Some(Ty::signed_ty(IntTy::I16)),
         TypeSpecifier::Long => Some(Ty::signed_ty(IntTy::I64)),
-        TypeSpecifier::Float => return Err("float is not supported".to_owned()),
-        TypeSpecifier::Double => return Err("double is not supported".to_owned()),
+        TypeSpecifier::Float => Some(Ty::from_rigid_kind(RigidTy::Float(FloatTy::F32))),
+        TypeSpecifier::Double => Some(Ty::from_rigid_kind(RigidTy::Float(FloatTy::F64))),
         TypeSpecifier::Signed | TypeSpecifier::Unsigned => None,
         TypeSpecifier::Enum(_) => Some(Ty::signed_ty(IntTy::I32)),
         TypeSpecifier::StructOrUnion { .. } => {

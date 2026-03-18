@@ -148,8 +148,12 @@ impl HirCtx<'_> {
                     let initializer = if let Some(init) = initializer {
                         match init.0 {
                             Initializer::Expr(expr) if !needs_tree => {
+                                let parser_span = expr.1;
                                 let expr = self.lower_expr(expr, locals, local_map)?;
-                                let expr = coerce_expr_to_type(expr, ty)?;
+                                let expr = match coerce_expr_to_type(expr, ty) {
+                                    Ok(it) => it,
+                                    Err(err) => self.terminate_with_error(parser_span, &err),
+                                };
                                 Some(expr)
                             }
                             _ if needs_tree => {

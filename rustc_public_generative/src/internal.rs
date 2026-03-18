@@ -21,6 +21,7 @@ use rustc_hir::def_id::{CRATE_DEF_ID, DefId as RustcDefId, LocalDefId, LocalDefI
 use rustc_hir::definitions::{DefPathData, Definitions, DisambiguatorState};
 use rustc_hir::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use rustc_index::{Idx, IndexVec};
+use rustc_lint::Level;
 use rustc_middle::mir::interpret::{CtfeProvenance, Pointer, Scalar};
 use rustc_middle::mir::{BorrowKind, ConstValue};
 use rustc_middle::query::Providers as QueryProviders;
@@ -1598,6 +1599,10 @@ impl<S: CrateGeneratorState> rustc_driver::Callbacks for GenerateCallbacks<S> {
         }
         let _ = GENERATE_STATE.set(self.gate.clone());
 
+        config
+            .opts
+            .lint_opts
+            .push(("arithmetic_overflow".to_owned(), Level::Warn));
         config.override_queries = Some(override_queries::<S>);
 
         if let Some(gate) = GENERATE_STATE.get() {

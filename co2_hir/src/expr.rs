@@ -8,7 +8,7 @@ use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
 use rustc_public_generative::rustc_public::{
     mir::Mutability,
-    ty::{IntTy, RigidTy, Span as RustSpan, Ty, TyKind, UintTy},
+    ty::{FloatTy, IntTy, RigidTy, Span as RustSpan, Ty, TyKind, UintTy},
 };
 
 use crate::decl::call_arg_type_compatible;
@@ -17,8 +17,8 @@ use crate::item::{HirLocal, LocalId};
 use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
-    adt_field_tys, array_elem_ty, callable_sig, common_integer_ty, is_array_ty, is_condition_ty,
-    is_integer_ty, is_maybe_uninit_fn_ptr_ty, needs_implicit_cast, resolve_field_path_in_adt,
+    adt_field_tys, array_elem_ty, callable_sig, common_numeric_ty, is_array_ty, is_condition_ty,
+    is_maybe_uninit_fn_ptr_ty, is_numeric_ty, needs_implicit_cast, resolve_field_path_in_adt,
     ty_matches_expected,
 };
 
@@ -42,6 +42,7 @@ impl std::fmt::Debug for HirExpr {
 pub enum HirExprKind {
     Local(LocalId),
     ConstInt(i64),
+    ConstFloat(f64),
     ConstStr(String),
     ArrayToPointer(Box<HirExpr>),
     Zeroed,
@@ -85,6 +86,7 @@ pub enum HirExprKind {
         lhs: Box<HirExpr>,
         rhs: Box<HirExpr>,
         op: HirBinOp,
+        binop_ty: Ty,
         return_semantic: ReturnSemantic,
     },
     AssignPtrOffset {
@@ -194,8 +196,8 @@ impl HirCtx<'_> {
                 span,
             }),
             Expression::Constant(Constant::Float(v)) => Ok(HirExpr {
-                kind: HirExprKind::ConstInt(v.trunc() as i64),
-                ty: Ty::signed_ty(IntTy::I32),
+                kind: HirExprKind::ConstFloat(v),
+                ty: Ty::from_rigid_kind(RigidTy::Float(FloatTy::F64)),
                 span,
             }),
             Expression::Constant(Constant::Char(ch)) => Ok(HirExpr {
@@ -231,17 +233,19 @@ impl HirCtx<'_> {
                     ));
                 }
 
-                for (idx, (expected, actual)) in
-                    sig.inputs().iter().zip(lowered_args.iter_mut()).enumerate()
-                {
-                    if needs_implicit_cast(*expected, actual.ty) {
+                for (idx, actual) in lowered_args.iter_mut().enumerate() {
+                    let expected = match sig.inputs().get(idx) {
+                        Some(ty) => *ty,
+                        None => ty_passed_to_variadic(actual.ty),
+                    };
+                    if needs_implicit_cast(expected, actual.ty) {
                         *actual = HirExpr {
                             kind: HirExprKind::Cast(Box::new(actual.clone())),
-                            ty: *expected,
+                            ty: expected,
                             span: actual.span,
                         };
                     }
-                    if !call_arg_type_compatible(*expected, actual.ty) {
+                    if !call_arg_type_compatible(expected, actual.ty) {
                         return Err(format!(
                             "call argument type mismatch at index {idx}: expected {expected:?}, got {:?}",
                             actual.ty
@@ -288,7 +292,7 @@ impl HirCtx<'_> {
                 let mut base = self.lower_expr(*base, locals, local_map)?;
                 self.array_to_pointer_decay_if_array(&mut base);
                 let index = self.lower_expr(*index, locals, local_map)?;
-                if !is_integer_ty(index.ty) {
+                if !is_numeric_ty(index.ty) {
                     return Err(format!(
                         "subscript index must be integer, got {:?}",
                         index.ty
@@ -361,43 +365,55 @@ impl HirCtx<'_> {
                 let rhs = self.lower_expr(*rhs, locals, local_map)?;
                 let ty = lhs.ty;
                 let lowered = self.lower_binop_from_lowered(lhs.clone(), rhs, op, span, true)?;
-                match lowered.kind {
-                    HirExprKind::Binary { op, lhs, rhs } => Ok(HirExpr {
-                        kind: HirExprKind::AssignWithBinOp {
+                Ok(HirExpr {
+                    kind: match lowered.kind {
+                        HirExprKind::Binary { op, lhs, rhs } => HirExprKind::AssignWithBinOp {
                             lhs,
                             rhs,
                             op,
+                            binop_ty: lowered.ty,
                             return_semantic: ReturnSemantic::AfterAssign,
                         },
-                        ty,
-                        span,
-                    }),
-                    HirExprKind::PtrOffset { base, index } => Ok(HirExpr {
-                        kind: HirExprKind::AssignPtrOffset {
+                        HirExprKind::PtrOffset { base, index } => HirExprKind::AssignPtrOffset {
                             lhs: base,
                             rhs: index,
                             return_semantic: ReturnSemantic::AfterAssign,
                         },
-                        ty,
-                        span,
-                    }),
-                    _ => Err("invalid assignment operation".to_owned()),
-                }
+                        _ => return Err("invalid assignment operation".to_owned()),
+                    },
+                    ty,
+                    span,
+                })
             }
             Expression::Update {
                 expr,
                 op,
                 is_postfix,
             } => {
+                let parser_span = expr.1;
                 let lhs = self.lower_expr(*expr, locals, local_map)?;
                 if !is_place_expr(&lhs) {
                     return Err("update target is not assignable".to_owned());
                 }
                 let ty = lhs.ty;
-                let rhs = HirExpr {
-                    kind: HirExprKind::ConstInt(1),
-                    ty: Ty::signed_ty(IntTy::I32),
-                    span,
+                let rhs = {
+                    let (ty, kind) = match lhs.ty.kind() {
+                        TyKind::RigidTy(rigid_ty) => match rigid_ty {
+                            RigidTy::Int(_) | RigidTy::Uint(_) => {
+                                (lhs.ty, HirExprKind::ConstInt(1))
+                            }
+                            RigidTy::Float(_) => (
+                                Ty::from_rigid_kind(RigidTy::Float(FloatTy::F64)),
+                                HirExprKind::ConstFloat(1.),
+                            ),
+                            RigidTy::RawPtr(..) => (Ty::usize_ty(), HirExprKind::ConstInt(1)),
+                            _ => {
+                                self.terminate_with_error(parser_span, "Invalid type for ++ and --")
+                            }
+                        },
+                        _ => todo!(),
+                    };
+                    HirExpr { kind, ty, span }
                 };
                 let return_semantic = if is_postfix {
                     ReturnSemantic::BeforeAssign
@@ -416,6 +432,7 @@ impl HirCtx<'_> {
                             lhs,
                             rhs,
                             op,
+                            binop_ty: lowered.ty,
                             return_semantic,
                         },
                         ty,
@@ -452,8 +469,8 @@ impl HirCtx<'_> {
                 let mut inner = self.lower_expr(*expr, locals, local_map)?;
                 self.array_to_pointer_decay_if_array(&mut inner);
                 let target_ty = self.lower_type_name(*type_name, parser_span)?;
-                let src_is_int = is_integer_ty(inner.ty);
-                let dst_is_int = is_integer_ty(target_ty);
+                let src_is_int = is_numeric_ty(inner.ty);
+                let dst_is_int = is_numeric_ty(target_ty);
                 let src_is_ptr_like = matches!(
                     inner.ty.kind(),
                     TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
@@ -579,7 +596,7 @@ impl HirCtx<'_> {
                         })
                     }
                     ParsedUnaryOp::Com => {
-                        if !is_integer_ty(inner.ty) {
+                        if !is_numeric_ty(inner.ty) {
                             return Err("unary `~` expects integer expression".to_owned());
                         }
                         Ok(HirExpr {
@@ -589,14 +606,22 @@ impl HirCtx<'_> {
                         })
                     }
                     ParsedUnaryOp::Minus => {
-                        if !is_integer_ty(inner.ty) {
+                        if !is_numeric_ty(inner.ty) {
                             return Err("unary `-` expects integer expression".to_owned());
                         }
                         Ok(HirExpr {
                             kind: HirExprKind::Binary {
                                 op: HirBinOp::Sub,
                                 lhs: Box::new(HirExpr {
-                                    kind: HirExprKind::ConstInt(0),
+                                    kind: match inner.ty.kind() {
+                                        TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_)) => {
+                                            HirExprKind::ConstInt(0)
+                                        }
+                                        TyKind::RigidTy(RigidTy::Float(_)) => {
+                                            HirExprKind::ConstFloat(0.)
+                                        }
+                                        _ => unreachable!(),
+                                    },
                                     ty: inner.ty,
                                     span,
                                 }),
@@ -720,6 +745,33 @@ impl HirCtx<'_> {
     }
 }
 
+fn ty_passed_to_variadic(ty: Ty) -> Ty {
+    match ty.kind() {
+        TyKind::RigidTy(rigid_ty) => {
+            let rigid_ty = match rigid_ty {
+                RigidTy::Int(int_ty) => RigidTy::Int(match int_ty {
+                    IntTy::I8 => IntTy::I32,
+                    IntTy::I16 => IntTy::I32,
+                    IntTy::I32 => IntTy::I32,
+                    IntTy::I64 => IntTy::I64,
+                    IntTy::Isize => IntTy::Isize,
+                    IntTy::I128 => IntTy::I128,
+                }),
+                RigidTy::Uint(uint_ty) => RigidTy::Uint(uint_ty),
+                RigidTy::Float(float_ty) => RigidTy::Float(match float_ty {
+                    FloatTy::F16 => FloatTy::F64,
+                    FloatTy::F32 => FloatTy::F64,
+                    FloatTy::F64 => FloatTy::F64,
+                    FloatTy::F128 => FloatTy::F128,
+                }),
+                _ => rigid_ty,
+            };
+            Ty::from_rigid_kind(rigid_ty)
+        }
+        _ => ty,
+    }
+}
+
 impl HirCtx<'_> {
     fn lower_binop_from_lowered(
         &self,
@@ -741,7 +793,7 @@ impl HirCtx<'_> {
             let rhs_is_ptr = matches!(rhs.ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
             if matches!(op, ParsedBinOp::Add) {
                 match (lhs_is_ptr, rhs_is_ptr) {
-                    (true, false) if is_integer_ty(rhs.ty) => {
+                    (true, false) if is_numeric_ty(rhs.ty) => {
                         return Ok(HirExpr {
                             kind: HirExprKind::PtrOffset {
                                 base: Box::new(lhs.clone()),
@@ -751,7 +803,7 @@ impl HirCtx<'_> {
                             span,
                         });
                     }
-                    (false, true) if is_integer_ty(lhs.ty) && !is_assignment => {
+                    (false, true) if is_numeric_ty(lhs.ty) && !is_assignment => {
                         return Ok(HirExpr {
                             kind: HirExprKind::PtrOffset {
                                 base: Box::new(rhs.clone()),
@@ -768,7 +820,7 @@ impl HirCtx<'_> {
                 }
             } else {
                 match (lhs_is_ptr, rhs_is_ptr) {
-                    (true, false) if is_integer_ty(rhs.ty) => {
+                    (true, false) if is_numeric_ty(rhs.ty) => {
                         let rhs_ty = rhs.ty;
                         let neg_rhs = HirExpr {
                             kind: HirExprKind::Binary {
@@ -807,22 +859,16 @@ impl HirCtx<'_> {
             }
         }
 
-        if is_integer_ty(lhs.ty) && is_integer_ty(rhs.ty) {
-            if is_assignment {
-                if needs_implicit_cast(lhs.ty, rhs.ty) {
-                    rhs = HirExpr {
-                        kind: HirExprKind::Cast(Box::new(rhs.clone())),
-                        ty: lhs.ty,
-                        span: rhs.span,
-                    };
-                }
-            } else if lhs.ty != rhs.ty {
-                if let Some(common_ty) = common_integer_ty(lhs.ty, rhs.ty) {
-                    lhs = HirExpr {
-                        kind: HirExprKind::Cast(Box::new(lhs.clone())),
-                        ty: common_ty,
-                        span: lhs.span,
-                    };
+        if is_numeric_ty(lhs.ty) && is_numeric_ty(rhs.ty) {
+            if lhs.ty != rhs.ty {
+                if let Some(common_ty) = common_numeric_ty(lhs.ty, rhs.ty) {
+                    if !is_assignment {
+                        lhs = HirExpr {
+                            kind: HirExprKind::Cast(Box::new(lhs.clone())),
+                            ty: common_ty,
+                            span: lhs.span,
+                        };
+                    }
                     rhs = HirExpr {
                         kind: HirExprKind::Cast(Box::new(rhs.clone())),
                         ty: common_ty,
@@ -832,7 +878,7 @@ impl HirCtx<'_> {
             }
         }
 
-        if lhs.ty != rhs.ty {
+        if lhs.ty != rhs.ty && !is_assignment {
             return Err(format!(
                 "binary op type mismatch: lhs={:?}, rhs={:?}",
                 lhs.ty, rhs.ty
@@ -881,12 +927,12 @@ impl HirCtx<'_> {
             | HirBinOp::Ne
             | HirBinOp::Ge
             | HirBinOp::Gt => Ty::signed_ty(IntTy::I32),
-            _ => lhs.ty,
+            _ => rhs.ty,
         };
         Ok(HirExpr {
             kind: HirExprKind::Binary {
                 op,
-                lhs: Box::new(lhs.clone()),
+                lhs: Box::new(lhs),
                 rhs: Box::new(rhs),
             },
             ty,

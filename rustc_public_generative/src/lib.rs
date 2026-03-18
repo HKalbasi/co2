@@ -21,6 +21,7 @@ extern crate rustc_hashes;
 extern crate rustc_hir;
 extern crate rustc_index;
 extern crate rustc_interface;
+extern crate rustc_lint;
 extern crate rustc_middle;
 pub extern crate rustc_public;
 extern crate rustc_public_bridge;

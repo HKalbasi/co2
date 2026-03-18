@@ -7,7 +7,10 @@ use rustc_public_generative::rustc_public::{
         Rvalue, Safety, Statement as MirStatement, StatementKind as MirStatementKind,
         SwitchTargets, TerminatorKind,
     },
-    ty::{GenericArgKind, GenericArgs, IntTy, MirConst, RigidTy, Span as RustSpan, Ty, TyKind},
+    ty::{
+        FloatTy, GenericArgKind, GenericArgs, IntTy, MirConst, RigidTy, Span as RustSpan, Ty,
+        TyKind,
+    },
 };
 
 use crate::{
@@ -116,19 +119,22 @@ impl Builder<'_> {
         MirOperand::Copy(place(dst_local))
     }
 
-    fn read_maybe_uninit_as(&mut self, src: &HirExpr, value_ty: Ty, span: RustSpan) -> MirOperand {
-        let src_place = if let Some(place) = self.lower_expr_to_place(src) {
-            place
-        } else {
-            let tmp = self.new_temp(src.ty, Mutability::Mut, span);
-            let op = self.lower_expr_to_operand(src);
+    fn read_maybe_uninit_as(
+        &mut self,
+        op: MirOperand,
+        op_ty: Ty,
+        value_ty: Ty,
+        span: RustSpan,
+    ) -> MirOperand {
+        let src_place = {
+            let tmp = self.new_temp(op_ty, Mutability::Mut, span);
             self.stmts.push(MirStatement {
                 kind: MirStatementKind::Assign(place(tmp), Rvalue::Use(op)),
                 span,
             });
             place(tmp)
         };
-        let ptr_maybe_ty = Ty::new_ptr(src.ty, Mutability::Mut);
+        let ptr_maybe_ty = Ty::new_ptr(op_ty, Mutability::Mut);
         let ptr_maybe_local = self.new_temp(ptr_maybe_ty, Mutability::Mut, span);
         self.stmts.push(MirStatement {
             kind: MirStatementKind::Assign(
@@ -232,6 +238,23 @@ impl Builder<'_> {
                     span,
                 });
                 MirOperand::Copy(place(tmp))
+            }
+            HirExprKind::ConstFloat(v) => {
+                let span = expr.span;
+                let c =
+                    MirConst::try_from_float(*v, FloatTy::F64).expect("failed to build int const");
+                let const_op = MirOperand::Constant(ConstOperand {
+                    span,
+                    user_ty: None,
+                    const_: c,
+                });
+
+                assert_eq!(
+                    expr.ty.kind(),
+                    TyKind::RigidTy(RigidTy::Float(FloatTy::F64))
+                );
+
+                const_op
             }
             HirExprKind::Field { .. } => {
                 let place = self
@@ -500,6 +523,7 @@ impl Builder<'_> {
                 lhs,
                 rhs,
                 op,
+                binop_ty,
                 return_semantic,
             } => {
                 let lhs_place = self
@@ -514,23 +538,28 @@ impl Builder<'_> {
                     ),
                     span: expr.span,
                 });
-                let new_val = self.new_temp(lhs.ty, Mutability::Mut, expr.span);
+                let new_val = self.new_temp(*binop_ty, Mutability::Mut, expr.span);
+                let lhs_casted = self.lower_cast(
+                    MirOperand::Copy(place(old_lhs)),
+                    lhs.ty,
+                    *binop_ty,
+                    lhs.span,
+                );
                 self.stmts.push(MirStatement {
                     kind: MirStatementKind::Assign(
                         place(new_val),
-                        Rvalue::BinaryOp(
-                            self.lower_bin_op(*op),
-                            MirOperand::Copy(place(old_lhs)),
-                            rhs_value,
-                        ),
+                        Rvalue::BinaryOp(self.lower_bin_op(*op), lhs_casted, rhs_value),
                     ),
                     span: expr.span,
                 });
+                let new_val_casted = self.lower_cast(
+                    MirOperand::Copy(place(new_val)),
+                    *binop_ty,
+                    lhs.ty,
+                    lhs.span,
+                );
                 self.stmts.push(MirStatement {
-                    kind: MirStatementKind::Assign(
-                        lhs_place.clone(),
-                        Rvalue::Use(MirOperand::Copy(place(new_val))),
-                    ),
+                    kind: MirStatementKind::Assign(lhs_place.clone(), Rvalue::Use(new_val_casted)),
                     span: expr.span,
                 });
                 match return_semantic {
@@ -623,192 +652,221 @@ impl Builder<'_> {
                 let inner_op = self.lower_expr_to_operand(inner);
                 let src_ty = inner.ty;
                 let dst_ty = expr.ty;
-                let src_is_int = matches!(
-                    src_ty.kind(),
-                    TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
-                );
-                let dst_is_int = matches!(
-                    dst_ty.kind(),
-                    TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
-                );
-                let src_is_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
-                let dst_is_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
-                let src_is_fn_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
-                let dst_is_fn_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
-                let src_is_fn_def = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnDef(_, _)));
-                let src_mu_fn_ptr = maybe_uninit_fn_ptr_inner(src_ty);
-                let dst_mu_fn_ptr = maybe_uninit_fn_ptr_inner(dst_ty);
-
-                if src_is_int && dst_is_int {
-                    let tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(tmp),
-                            Rvalue::Cast(CastKind::IntToInt, inner_op, dst_ty),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(tmp));
-                }
-
-                if src_is_fn_def && dst_is_fn_ptr {
-                    let tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(tmp),
-                            Rvalue::Cast(
-                                CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer(
-                                    Safety::Safe,
-                                )),
-                                inner_op,
-                                dst_ty,
-                            ),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(tmp));
-                }
-
-                if dst_mu_fn_ptr.is_some() && src_is_fn_def {
-                    let fn_ptr_ty = dst_mu_fn_ptr.expect("checked is_some");
-                    let fn_ptr_local = self.new_temp(fn_ptr_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(fn_ptr_local),
-                            Rvalue::Cast(
-                                CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer(
-                                    Safety::Safe,
-                                )),
-                                inner_op,
-                                fn_ptr_ty,
-                            ),
-                        ),
-                        span: expr.span,
-                    });
-                    return self.write_value_into_maybe_uninit_storage(
-                        dst_ty,
-                        MirOperand::Copy(place(fn_ptr_local)),
-                        fn_ptr_ty,
-                        expr.span,
-                    );
-                }
-
-                if dst_mu_fn_ptr.is_some() && src_is_fn_ptr {
-                    return self.write_value_into_maybe_uninit_storage(
-                        dst_ty, inner_op, src_ty, expr.span,
-                    );
-                }
-
-                if src_is_ptr && dst_is_ptr {
-                    let tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(tmp),
-                            Rvalue::Cast(CastKind::PtrToPtr, inner_op, dst_ty),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(tmp));
-                }
-
-                if src_is_ptr && dst_is_int {
-                    let usize_ty = Ty::usize_ty();
-                    let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(usize_tmp),
-                            Rvalue::Cast(CastKind::PointerExposeAddress, inner_op, usize_ty),
-                        ),
-                        span: expr.span,
-                    });
-                    if dst_ty == usize_ty {
-                        return MirOperand::Copy(place(usize_tmp));
-                    }
-                    let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(dst_tmp),
-                            Rvalue::Cast(
-                                CastKind::IntToInt,
-                                MirOperand::Copy(place(usize_tmp)),
-                                dst_ty,
-                            ),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(dst_tmp));
-                }
-
-                if src_mu_fn_ptr.is_some() && dst_is_int {
-                    let usize_ty = Ty::usize_ty();
-                    let usize_op = self.read_maybe_uninit_as(&inner, usize_ty, expr.span);
-                    if dst_ty == usize_ty {
-                        return usize_op;
-                    }
-                    let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(dst_tmp),
-                            Rvalue::Cast(CastKind::IntToInt, usize_op, dst_ty),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(dst_tmp));
-                }
-
-                if src_is_int && dst_is_ptr {
-                    let usize_ty = Ty::usize_ty();
-                    let usize_op = if src_ty == usize_ty {
-                        inner_op
-                    } else {
-                        let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, expr.span);
-                        self.stmts.push(MirStatement {
-                            kind: MirStatementKind::Assign(
-                                place(usize_tmp),
-                                Rvalue::Cast(CastKind::IntToInt, inner_op, usize_ty),
-                            ),
-                            span: expr.span,
-                        });
-                        MirOperand::Copy(place(usize_tmp))
-                    };
-                    let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, expr.span);
-                    self.stmts.push(MirStatement {
-                        kind: MirStatementKind::Assign(
-                            place(dst_tmp),
-                            Rvalue::Cast(CastKind::PointerWithExposedProvenance, usize_op, dst_ty),
-                        ),
-                        span: expr.span,
-                    });
-                    return MirOperand::Copy(place(dst_tmp));
-                }
-
-                if src_is_int && dst_mu_fn_ptr.is_some() {
-                    let usize_ty = Ty::usize_ty();
-                    let usize_op = if src_ty == usize_ty {
-                        inner_op
-                    } else {
-                        let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, expr.span);
-                        self.stmts.push(MirStatement {
-                            kind: MirStatementKind::Assign(
-                                place(usize_tmp),
-                                Rvalue::Cast(CastKind::IntToInt, inner_op, usize_ty),
-                            ),
-                            span: expr.span,
-                        });
-                        MirOperand::Copy(place(usize_tmp))
-                    };
-                    return self.write_value_into_maybe_uninit_storage(
-                        dst_ty, usize_op, usize_ty, expr.span,
-                    );
-                }
-
-                if src_mu_fn_ptr.is_some() && dst_is_fn_ptr {
-                    return self.read_maybe_uninit_as(&inner, dst_ty, expr.span);
-                }
-
-                panic!("unsupported cast from {:?} to {:?}", src_ty, dst_ty);
+                self.lower_cast(inner_op, src_ty, dst_ty, expr.span)
             }
         }
+    }
+
+    fn lower_cast(
+        &mut self,
+        inner_op: MirOperand,
+        src_ty: Ty,
+        dst_ty: Ty,
+        span: RustSpan,
+    ) -> MirOperand {
+        if src_ty == dst_ty {
+            return inner_op;
+        }
+        let src_is_int = matches!(
+            src_ty.kind(),
+            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
+        );
+        let dst_is_int = matches!(
+            dst_ty.kind(),
+            TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
+        );
+        let src_is_float = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::Float(_)),);
+        let dst_is_float = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::Float(_)),);
+        let src_is_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
+        let dst_is_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
+        let src_is_fn_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
+        let dst_is_fn_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
+        let src_is_fn_def = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnDef(_, _)));
+        let src_mu_fn_ptr = maybe_uninit_fn_ptr_inner(src_ty);
+        let dst_mu_fn_ptr = maybe_uninit_fn_ptr_inner(dst_ty);
+        if src_is_int && dst_is_int {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::IntToInt, inner_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if src_is_float && dst_is_int {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::FloatToInt, inner_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if src_is_int && dst_is_float {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::IntToFloat, inner_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if src_is_float && dst_is_float {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::FloatToFloat, inner_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if src_is_fn_def && dst_is_fn_ptr {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(
+                        CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer(Safety::Safe)),
+                        inner_op,
+                        dst_ty,
+                    ),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if dst_mu_fn_ptr.is_some() && src_is_fn_def {
+            let fn_ptr_ty = dst_mu_fn_ptr.expect("checked is_some");
+            let fn_ptr_local = self.new_temp(fn_ptr_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(fn_ptr_local),
+                    Rvalue::Cast(
+                        CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer(Safety::Safe)),
+                        inner_op,
+                        fn_ptr_ty,
+                    ),
+                ),
+                span,
+            });
+            return self.write_value_into_maybe_uninit_storage(
+                dst_ty,
+                MirOperand::Copy(place(fn_ptr_local)),
+                fn_ptr_ty,
+                span,
+            );
+        }
+        if dst_mu_fn_ptr.is_some() && src_is_fn_ptr {
+            return self.write_value_into_maybe_uninit_storage(dst_ty, inner_op, src_ty, span);
+        }
+        if src_is_ptr && dst_is_ptr {
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::PtrToPtr, inner_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
+        if src_is_ptr && dst_is_int {
+            let usize_ty = Ty::usize_ty();
+            let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(usize_tmp),
+                    Rvalue::Cast(CastKind::PointerExposeAddress, inner_op, usize_ty),
+                ),
+                span,
+            });
+            if dst_ty == usize_ty {
+                return MirOperand::Copy(place(usize_tmp));
+            }
+            let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(dst_tmp),
+                    Rvalue::Cast(
+                        CastKind::IntToInt,
+                        MirOperand::Copy(place(usize_tmp)),
+                        dst_ty,
+                    ),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(dst_tmp));
+        }
+        if src_mu_fn_ptr.is_some() && dst_is_int {
+            let usize_ty = Ty::usize_ty();
+            let usize_op = self.read_maybe_uninit_as(inner_op, src_ty, usize_ty, span);
+            if dst_ty == usize_ty {
+                return usize_op;
+            }
+            let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(dst_tmp),
+                    Rvalue::Cast(CastKind::IntToInt, usize_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(dst_tmp));
+        }
+        if src_is_int && dst_is_ptr {
+            let usize_ty = Ty::usize_ty();
+            let usize_op = if src_ty == usize_ty {
+                inner_op
+            } else {
+                let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, span);
+                self.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(usize_tmp),
+                        Rvalue::Cast(CastKind::IntToInt, inner_op, usize_ty),
+                    ),
+                    span,
+                });
+                MirOperand::Copy(place(usize_tmp))
+            };
+            let dst_tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(dst_tmp),
+                    Rvalue::Cast(CastKind::PointerWithExposedProvenance, usize_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(dst_tmp));
+        }
+        if src_is_int && dst_mu_fn_ptr.is_some() {
+            let usize_ty = Ty::usize_ty();
+            let usize_op = if src_ty == usize_ty {
+                inner_op
+            } else {
+                let usize_tmp = self.new_temp(usize_ty, Mutability::Mut, span);
+                self.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(usize_tmp),
+                        Rvalue::Cast(CastKind::IntToInt, inner_op, usize_ty),
+                    ),
+                    span,
+                });
+                MirOperand::Copy(place(usize_tmp))
+            };
+            return self.write_value_into_maybe_uninit_storage(dst_ty, usize_op, usize_ty, span);
+        }
+        if src_mu_fn_ptr.is_some() && dst_is_fn_ptr {
+            return self.read_maybe_uninit_as(inner_op, src_ty, dst_ty, span);
+        }
+        panic!("unsupported cast from {:?} to {:?}", src_ty, dst_ty);
     }
 
     pub(crate) fn lower_call_expr(
@@ -1087,7 +1145,8 @@ impl Builder<'_> {
             }
             _ => {
                 let func_op = if let Some(inner_fn_ptr) = maybe_uninit_fn_ptr_inner(func.ty) {
-                    self.read_maybe_uninit_as(func, inner_fn_ptr, span)
+                    let op = self.lower_expr_to_operand(func);
+                    self.read_maybe_uninit_as(op, func.ty, inner_fn_ptr, span)
                 } else {
                     self.lower_expr_to_operand(func)
                 };

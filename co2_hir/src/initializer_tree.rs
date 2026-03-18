@@ -10,7 +10,7 @@ use crate::{
     item::{HirLocal, LocalId},
     resolver::HirCtx,
     ty::{
-        adt_field_tys, array_elem_ty, is_array_ty, is_integer_ty, is_union_ty,
+        adt_field_tys, array_elem_ty, is_array_ty, is_numeric_ty, is_union_ty,
         resolve_field_path_in_adt,
     },
 };
@@ -46,7 +46,7 @@ impl InitializerCursor {
             match designator {
                 Designator::Subscript(expr) => {
                     let idx_expr = ctx.lower_expr(expr.clone(), locals, local_map)?;
-                    if !is_integer_ty(idx_expr.ty) {
+                    if !is_numeric_ty(idx_expr.ty) {
                         return Err("array designator index must be integer".to_owned());
                     }
                     let idx = eval_const_int(&idx_expr)? as usize;
