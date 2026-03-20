@@ -135,6 +135,13 @@ pub enum ForeignModItem {
         sig: FunctionSignature,
         span: Span,
     },
+    ForeignStatic {
+        name: String,
+        id: DefId,
+        ty: HirTy,
+        mutable: bool,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]

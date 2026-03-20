@@ -1,13 +1,12 @@
 # Project Summary (for future agent calls)
 
 ## TODO:
-* Support nested defs
-* Split parser from ast crate.
-* Remove direct deps from co2_hir and co2_mir.
+* Compile and run sqlite
+* Find perf problems
+* Remove direct deps from co2_hir and co2_mir????
 * Use rustc span in emit errors and more.
 * stick arena to hir_ctx.
-* Add a shadow test.
-  * Fix parser not resolving locals.
+* Complete the shadow test.
 
 ## Goal
 This is implementation of a new language called co2 which aims to be backward compatible with C but be

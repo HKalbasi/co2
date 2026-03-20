@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use co2_ast::{
-    Declaration, DeclarationSpecifier, Declarator, StatelessResolver, StorageClassSpecifier,
-    TranslationUnit, TypeQueryResult,
-};
+use co2_ast::{Declaration, Declarator, StatelessResolver, TranslationUnit, TypeQueryResult};
 use rustc_public_generative::{DefData, DependencyInfo, HirStructureCtx, rustc_public::DefId};
 
 #[derive(Debug, Default)]
@@ -85,15 +82,8 @@ impl ModuleData {
                     declaration_specifiers,
                     declarators,
                 } => {
-                    let is_typedef = declaration_specifiers.iter().any(|x| {
-                        matches!(
-                            x.0,
-                            DeclarationSpecifier::StorageSpecifier((
-                                StorageClassSpecifier::Typedef,
-                                _
-                            ))
-                        )
-                    });
+                    let is_typedef = declaration_specifiers.iter().any(|x| x.0.is_typedef());
+                    let is_extern = declaration_specifiers.iter().any(|x| x.0.is_extern());
                     if is_typedef {
                         for decl in declarators {
                             let decl = &decl.0.declarator.0;
@@ -121,7 +111,7 @@ impl ModuleData {
                             if this.resolve_path([&*name].into_iter()).is_some() {
                                 continue;
                             }
-                            let parent = if decl.is_function() {
+                            let parent = if decl.is_function() || is_extern {
                                 foreign_mod
                             } else {
                                 parent

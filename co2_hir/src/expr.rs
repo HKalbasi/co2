@@ -578,6 +578,9 @@ impl HirCtx<'_> {
                     ParsedUnaryOp::Deref => {
                         let mut inner = inner;
                         self.array_to_pointer_decay_if_array(&mut inner);
+                        if is_maybe_uninit_fn_ptr_ty(inner.ty).is_some() {
+                            return Ok(inner);
+                        }
                         let TyKind::RigidTy(RigidTy::RawPtr(pointee, _)) = inner.ty.kind() else {
                             return Err(format!(
                                 "cannot dereference non-pointer type: {:?}",

@@ -593,7 +593,7 @@ int main18()
 	void* fp_void = &fp_id;
 	fp = fp_void;
 
-	if (fp(3) - 3)
+	if ((*******fp)(3) - 3)
 		return 1;
 
 	fp_holder s = { .f = fp_id };
@@ -1048,6 +1048,26 @@ int main36() {
 	}
 
 	return 0;
+}
+
+int main37_f2(int c, int b)
+{
+	return c - b;
+}
+
+int (*main37_f1(int a, int b))(int c, int b)
+{
+	if (a != b)
+		return main37_f2;
+	return 0;
+}
+
+int main37()
+{
+	int (* (*p)(int a, int b))(int c, int d) = main37_f1;
+
+
+	return (*(*p)(0, 2))(2, 2);
 }
 
 typedef int (*main_ty)();

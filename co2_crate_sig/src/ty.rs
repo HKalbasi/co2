@@ -314,14 +314,18 @@ impl LocalResolverBase {
 
 fn function_param_names(decl: &Declarator<LocalResolver>) -> Option<Vec<Option<String>>> {
     match decl {
-        Declarator::FunctionDeclarator { param_list, .. } => Some(
+        Declarator::FunctionDeclarator {
+            param_list,
+            declarator,
+        } if declarator.0.is_terminal() => Some(
             param_list
                 .parameters
                 .iter()
                 .map(|param| Some(param.1.0.ident()?.1))
                 .collect(),
         ),
-        Declarator::PointerDeclarator { declarator, .. }
+        Declarator::FunctionDeclarator { declarator, .. }
+        | Declarator::PointerDeclarator { declarator, .. }
         | Declarator::ArrayDeclarator { declarator, .. } => function_param_names(&declarator.0),
         _ => None,
     }

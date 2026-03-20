@@ -259,7 +259,7 @@ impl ItemSignatureInfo {
                 crate::HirModuleItem::ForeignMod { id: _, items } => {
                     for item in items {
                         match item {
-                            crate::hir_structure::ForeignModItem::ForeignFunction {
+                            crate::ForeignModItem::ForeignFunction {
                                 name: _,
                                 id,
                                 sig,
@@ -268,6 +268,22 @@ impl ItemSignatureInfo {
                                 result.push(ItemSignatureInfo {
                                     id: id.0,
                                     kind: ItemSignatureKind::ForeignFunction(sig.clone()),
+                                    span: *span,
+                                });
+                            }
+                            crate::ForeignModItem::ForeignStatic {
+                                name: _,
+                                id,
+                                ty,
+                                mutable,
+                                span,
+                            } => {
+                                result.push(ItemSignatureInfo {
+                                    id: *id,
+                                    kind: ItemSignatureKind::ForeignStatic {
+                                        ty: ty.clone(),
+                                        mutable: *mutable,
+                                    },
                                     span: *span,
                                 });
                             }
@@ -295,6 +311,10 @@ pub enum ItemSignatureKind {
         rhs: DefId,
     },
     Static {
+        ty: HirTy,
+        mutable: bool,
+    },
+    ForeignStatic {
         ty: HirTy,
         mutable: bool,
     },
@@ -808,6 +828,41 @@ impl DefinedCrateInfo {
             items_hir.push((def_id, item_allocator));
         }
 
+        for (my_def_id, static_ty, mutable) in
+            signatures.iter().filter_map(|item| match &item.kind {
+                ItemSignatureKind::ForeignStatic { ty, mutable } => Some((item.id, ty, *mutable)),
+                _ => None,
+            })
+        {
+            let name = &self
+                .items
+                .iter()
+                .find(|item| item.def_id() == my_def_id)
+                .unwrap()
+                .name;
+            let def_id = my_def_id_to_rustc_def_id(tcx, my_def_id).expect_local();
+            let mut item_allocator = HirItemAllocator::new(def_id);
+
+            let foreign_item = hir::ForeignItem {
+                ident: Ident::from_str(name),
+                kind: hir::ForeignItemKind::Static(
+                    leak(hir_ty_to_rustc(tcx, def_id, static_ty, &mut item_allocator)),
+                    if mutable {
+                        rustc_ast::Mutability::Mut
+                    } else {
+                        rustc_ast::Mutability::Not
+                    },
+                    hir::Safety::Safe,
+                ),
+                owner_id: OwnerId { def_id },
+                span: DUMMY_SP,
+                vis_span: DUMMY_SP,
+                has_delayed_lints: false,
+            };
+            item_allocator.set_root_node(hir::Node::ForeignItem(leak(foreign_item)));
+            foreign_items_hir.push((def_id, item_allocator));
+        }
+
         for (my_def_id, const_ty, rhs) in signatures.iter().filter_map(|item| match &item.kind {
             ItemSignatureKind::Const { ty, rhs } => Some((item.id, ty, *rhs)),
             _ => None,
@@ -1084,6 +1139,17 @@ impl DefinedCrateInfo {
                             } => items.push(DefinedItemInfo {
                                 name,
                                 kind: DefinedItemKind::ForeignFunction(id),
+                                span: DUMMY_SP,
+                            }),
+                            crate::hir_structure::ForeignModItem::ForeignStatic {
+                                name,
+                                id,
+                                mutable: _,
+                                ty: _,
+                                span: _,
+                            } => items.push(DefinedItemInfo {
+                                name,
+                                kind: DefinedItemKind::Static(id),
                                 span: DUMMY_SP,
                             }),
                         }
@@ -1599,10 +1665,11 @@ impl<S: CrateGeneratorState> rustc_driver::Callbacks for GenerateCallbacks<S> {
         }
         let _ = GENERATE_STATE.set(self.gate.clone());
 
-        config
-            .opts
-            .lint_opts
-            .push(("arithmetic_overflow".to_owned(), Level::Warn));
+        config.opts.lint_opts.extend([
+            ("unused".to_owned(), Level::Allow),
+            ("nonstandard_style".to_owned(), Level::Allow),
+            ("arithmetic_overflow".to_owned(), Level::Warn),
+        ]);
         config.override_queries = Some(override_queries::<S>);
 
         if let Some(gate) = GENERATE_STATE.get() {

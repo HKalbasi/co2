@@ -765,6 +765,16 @@ impl<R: TypeResolver> DeclarationSpecifier<R> {
         }
     }
 
+    pub fn is_extern(&self) -> bool {
+        match self {
+            DeclarationSpecifier::TypeSpecifier(_) => false,
+            DeclarationSpecifier::TypeQualifier(_) => false,
+            DeclarationSpecifier::StorageSpecifier(c) => {
+                matches!(c.0, StorageClassSpecifier::Extern)
+            }
+        }
+    }
+
     pub fn is_static(&self) -> bool {
         match self {
             DeclarationSpecifier::TypeSpecifier(_) => false,

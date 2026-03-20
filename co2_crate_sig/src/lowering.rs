@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use co2_ast::{
     Declaration, DeclarationSpecifier, DoTransform as _, InitDeclarator, StatelessResolver,
-    StorageClassSpecifier, StructOrUnionKind,
+    StorageClassSpecifier, StructOrUnionKind, TranslationUnit,
 };
 use co2_parser::parse_compound_statement;
 use rustc_public_generative::{
@@ -27,6 +27,75 @@ pub struct WellknownDefs {
     pub zeroed: FnDef,
 }
 
+fn deduplicate_tu_items(
+    mut tu: TranslationUnit<StatelessResolver>,
+) -> TranslationUnit<StatelessResolver> {
+    let mut tu_item_id: usize = 0;
+    let mut name_to_important_def = HashMap::new();
+
+    for (item, _) in &tu.items {
+        match item {
+            Declaration::FunctionDefinition { declarator, .. } => {
+                let name = declarator.0.ident().unwrap();
+                name_to_important_def.insert(name, (tu_item_id, 3));
+                tu_item_id += 1;
+            }
+            Declaration::Declaration {
+                declaration_specifiers,
+                declarators,
+            } => {
+                let is_extern = declaration_specifiers.iter().any(|x| x.0.is_extern());
+                for decl in declarators {
+                    let prio = if decl.0.initializer.is_some() {
+                        2
+                    } else if is_extern {
+                        0
+                    } else {
+                        1
+                    };
+                    let name = decl.0.declarator.0.ident().unwrap();
+                    match name_to_important_def.entry(name) {
+                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                            if occupied_entry.get().1 < prio {
+                                *occupied_entry.get_mut() = (tu_item_id, prio);
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                            vacant_entry.insert((tu_item_id, prio));
+                        }
+                    }
+                    tu_item_id += 1;
+                }
+            }
+        }
+    }
+
+    tu_item_id = 0;
+
+    tu.items.retain_mut(|item| match &mut item.0 {
+        Declaration::FunctionDefinition { declarator, .. } => {
+            let name = declarator.0.ident().unwrap();
+            let is_needed = name_to_important_def[&name].0 == tu_item_id;
+            tu_item_id += 1;
+            is_needed
+        }
+        Declaration::Declaration {
+            declaration_specifiers: _,
+            declarators,
+        } => {
+            declarators.retain(|decl| {
+                let name = decl.0.declarator.0.ident().unwrap();
+                let is_needed = name_to_important_def[&name].0 == tu_item_id;
+                tu_item_id += 1;
+                is_needed
+            });
+            true
+        }
+    });
+
+    tu
+}
+
 pub fn lower_crate_sig(
     ctx: HirStructureCtx<'_>,
     source_name: String,
@@ -40,6 +109,8 @@ pub fn lower_crate_sig(
     let tu = co2_parser::parse_translation_unit(source_name.clone(), src_static, StatelessResolver)
         .expect("failed to parse co2 source")
         .0;
+
+    let tu = deduplicate_tu_items(tu);
 
     let foreign_mod = ctx.allocate_def_id(ctx.root_crate_def_id(), DefData::ForeignMod);
     let mut foreign_items = Vec::new();
@@ -86,41 +157,6 @@ pub fn lower_crate_sig(
         });
     }
 
-    let mut name_to_important_def = HashMap::new();
-    let mut tu_item_id: usize = 0;
-
-    for (item, _) in &tu.items {
-        match item {
-            Declaration::FunctionDefinition { declarator, .. } => {
-                let name = declarator.0.ident().unwrap();
-                name_to_important_def.insert(name, (tu_item_id, 3));
-                tu_item_id += 1;
-            }
-            Declaration::Declaration {
-                declaration_specifiers: _,
-                declarators,
-            } => {
-                for decl in declarators {
-                    let prio = if decl.0.initializer.is_some() { 2 } else { 1 };
-                    let name = decl.0.declarator.0.ident().unwrap();
-                    match name_to_important_def.entry(name) {
-                        std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
-                            if occupied_entry.get().1 < prio {
-                                *occupied_entry.get_mut() = (tu_item_id, prio);
-                            }
-                        }
-                        std::collections::hash_map::Entry::Vacant(vacant_entry) => {
-                            vacant_entry.insert((tu_item_id, prio));
-                        }
-                    }
-                    tu_item_id += 1;
-                }
-            }
-        }
-    }
-
-    tu_item_id = 0;
-
     for (item, parser_span) in tu.items {
         let span = ctx.co2_span_to_rustc(parser_span);
         match item {
@@ -135,14 +171,6 @@ pub fn lower_crate_sig(
                 let (name, mut sig, param_names) = ctx
                     .lower_function_signature(base, declarator.transform(&resolver))
                     .expect("failed to lower function signature");
-
-                if let Some((id, _)) = name_to_important_def.get(&name) {
-                    if *id != tu_item_id {
-                        tu_item_id += 1;
-                        continue;
-                    }
-                    tu_item_id += 1;
-                }
 
                 let id = ctx.resolve_in_current([&*name]).unwrap().0;
                 if name == "main" && !no_main {
@@ -184,6 +212,7 @@ pub fn lower_crate_sig(
                 declarators,
             } => {
                 let mut is_typedef = false;
+                let mut is_extern = false;
                 let mut cleaned_specs = Vec::new();
                 for (spec, sp) in declaration_specifiers {
                     match spec {
@@ -192,6 +221,12 @@ pub fn lower_crate_sig(
                             _,
                         )) => {
                             is_typedef = true;
+                        }
+                        DeclarationSpecifier::StorageSpecifier((
+                            StorageClassSpecifier::Extern,
+                            _,
+                        )) => {
+                            is_extern = true;
                         }
                         _ => cleaned_specs.push((spec, sp)),
                     }
@@ -209,14 +244,6 @@ pub fn lower_crate_sig(
                     if is_typedef {
                         let (name, ty) = ctx
                             .lower_value_decl_ctype(base.clone(), declarator.transform(&resolver));
-
-                        if let Some((id, _)) = name_to_important_def.get(&name) {
-                            if *id != tu_item_id {
-                                tu_item_id += 1;
-                                continue;
-                            }
-                            tu_item_id += 1;
-                        }
 
                         let ty = match ty {
                             CTy::Ty(ty) => ty,
@@ -241,14 +268,6 @@ pub fn lower_crate_sig(
                     let (name, ty) =
                         ctx.lower_value_decl_ctype(base.clone(), declarator.transform(&resolver));
 
-                    if let Some((id, _)) = name_to_important_def.get(&name) {
-                        if *id != tu_item_id {
-                            tu_item_id += 1;
-                            continue;
-                        }
-                        tu_item_id += 1;
-                    }
-
                     match ty {
                         CTy::Ty(ty) => {
                             let (id, _) = ctx.resolve_in_current([&*name]).unwrap();
@@ -260,13 +279,23 @@ pub fn lower_crate_sig(
                             } else {
                                 ctx.mir_owners.insert(id, MirOwnerInfo::StaticZeroed);
                             }
-                            ctx.hir_items.push(HirModuleItem::Static {
-                                name,
-                                id,
-                                ty,
-                                mutable: true,
-                                span,
-                            });
+                            if is_extern {
+                                foreign_items.push(ForeignModItem::ForeignStatic {
+                                    name,
+                                    id,
+                                    ty,
+                                    mutable: true,
+                                    span,
+                                });
+                            } else {
+                                ctx.hir_items.push(HirModuleItem::Static {
+                                    name,
+                                    id,
+                                    ty,
+                                    mutable: true,
+                                    span,
+                                });
+                            }
                         }
                         CTy::UnsizedArray(elem_ty) => {
                             let (id, _) = ctx.resolve_in_current([&*name]).unwrap();
