@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
 use co2_ast::{
-    DeclarationSpecifier, Declarator, EnumSpecifier, StructOrUnionField, StructOrUnionKind,
-    StructOrUnionSpecifier,
+    DeclarationSpecifier, Declarator, EnumSpecifier, Enumerator, Expression, Spanned,
+    StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, TypeQueryResult,
 };
 use rustc_public_generative::{
     DefData, StructField,
     rustc_public::{DefId, ty::Span},
 };
 
-use crate::{LocalResolver, LocalResolverBase, MirOwnerInfo, ty::CTy};
+use crate::{DefOrLocal, LocalResolver, LocalResolverBase, MirOwnerInfo, ty::CTy};
 
+#[derive(Debug)]
 pub(crate) struct StructData {
     pub(crate) def_id: DefId,
     pub(crate) name: String,
@@ -19,13 +20,14 @@ pub(crate) struct StructData {
     pub(crate) fields: Option<Vec<StructField>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct PendingEnum {
     pub(crate) name: String,
     pub(crate) def_id: DefId,
     pub(crate) mir_info: MirOwnerInfo,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct StructManager {
     definitions: HashMap<DefId, StructData>,
     pending_enum_consts: Vec<PendingEnum>,
@@ -41,7 +43,7 @@ impl LocalResolver {
         span: Span,
         redefine: bool,
     ) -> DefId {
-        if let Some(def) = self.struct_tags.borrow().get(name) {
+        if let Some(def) = self.struct_tags.borrow().struct_tags.get(name) {
             if !redefine
                 || self.base.borrow().struct_manager.definitions[def]
                     .fields
@@ -54,6 +56,7 @@ impl LocalResolver {
         let def_id = self.base.borrow_mut().allocate_undef(kind, span, name);
         self.struct_tags
             .borrow_mut()
+            .struct_tags
             .insert(name.to_owned(), def_id);
         def_id
     }
@@ -79,6 +82,58 @@ impl LocalResolver {
                 let def = base.allocate_undef(kind, span, "");
                 base.define_def(def, &fields, span);
                 def
+            }
+        }
+    }
+
+    pub(crate) fn collect_enumerator(
+        &self,
+        enumerator: Enumerator<LocalResolver>,
+        _span: co2_ast::Span,
+    ) -> (DefId, String, Option<Spanned<Expression<LocalResolver>>>) {
+        let mut base = self.base.borrow_mut();
+        let (def_id, fake_name) = base.emit_fake_def(rustc_public_generative::DefData::ValueNs);
+
+        self.locals.borrow_mut().insert(
+            enumerator.ident.0,
+            (DefOrLocal::Def(def_id), TypeQueryResult::Expr),
+        );
+        (def_id, fake_name, enumerator.value)
+    }
+
+    pub(crate) fn collect_enum_constants(
+        &self,
+        specifier: EnumSpecifier<LocalResolver>,
+        span: co2_ast::Span,
+    ) {
+        match specifier {
+            EnumSpecifier::Declared { ident: _ } => (),
+            EnumSpecifier::Defined {
+                ident: _,
+                enumerators,
+            }
+            | EnumSpecifier::Anonymous { enumerators } => {
+                let span = self.base.borrow().co2_span_to_rustc(span);
+                let mut prev = None;
+                for ((def_id, fake_name, value), _) in enumerators {
+                    let mut base = self.base.borrow_mut();
+                    let mir_info = match value {
+                        Some((initializer, span)) => {
+                            let initializer = (initializer, span);
+                            MirOwnerInfo::EnumConstExplicit { initializer }
+                        }
+                        None => match prev {
+                            Some(prev) => MirOwnerInfo::EnumConstPrevPlus(prev, span),
+                            None => MirOwnerInfo::EnumConstZeroed,
+                        },
+                    };
+                    base.struct_manager.pending_enum_consts.push(PendingEnum {
+                        name: fake_name,
+                        def_id,
+                        mir_info,
+                    });
+                    prev = Some(def_id);
+                }
             }
         }
     }
@@ -171,42 +226,5 @@ impl LocalResolverBase {
             todo!()
         }
         data.fields = Some(fields);
-    }
-
-    pub(crate) fn collect_enum_constants(
-        &mut self,
-        specifier: EnumSpecifier<LocalResolver>,
-        span: co2_ast::Span,
-    ) {
-        match specifier {
-            EnumSpecifier::Declared { ident: _ } => (),
-            EnumSpecifier::Defined {
-                ident: _,
-                enumerators,
-            }
-            | EnumSpecifier::Anonymous { enumerators } => {
-                let span = self.co2_span_to_rustc(span);
-                let mut prev = None;
-                for (e, _) in enumerators {
-                    let def_id = self.resolver.resolve_in_current([&*e.ident.0]).unwrap().0;
-                    let mir_info = match e.value {
-                        Some((initializer, span)) => {
-                            let initializer = (initializer, span);
-                            MirOwnerInfo::EnumConstExplicit { initializer }
-                        }
-                        None => match prev {
-                            Some(prev) => MirOwnerInfo::EnumConstPrevPlus(prev, span),
-                            None => MirOwnerInfo::EnumConstZeroed,
-                        },
-                    };
-                    self.struct_manager.pending_enum_consts.push(PendingEnum {
-                        name: e.ident.0.clone(),
-                        def_id,
-                        mir_info,
-                    });
-                    prev = Some(def_id);
-                }
-            }
-        }
     }
 }

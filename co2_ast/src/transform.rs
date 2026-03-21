@@ -16,6 +16,10 @@ pub trait Transformable<F: TypeResolver>: TypeResolver {
         &self,
         specifier: &Spanned<F::EnumIdentifier>,
     ) -> Spanned<Self::EnumIdentifier>;
+    fn transform_enumerator(
+        &self,
+        specifier: &Spanned<F::EnumeratorIdentifier>,
+    ) -> Spanned<Self::EnumeratorIdentifier>;
     fn transform_path(
         &self,
         path: &Spanned<F::ResolvedRustPath>,
@@ -284,13 +288,19 @@ impl<A: TypeResolver> DoTransform for EnumSpecifier<A> {
         match self {
             EnumSpecifier::Defined { ident, enumerators } => EnumSpecifier::Defined {
                 ident: ident.clone(),
-                enumerators: enumerators.transform(b),
+                enumerators: enumerators
+                    .into_iter()
+                    .map(|i| b.transform_enumerator(i))
+                    .collect(),
             },
             EnumSpecifier::Declared { ident } => EnumSpecifier::Declared {
                 ident: ident.clone(),
             },
             EnumSpecifier::Anonymous { enumerators } => EnumSpecifier::Anonymous {
-                enumerators: enumerators.transform(b),
+                enumerators: enumerators
+                    .into_iter()
+                    .map(|i| b.transform_enumerator(i))
+                    .collect(),
             },
         }
     }

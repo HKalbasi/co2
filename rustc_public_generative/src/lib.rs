@@ -86,6 +86,12 @@ pub struct HirStructureCtx<'tcx> {
     inner: internal::Context,
 }
 
+impl<'tcx> std::fmt::Debug for HirStructureCtx<'tcx> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HirStructureCtx").finish()
+    }
+}
+
 impl HirStructureCtx<'_> {
     pub fn dependencies(&self) -> DependencyInfo {
         internal::collect_dependency_info(self.tcx)

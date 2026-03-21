@@ -227,14 +227,6 @@ impl Resolver {
         self.current.resolve_path(path.into_iter())
     }
 
-    pub(crate) fn insert_into_current(
-        &mut self,
-        path: &str,
-        def: Option<(DefId, TypeQueryResult)>,
-    ) {
-        self.current.insert_path([path].into_iter(), def);
-    }
-
     pub fn resolve(&self, path: &str) -> Option<(DefId, TypeQueryResult)> {
         let Some((mut crate_name, rest)) = path.split_once("::") else {
             return self.resolve_in_current([path]);

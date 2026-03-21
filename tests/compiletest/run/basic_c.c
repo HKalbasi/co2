@@ -1115,6 +1115,36 @@ main40()
 	return 0;
 }
 
+int main41()
+{
+	typedef enum { a, b, c } d;
+	typedef enum { e = b, f, g = f + c } h;
+	typedef enum { i = 6, j = g + i, k } m;
+
+	if (j != 10) {
+		return 1;
+	}
+
+	{
+		int j = 2;
+		{
+			typedef enum { i = 10, j = g * i, k } m;
+			if (j != 40) {
+				return 2;
+			}
+		}
+		if  (j != 2) {
+			return 3;
+		}
+	}
+
+	if (j != 10) {
+		return 4;
+	}
+
+	return 0;
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1128,6 +1158,7 @@ int main() {
 		main26, main27, main28, main29, main30,
 		main31, main32, main33, main34, main35,
 		main36, main37, main38, main39, main40,
+		main41,
 	};
 	
 	int i;

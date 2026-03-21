@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use crate::{
-    Declaration, EnumSpecifier, RustPath, Spanned, StructOrUnionKind, StructOrUnionSpecifier,
-    TypeQueryResult,
+    Declaration, EnumSpecifier, Enumerator, RustPath, Spanned, StructOrUnionKind,
+    StructOrUnionSpecifier, TypeQueryResult,
 };
 
 pub trait TypeResolver: Clone + 'static {
@@ -10,15 +10,21 @@ pub trait TypeResolver: Clone + 'static {
     type DeclarationIdent: Debug + Clone;
     type StructOrUnionIdentifier: Debug + Clone;
     type EnumIdentifier: Debug + Clone;
+    type EnumeratorIdentifier: Debug + Clone;
 
     fn classify_path(&self, path: &RustPath) -> Option<(TypeQueryResult, Self::ResolvedRustPath)>;
     fn register_ident(&self, name: String) -> Self::DeclarationIdent;
     fn register_decl(&self, decl: &Declaration<Self>) -> Self;
+    fn start_new_scope(&self) -> Self;
     fn register_struct_or_union_specifier(
         &self,
         kind: StructOrUnionKind,
         specifier: Spanned<StructOrUnionSpecifier<Self>>,
     ) -> Self::StructOrUnionIdentifier;
+    fn register_enumerator(
+        &self,
+        enumerator: Spanned<Enumerator<Self>>,
+    ) -> Self::EnumeratorIdentifier;
     fn register_enum_specifier(
         &self,
         specifier: Spanned<EnumSpecifier<Self>>,
@@ -33,6 +39,7 @@ impl TypeResolver for StatelessResolver {
     type DeclarationIdent = String;
     type StructOrUnionIdentifier = StructOrUnionSpecifier<Self>;
     type EnumIdentifier = EnumSpecifier<Self>;
+    type EnumeratorIdentifier = Enumerator<Self>;
 
     fn classify_path(&self, path: &RustPath) -> Option<(TypeQueryResult, RustPath)> {
         Some((TypeQueryResult::Unsure, path.clone()))
@@ -46,12 +53,23 @@ impl TypeResolver for StatelessResolver {
         self.clone()
     }
 
+    fn start_new_scope(&self) -> Self {
+        self.clone()
+    }
+
     fn register_struct_or_union_specifier(
         &self,
         _kind: StructOrUnionKind,
         spec: Spanned<StructOrUnionSpecifier<Self>>,
     ) -> Self::StructOrUnionIdentifier {
         spec.0
+    }
+
+    fn register_enumerator(
+        &self,
+        enumerator: Spanned<Enumerator<Self>>,
+    ) -> Self::EnumeratorIdentifier {
+        enumerator.0
     }
 
     fn register_enum_specifier(

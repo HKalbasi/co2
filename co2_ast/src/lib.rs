@@ -313,13 +313,13 @@ pub struct Enumerator<R: TypeResolver> {
 pub enum EnumSpecifier<R: TypeResolver> {
     Defined {
         ident: Spanned<String>,
-        enumerators: Vec<Spanned<Enumerator<R>>>,
+        enumerators: Vec<Spanned<R::EnumeratorIdentifier>>,
     },
     Declared {
         ident: Spanned<String>,
     },
     Anonymous {
-        enumerators: Vec<Spanned<Enumerator<R>>>,
+        enumerators: Vec<Spanned<R::EnumeratorIdentifier>>,
     },
 }
 

@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use co2_ast::{
     Declaration, DeclarationSpecifier, DoTransform as _, InitDeclarator, StatelessResolver,
-    StorageClassSpecifier, StructOrUnionKind, TranslationUnit,
+    StorageClassSpecifier, StructOrUnionKind, TranslationUnit, TypeResolver,
 };
 use co2_parser::parse_compound_statement;
 use rustc_public_generative::{
@@ -17,6 +17,7 @@ use rustc_public_generative::{
 
 use crate::{
     CrateSigCtx, LocalResolver, LocalResolverBase, MirOwnerInfo,
+    ast_resolver::StructAndEnumData,
     resolver::Resolver,
     struct_manager::{PendingEnum, StructData, StructManager},
     ty::CTy,
@@ -130,7 +131,8 @@ pub fn lower_crate_sig(
             source: src_static,
             struct_manager: StructManager::default(),
             unrepresentable_typedefs: HashMap::new(),
-            global_struct_tags: Rc::new(RefCell::new(im::HashMap::new())),
+            global_struct_tags: Rc::new(RefCell::new(StructAndEnumData::default())),
+            global_locals: Rc::new(RefCell::new(im::HashMap::new())),
         })),
         hir_ctx: ctx,
         source_name,
@@ -184,6 +186,7 @@ pub fn lower_crate_sig(
                     no_mangle: true,
                     span,
                 });
+                resolver = resolver.start_new_scope();
                 let param_names = param_names
                     .into_iter()
                     .map(|name| {
@@ -241,10 +244,16 @@ pub fn lower_crate_sig(
                         initializer,
                     } = init.0;
 
-                    if is_typedef {
-                        let (name, ty) = ctx
-                            .lower_value_decl_ctype(base.clone(), declarator.transform(&resolver));
+                    let (name, ty) =
+                        ctx.lower_value_decl_ctype(base.clone(), declarator.transform(&resolver));
 
+                    ctx.resolver
+                        .borrow()
+                        .global_locals
+                        .borrow_mut()
+                        .remove(&name);
+
+                    if is_typedef {
                         let ty = match ty {
                             CTy::Ty(ty) => ty,
                             _ => {
@@ -264,9 +273,6 @@ pub fn lower_crate_sig(
                         });
                         continue;
                     }
-
-                    let (name, ty) =
-                        ctx.lower_value_decl_ctype(base.clone(), declarator.transform(&resolver));
 
                     match ty {
                         CTy::Ty(ty) => {

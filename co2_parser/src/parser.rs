@@ -63,13 +63,7 @@ where
 }
 
 fn repeated_statement_with_modified_resolver<'src, I, R: TypeResolver>(
-    item_parser: impl Parser<
-        'src,
-        I,
-        (Spanned<StatementOrDeclaration<R>>, R),
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
+    resolver: R,
 ) -> impl Parser<'src, I, Vec<Spanned<StatementOrDeclaration<R>>>, extra::Err<Rich<'src, Token, Span>>>
 + Clone
 where
@@ -92,8 +86,8 @@ where
         if is_finished(inp) {
             return Ok(vec![]);
         }
-        let (first, mut current_resolver) = inp.parse(item_parser.clone())?;
-        let mut result = vec![first];
+        let mut current_resolver = resolver.start_new_scope();
+        let mut result = vec![];
         loop {
             if is_finished(inp) {
                 return Ok(result);
@@ -110,7 +104,7 @@ where
 
 pub(crate) fn compound_statement<'src, I, R: TypeResolver>(
     resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
+    _stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
     + Clone
     + 'src,
 ) -> impl Parser<'src, I, Spanned<CompoundStatement<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
@@ -118,7 +112,7 @@ where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    repeated_statement_with_modified_resolver(statement_or_declaration(resolver, stmt_rec))
+    repeated_statement_with_modified_resolver(resolver)
         .map(|statements| CompoundStatement { statements })
         .map_with(|r, e| (r, e.span()))
         .delimited_by(just(Token::LBrace), just(Token::RBrace))
@@ -962,7 +956,14 @@ where
         let enumerator = identifier()
             .then(just(Token::Assign).ignore_then(expression_rec).or_not())
             .map(|(ident, value)| Enumerator { ident, value })
-            .map_with(|r, e| (r, e.span()));
+            .map_with(|r, e| (r, e.span()))
+            .map({
+                let resolver = resolver.clone();
+                move |x| {
+                    let span = x.1;
+                    (resolver.register_enumerator(x), span)
+                }
+            });
         let enum_body = enumerator
             .separated_by(just(Token::Comma))
             .allow_trailing()

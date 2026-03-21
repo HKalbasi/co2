@@ -1,8 +1,9 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use co2_ast::{
-    Declaration, DeclarationSpecifier, Declarator, DoTransform as _, EnumSpecifier, InitDeclarator,
-    RustPath, Spanned, StatelessResolver, StructOrUnionSpecifier, TypeQueryResult, TypeResolver,
+    Declaration, DeclarationSpecifier, Declarator, DoTransform as _, EnumSpecifier, Expression,
+    InitDeclarator, RustPath, Spanned, StatelessResolver, StructOrUnionSpecifier, TypeQueryResult,
+    TypeResolver,
 };
 use rustc_public_generative::{DefData, FileId, HirStructureCtx, rustc_public::DefId};
 
@@ -12,6 +13,12 @@ use crate::{
     ty::{CTy, PrimitiveTy},
 };
 
+#[derive(Default, Debug, Clone)]
+pub struct StructAndEnumData {
+    pub struct_tags: im::HashMap<String, DefId>,
+}
+
+#[derive(Debug)]
 pub struct LocalResolverBase {
     pub resolver: Resolver,
     pub local_counter: usize,
@@ -36,7 +43,8 @@ pub struct LocalResolverBase {
     pub source: &'static str,
     pub(crate) struct_manager: StructManager,
     pub(crate) unrepresentable_typedefs: HashMap<String, CTy>,
-    pub(crate) global_struct_tags: Rc<RefCell<im::HashMap<String, DefId>>>,
+    pub(crate) global_struct_tags: Rc<RefCell<StructAndEnumData>>,
+    pub(crate) global_locals: Rc<RefCell<im::HashMap<String, (DefOrLocal, TypeQueryResult)>>>,
 }
 
 impl LocalResolverBase {
@@ -51,26 +59,35 @@ impl LocalResolverBase {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LocalResolver {
     pub(crate) base: Rc<RefCell<LocalResolverBase>>,
-    pub(crate) locals: im::HashMap<String, (DefOrLocal, TypeQueryResult)>,
-    pub(crate) struct_tags: Rc<RefCell<im::HashMap<String, DefId>>>,
+    pub(crate) locals: Rc<RefCell<im::HashMap<String, (DefOrLocal, TypeQueryResult)>>>,
+    pub(crate) struct_tags: Rc<RefCell<StructAndEnumData>>,
 }
 
 impl LocalResolver {
     pub fn new(base: Rc<RefCell<LocalResolverBase>>) -> Self {
         let struct_tags = base.borrow().global_struct_tags.clone();
+        let locals = base.borrow().global_locals.clone();
         LocalResolver {
             struct_tags,
             base,
-            locals: im::HashMap::new(),
+            locals,
         }
+    }
+
+    fn localize(&mut self) {
+        let struct_tags = self.struct_tags.borrow().clone();
+        self.struct_tags = Rc::new(RefCell::new(struct_tags));
+        let locals = self.locals.borrow().clone();
+        self.locals = Rc::new(RefCell::new(locals));
     }
 
     pub fn add_local(&mut self, name: String) -> usize {
         let (id, name) = self.register_ident(name);
         self.locals
+            .borrow_mut()
             .insert(name, (DefOrLocal::Local(id as u32), TypeQueryResult::Expr));
         id
     }
@@ -89,6 +106,7 @@ impl co2_ast::TypeResolver for LocalResolver {
     type DeclarationIdent = (usize, String);
     type StructOrUnionIdentifier = DefId;
     type EnumIdentifier = ();
+    type EnumeratorIdentifier = (DefId, String, Option<Spanned<Expression<Self>>>);
 
     fn classify_path(
         &self,
@@ -105,7 +123,7 @@ impl co2_ast::TypeResolver for LocalResolver {
                 DefOrLocal::UnrepresentableType(ty.clone()),
             ));
         }
-        let (def, class) = self.locals.get(&path).cloned().or_else(|| {
+        let (def, class) = self.locals.borrow().get(&path).cloned().or_else(|| {
             let (def_id, class) = base.resolver.resolve(&path)?;
             Some((DefOrLocal::Def(def_id), class))
         })?;
@@ -119,10 +137,16 @@ impl co2_ast::TypeResolver for LocalResolver {
         (id, name)
     }
 
+    fn start_new_scope(&self) -> Self {
+        let mut next = self.clone();
+        next.localize();
+        next
+    }
+
     fn register_decl(&self, decl: &Declaration<Self>) -> Self {
         let mut next = self.clone();
-        let struct_tags = next.struct_tags.borrow().clone();
-        next.struct_tags = Rc::new(RefCell::new(struct_tags));
+        next.localize();
+
         match decl {
             Declaration::FunctionDefinition { .. } => next,
             Declaration::Declaration {
@@ -150,6 +174,7 @@ impl co2_ast::TypeResolver for LocalResolver {
                             decl.1,
                         ));
                         next.locals
+                            .borrow_mut()
                             .insert(name.1, (DefOrLocal::Def(def_id), TypeQueryResult::Type));
                     } else if is_static {
                         let mut base = next.base.borrow_mut();
@@ -163,9 +188,10 @@ impl co2_ast::TypeResolver for LocalResolver {
                             decl.1,
                         ));
                         next.locals
+                            .borrow_mut()
                             .insert(name.1, (DefOrLocal::Def(def_id), TypeQueryResult::Expr));
                     } else {
-                        next.locals.insert(
+                        next.locals.borrow_mut().insert(
                             name.1,
                             (DefOrLocal::Local(name.0 as u32), TypeQueryResult::Expr),
                         );
@@ -184,13 +210,18 @@ impl co2_ast::TypeResolver for LocalResolver {
         self.lower_struct_specifier(kind, specifier, span)
     }
 
+    fn register_enumerator(
+        &self,
+        (specifier, span): co2_ast::Spanned<co2_ast::Enumerator<Self>>,
+    ) -> Self::EnumeratorIdentifier {
+        self.collect_enumerator(specifier, span)
+    }
+
     fn register_enum_specifier(
         &self,
         (specifier, span): co2_ast::Spanned<co2_ast::EnumSpecifier<Self>>,
     ) -> Self::EnumIdentifier {
-        self.base
-            .borrow_mut()
-            .collect_enum_constants(specifier, span);
+        self.collect_enum_constants(specifier, span);
     }
 }
 
@@ -219,32 +250,22 @@ impl co2_ast::Transformable<StatelessResolver> for LocalResolver {
         (r.1, *span)
     }
 
+    fn transform_enumerator(
+        &self,
+        specifier: &Spanned<<StatelessResolver as TypeResolver>::EnumeratorIdentifier>,
+    ) -> Spanned<Self::EnumeratorIdentifier> {
+        let span = specifier.1;
+        (
+            self.collect_enumerator(specifier.0.transform(self), span),
+            span,
+        )
+    }
+
     fn transform_enum_specifier(
         &self,
         specifier: &Spanned<EnumSpecifier<StatelessResolver>>,
     ) -> Spanned<Self::EnumIdentifier> {
         let span = specifier.1;
-
-        match &specifier.0 {
-            EnumSpecifier::Declared { ident: _ } => (),
-            EnumSpecifier::Defined {
-                ident: _,
-                enumerators,
-            }
-            | EnumSpecifier::Anonymous { enumerators } => {
-                let mut base = self.base.borrow_mut();
-                for (e, _) in enumerators {
-                    let name = &e.ident.0;
-                    let def_id = base.hir_ctx.allocate_def_id(
-                        base.hir_ctx.root_crate_def_id(),
-                        DefData::ValueNs(name.clone()),
-                    );
-                    base.resolver
-                        .insert_into_current(name, Some((def_id, TypeQueryResult::Expr)));
-                }
-            }
-        }
-
         (
             self.register_enum_specifier(specifier.transform(self)),
             span,

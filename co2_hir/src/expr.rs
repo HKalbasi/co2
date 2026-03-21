@@ -197,7 +197,12 @@ impl HirCtx<'_> {
                     })
                 }
                 co2_crate_sig::DefOrLocal::Local(l) => {
-                    let local = *local_map.get(&(l as usize)).unwrap();
+                    let Some(&local) = local_map.get(&(l as usize)) else {
+                        self.terminate_with_error(
+                            parser_span,
+                            &format!("Invalid local {l}. Available locals are {:#?}", local_map),
+                        );
+                    };
                     let local_decl = &locals[local];
                     return Ok(HirExpr {
                         kind: HirExprKind::Local(local),
