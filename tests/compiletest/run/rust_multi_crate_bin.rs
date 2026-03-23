@@ -2,7 +2,7 @@
 //@ aux-lib: support_lib rust_multi_crate_lib.aux.co2
 //@ run-status: 0
 
-use support_lib::{Point, PointPtr, add, hypot, Union1};
+use support_lib::{Point, PointPtr, add, hypot, Union1, S7Type, S7};
 
 fn main() {
     let mut p = Point { x: 4, y: -1 };
@@ -18,4 +18,7 @@ fn main() {
     unsafe { 
         assert_eq!(u.a, 12);
     }
+
+    let s7_copy: S7Type = unsafe { S7 };
+    assert_eq!(s7_copy.x[2], b'n' as i8);
 }

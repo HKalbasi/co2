@@ -2039,6 +2039,12 @@ fn generated_resolutions<'tcx>(
                 true,
                 false,
             ),
+            DefinedItemKind::Static(_) => (
+                Res::Def(DefKind::Static {
+                    safety: rustc_hir::Safety::Safe, mutability: ty::Mutability::Mut, nested: false }, local_def_id.to_def_id()),
+                true,
+                false,
+            ),
             DefinedItemKind::ForeignFunction(_) => {
                 (Res::Def(DefKind::Fn, local_def_id.to_def_id()), false, true)
             }

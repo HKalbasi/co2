@@ -222,6 +222,12 @@ impl Builder<'_> {
             }
             HirExprKind::VaArg(args) => {
                 let reg = Region { kind: RegionKind::ReErased };
+                let mut target_ty = expr.ty;
+                let mut need_deref = false;
+                if target_ty.kind().is_adt() {
+                    target_ty = Ty::new_ptr(target_ty, Mutability::Mut);
+                    need_deref = true;
+                }
                 let arg_ref_ty = Ty::new_ref(reg.clone(), args.ty, Mutability::Mut);
                 let Some(args) = self.lower_expr_to_place(args) else {
                     panic!("VaArg operand was not lvalue");
@@ -244,10 +250,10 @@ impl Builder<'_> {
                     MirOperand::Move(place(tmp))
                 };
 
-                let ret_local = self.new_temp(expr.ty, Mutability::Mut, expr.span);
+                let ret_local = self.new_temp(target_ty, Mutability::Mut, expr.span);
                 let generic_args = vec![
                     GenericArgKind::Lifetime(reg),
-                    GenericArgKind::Type(expr.ty),
+                    GenericArgKind::Type(target_ty),
                 ];
                 self.emit_call_block(
                     fn_const_operand(self.wellknown_defs.valist_fn_arg, generic_args, expr.span),
@@ -257,7 +263,11 @@ impl Builder<'_> {
                     place(ret_local),
                     expr.span,
                 );
-                MirOperand::Copy(place(ret_local))
+                let mut ret_place = place(ret_local); 
+                if need_deref {
+                    ret_place.projection.push(MirProjection::Deref);
+                }
+                MirOperand::Copy(ret_place)
             }
             HirExprKind::VaEnd(args) => {
                 let Some(_args) = self.lower_expr_to_place(args) else {

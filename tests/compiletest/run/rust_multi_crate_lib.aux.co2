@@ -17,3 +17,7 @@ typedef union {
     int a;
     u64 b;
 } Union1;
+
+struct S7 { char x[7]; } S7 = { "lmnopqr" };
+
+typedef struct S7 S7Type;

@@ -272,7 +272,17 @@ impl HirCtx<'_> {
                 for (idx, actual) in lowered_args.iter_mut().enumerate() {
                     let expected = match sig.inputs().get(idx) {
                         Some(ty) => *ty,
-                        None => ty_passed_to_variadic(actual.ty),
+                        None => {
+                            if actual.ty.kind().is_adt() {
+                                *actual = HirExpr {
+                                    kind: HirExprKind::AddrOf(Box::new(actual.clone())),
+                                    ty: Ty::new_ptr(actual.ty, Mutability::Mut),
+                                    span: actual.span,
+                                };
+                                continue;
+                            }
+                            ty_passed_to_variadic(actual.ty)
+                        },
                     };
                     if needs_implicit_cast(expected, actual.ty) {
                         *actual = HirExpr {

@@ -11,6 +11,8 @@ int implicit_varargs() {
     return 12;
 }
 
+struct s7 { char x[7]; } s7 = { "lmnopqr" };
+
 int multiple_types(int normal_arg, ...) {
     if (normal_arg != 5) {
         return 10;
@@ -27,6 +29,11 @@ int multiple_types(int normal_arg, ...) {
         return 2;
     }
 
+    struct s7 s = va_arg(args, struct s7);
+    if (s.x[2] != 'n') {
+        return 3;
+    }
+
     va_end(args);
 
     return 0;
@@ -40,7 +47,7 @@ int main() {
         return 2;
     }
     int p = 1;
-    if (multiple_types(5, p, &p)) {
+    if (multiple_types(5, p, &p, s7)) {
         return 3;
     }
 
