@@ -50,14 +50,14 @@ fn numeric_rank(ty: Ty) -> Option<(u8, bool)> {
     }
 }
 
-pub(crate) fn common_ternary_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
-    if let Some(r) = common_numeric_ty(lhs, rhs) {
+pub(crate) fn common_ternary_ty(lhs_ty: Ty, rhs_ty: Ty) -> Option<Ty> {
+    if let Some(r) = common_numeric_ty(lhs_ty, rhs_ty) {
         return Some(r);
     }
-    let TyKind::RigidTy(lhs) = lhs.kind() else {
+    let TyKind::RigidTy(lhs) = lhs_ty.kind() else {
         return None;
     };
-    let TyKind::RigidTy(rhs) = rhs.kind() else {
+    let TyKind::RigidTy(rhs) = rhs_ty.kind() else {
         return None;
     };
     let lhs_is_ptr = matches!(lhs, RigidTy::RawPtr(..));
@@ -67,6 +67,14 @@ pub(crate) fn common_ternary_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
     let lhs_is_integer = matches!(lhs, RigidTy::Int(..) | RigidTy::Uint(..));
     let rhs_is_integer = matches!(rhs, RigidTy::Int(..) | RigidTy::Uint(..));
     let one_is_integer = lhs_is_integer || rhs_is_integer;
+
+    let lhs_is_void = matches!(lhs, RigidTy::Tuple(l) if l.is_empty());
+    let rhs_is_void = matches!(rhs, RigidTy::Tuple(l) if l.is_empty());
+    let one_is_void = lhs_is_void || rhs_is_void;
+    
+    if one_is_void {
+        return Some(Ty::new_tuple(&[]));
+    }
 
     if one_is_ptr && one_is_integer {
         return Some(Ty::usize_ty());

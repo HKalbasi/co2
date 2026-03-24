@@ -696,18 +696,20 @@ impl HirCtx<'_> {
                 }
             }
             Expression::GnuStatementExpr { body } => {
+                let parser_span = body.1;
                 let mut parsed = body.0;
-                let Some((last_item, _)) = parsed.statements.pop() else {
-                    return Err(
-                        "gnu statement expression requires a final expression statement".to_owned(),
-                    );
-                };
-                let StatementOrDeclaration::Statement((Statement::Expression(tail), _)) = last_item
-                else {
-                    return Err(
-                        "gnu statement expression final statement must be an expression".to_owned(),
-                    );
-                };
+                let tail = if let Some(last_item) = parsed.statements.pop() {
+                    if let StatementOrDeclaration::Statement((Statement::Expression(tail), _)) =
+                        last_item.0
+                {
+                    tail
+                } else {
+                    parsed.statements.push(last_item);
+                    (Expression::Empty, parser_span)
+                }
+            } else {
+                (Expression::Empty, parser_span)
+            };
 
                 let mut scoped_map = local_map.clone();
                 let mut lowered_statements = Vec::new();
@@ -763,7 +765,13 @@ impl HirCtx<'_> {
                     span,
                 })
             }
-            Expression::Empty => Err("empty expression is invalid here".to_owned()),
+            Expression::Empty => {
+                Ok(HirExpr {
+                    kind: HirExprKind::Zeroed,
+                    ty: Ty::new_tuple(&[]),
+                    span,
+                })
+            },
             Expression::Conditional {
                 cond,
                 then_expr,
