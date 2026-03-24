@@ -362,7 +362,8 @@ impl HirCtx<'_> {
                         } else {
                             let expr = self.lower_expr(expr, locals, local_map)?;
                             loop {
-                                if let Ok(coerced) = coerce_expr_to_type(expr.clone(), cursor.ty()) {
+                                if let Ok(coerced) = coerce_expr_to_type(expr.clone(), cursor.ty())
+                                {
                                     break InitializerTree::Leaf(coerced);
                                 }
                                 if !cursor.go_through() {

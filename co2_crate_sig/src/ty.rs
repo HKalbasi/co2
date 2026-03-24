@@ -1,4 +1,6 @@
-use co2_ast::{DeclarationSpecifier, Declarator, Span, Spanned, StructOrUnionKind, TypeResolver, TypeSpecifier};
+use co2_ast::{
+    DeclarationSpecifier, Declarator, Span, Spanned, StructOrUnionKind, TypeResolver, TypeSpecifier,
+};
 use rustc_public_generative::{FunctionAbi, FunctionSignature, HirTy, HirTyConst, HirTyKind};
 use rustc_public_generative::{
     HirGenericArg,
@@ -32,11 +34,14 @@ impl CompressedTypeSpecifier {
     pub fn build(
         specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
     ) -> Result<Self, String> {
-        let specifiers = specifiers.into_iter().filter_map(|x| match x.0 {
-            DeclarationSpecifier::TypeSpecifier(s) => Some(s.0),
-            DeclarationSpecifier::TypeQualifier(_) => None,
-            DeclarationSpecifier::StorageSpecifier(_) => None,
-        }).collect::<Vec<_>>();
+        let specifiers = specifiers
+            .into_iter()
+            .filter_map(|x| match x.0 {
+                DeclarationSpecifier::TypeSpecifier(s) => Some(s.0),
+                DeclarationSpecifier::TypeQualifier(_) => None,
+                DeclarationSpecifier::StorageSpecifier(_) => None,
+            })
+            .collect::<Vec<_>>();
         if specifiers.is_empty() {
             return Err("no type specifier found".to_owned());
         }
@@ -44,11 +49,19 @@ impl CompressedTypeSpecifier {
             'b: {
                 return Ok(match specifier {
                     TypeSpecifier::Void => CompressedTypeSpecifier::Void,
-                    TypeSpecifier::Float => CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::FloatTy(FloatTy::F32)),
-                    TypeSpecifier::Bool => CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::IntTy(IntTy::I8)),
-                    &TypeSpecifier::StructOrUnion { kind, specifier } => CompressedTypeSpecifier::StructOrUnion { kind, specifier },
+                    TypeSpecifier::Float => {
+                        CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::FloatTy(FloatTy::F32))
+                    }
+                    TypeSpecifier::Bool => {
+                        CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::IntTy(IntTy::I8))
+                    }
+                    &TypeSpecifier::StructOrUnion { kind, specifier } => {
+                        CompressedTypeSpecifier::StructOrUnion { kind, specifier }
+                    }
                     &TypeSpecifier::Enum(e) => CompressedTypeSpecifier::Enum(e),
-                    TypeSpecifier::TypedefName(t) => CompressedTypeSpecifier::TypedefName(t.clone()),
+                    TypeSpecifier::TypedefName(t) => {
+                        CompressedTypeSpecifier::TypedefName(t.clone())
+                    }
                     _ => break 'b,
                 });
             }
@@ -64,9 +77,7 @@ impl CompressedTypeSpecifier {
         let mut short = 0u32;
         for spec in specifiers {
             match spec {
-                TypeSpecifier::Int
-                | TypeSpecifier::Char
-                | TypeSpecifier::Double => {
+                TypeSpecifier::Int | TypeSpecifier::Char | TypeSpecifier::Double => {
                     if base.is_some() {
                         return Err("duplicate base specifier found".to_owned());
                     }
@@ -76,16 +87,15 @@ impl CompressedTypeSpecifier {
                         TypeSpecifier::Double => Base::Double,
                         _ => unreachable!(),
                     });
-                },
+                }
                 TypeSpecifier::Short => short += 1,
                 TypeSpecifier::Long => long += 1,
-                TypeSpecifier::Signed |
-                TypeSpecifier::Unsigned => {
+                TypeSpecifier::Signed | TypeSpecifier::Unsigned => {
                     if base.is_some() {
                         return Err("duplicate sign specifier found".to_owned());
                     }
                     signed = Some(matches!(spec, TypeSpecifier::Signed));
-                },
+                }
                 TypeSpecifier::Bool
                 | TypeSpecifier::Void
                 | TypeSpecifier::Float
@@ -93,7 +103,7 @@ impl CompressedTypeSpecifier {
                 | TypeSpecifier::Enum(_)
                 | TypeSpecifier::TypedefName(_) => {
                     return Err("This specifier should be used alone".to_owned());
-                },
+                }
             }
         }
         let base = base.unwrap_or(Base::Int);
@@ -101,15 +111,9 @@ impl CompressedTypeSpecifier {
             Base::Int => {
                 let signed = signed.unwrap_or(true);
                 match (long, short, signed) {
-                    (1.., 1.., _) => {
-                        return Err("Mixed short and long".to_owned())
-                    }
-                    (3.., _, _) => {
-                        return Err("long repeated too many times".to_owned())
-                    }
-                    (_, 2.., _) => {
-                        return Err("short repeated too many times".to_owned())
-                    }
+                    (1.., 1.., _) => return Err("Mixed short and long".to_owned()),
+                    (3.., _, _) => return Err("long repeated too many times".to_owned()),
+                    (_, 2.., _) => return Err("short repeated too many times".to_owned()),
                     (0, 0, true) => PrimitiveTy::IntTy(IntTy::I32),
                     (0, 0, false) => PrimitiveTy::UintTy(UintTy::U32),
                     (0, 1, true) => PrimitiveTy::IntTy(IntTy::I16),
@@ -117,10 +121,10 @@ impl CompressedTypeSpecifier {
                     (1..=2, 0, true) => PrimitiveTy::IntTy(IntTy::I64),
                     (1..=2, 0, false) => PrimitiveTy::UintTy(UintTy::U64),
                 }
-            },
+            }
             Base::Double => {
                 if short > 0 {
-                    return Err("short double is invalid".to_owned())
+                    return Err("short double is invalid".to_owned());
                 }
                 if signed.is_some() {
                     return Err("signedness for double is invalid".to_owned());
@@ -130,17 +134,17 @@ impl CompressedTypeSpecifier {
                 } else {
                     FloatTy::F64
                 })
-            },
+            }
             Base::Char => {
                 if short > 0 || long > 0 {
-                    return Err("short and long char is invalid".to_owned())
+                    return Err("short and long char is invalid".to_owned());
                 }
                 match signed {
                     Some(true) => PrimitiveTy::IntTy(IntTy::I8),
                     Some(false) => PrimitiveTy::UintTy(UintTy::U8),
                     None => PrimitiveTy::IntTy(IntTy::I8),
                 }
-            },
+            }
         }))
     }
 }
@@ -277,23 +281,19 @@ impl LocalResolverBase {
         };
         let ty = match specifier {
             CompressedTypeSpecifier::Void => HirTy::new_tuple(vec![], span),
-            CompressedTypeSpecifier::PrimitiveTy(ty) => {
-                self.hir_ty_of_prim(ty, span)
-            }
+            CompressedTypeSpecifier::PrimitiveTy(ty) => self.hir_ty_of_prim(ty, span),
             CompressedTypeSpecifier::Enum(_) => HirTy::signed_ty(IntTy::I32, span),
             CompressedTypeSpecifier::StructOrUnion { kind: _, specifier } => {
                 HirTy::adt(specifier.0, vec![], span)
             }
-            CompressedTypeSpecifier::TypedefName((path, _)) => {
-                match path {
-                    crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
-                    crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
-                    crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(primitive_ty, span),
-                    crate::DefOrLocal::UnrepresentableType(ty) => {
-                        return ty;
-                    }
+            CompressedTypeSpecifier::TypedefName((path, _)) => match path {
+                crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
+                crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
+                crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(primitive_ty, span),
+                crate::DefOrLocal::UnrepresentableType(ty) => {
+                    return ty;
                 }
-            }   
+            },
         };
         CTy::Ty(ty)
     }

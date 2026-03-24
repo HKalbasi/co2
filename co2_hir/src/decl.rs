@@ -7,11 +7,15 @@ use co2_ast::{
 use co2_crate_sig::{CompressedTypeSpecifier, LocalResolver};
 use la_arena::Arena;
 use rustc_public_generative::{
+    HirTy,
     rustc_public::{
-        mir::{Mutability, Safety}, ty::{
-            Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy, Span as RustSpan, Ty, TyConst
-        }, CrateItem
-    }, HirTy
+        CrateItem,
+        mir::{Mutability, Safety},
+        ty::{
+            Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy,
+            Span as RustSpan, Ty, TyConst,
+        },
+    },
 };
 
 use crate::resolver::HirCtx;
@@ -266,11 +270,8 @@ impl HirCtx<'_> {
             CompressedTypeSpecifier::Void => Ty::new_tuple(&[]),
             CompressedTypeSpecifier::PrimitiveTy(primitive_ty) => prim_ty_to_ty(primitive_ty),
             CompressedTypeSpecifier::StructOrUnion { kind: _, specifier } => {
-                Ty::from_rigid_kind(RigidTy::Adt(
-                    AdtDef(specifier.0),
-                    GenericArgs(vec![]),
-                ))
-            },
+                Ty::from_rigid_kind(RigidTy::Adt(AdtDef(specifier.0), GenericArgs(vec![])))
+            }
             CompressedTypeSpecifier::Enum(_) => Ty::signed_ty(IntTy::I32),
             CompressedTypeSpecifier::TypedefName(path) => {
                 return match &path.0 {
@@ -285,9 +286,9 @@ impl HirCtx<'_> {
                         self.sig_cty_to_cty(sig_ty)
                     }
                 };
-            },
+            }
         };
-        
+
         CTy::Ty(ty)
     }
 
@@ -414,12 +415,8 @@ impl HirCtx<'_> {
 
 fn prim_ty_to_ty(primitive_ty: co2_crate_sig::PrimitiveTy) -> Ty {
     match primitive_ty {
-        co2_crate_sig::PrimitiveTy::IntTy(int_ty) => {
-            Ty::from_rigid_kind(RigidTy::Int(int_ty))
-        }
-        co2_crate_sig::PrimitiveTy::UintTy(uint_ty) => {
-            Ty::from_rigid_kind(RigidTy::Uint(uint_ty))
-        }
+        co2_crate_sig::PrimitiveTy::IntTy(int_ty) => Ty::from_rigid_kind(RigidTy::Int(int_ty)),
+        co2_crate_sig::PrimitiveTy::UintTy(uint_ty) => Ty::from_rigid_kind(RigidTy::Uint(uint_ty)),
         co2_crate_sig::PrimitiveTy::FloatTy(float_ty) => {
             Ty::from_rigid_kind(RigidTy::Float(float_ty))
         }

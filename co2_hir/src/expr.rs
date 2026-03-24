@@ -109,7 +109,7 @@ pub enum HirExprKind {
         statements: Vec<HirStmt>,
         tail: Box<HirExpr>,
     },
-    
+
     VaStart(Box<HirExpr>),
     VaArg(Box<HirExpr>),
     VaEnd(Box<HirExpr>),
@@ -282,7 +282,7 @@ impl HirCtx<'_> {
                                 continue;
                             }
                             ty_passed_to_variadic(actual.ty)
-                        },
+                        }
                     };
                     if needs_implicit_cast(expected, actual.ty) {
                         *actual = HirExpr {
@@ -732,14 +732,17 @@ impl HirCtx<'_> {
                     span,
                 })
             }
-            Expression::VaStart { args, last_param: _ } => {
+            Expression::VaStart {
+                args,
+                last_param: _,
+            } => {
                 let args = Box::new(self.lower_expr(*args, locals, local_map)?);
                 Ok(HirExpr {
                     kind: HirExprKind::VaStart(args),
                     ty: Ty::new_tuple(&[]),
                     span,
                 })
-            },
+            }
             Expression::VaArg { args, type_name } => {
                 let args = Box::new(self.lower_expr(*args, locals, local_map)?);
                 let ty = self.lower_type_name(type_name, parser_span)?;
@@ -748,7 +751,7 @@ impl HirCtx<'_> {
                     ty,
                     span,
                 })
-            },
+            }
             Expression::VaEnd { args } => {
                 let args = Box::new(self.lower_expr(*args, locals, local_map)?);
                 Ok(HirExpr {
@@ -756,7 +759,7 @@ impl HirCtx<'_> {
                     ty: Ty::new_tuple(&[]),
                     span,
                 })
-            },
+            }
             Expression::Empty => Err("empty expression is invalid here".to_owned()),
             Expression::Conditional {
                 cond,
@@ -908,6 +911,35 @@ impl HirCtx<'_> {
         }
         self.array_to_pointer_decay_if_array(&mut rhs);
 
+        if matches!(op, HirBinOp::Shl | HirBinOp::Shr) {
+            let common_ty = match lhs.ty.kind() {
+                TyKind::RigidTy(rigid_ty) => match rigid_ty {
+                    RigidTy::Int(int_ty) => Ty::signed_ty(match int_ty {
+                        IntTy::I8 | IntTy::I16 => IntTy::I32,
+                        _ => int_ty,
+                    }),
+                    RigidTy::Uint(uint_ty) => Ty::unsigned_ty(match uint_ty {
+                        UintTy::U8 | UintTy::U16 => UintTy::U32,
+                        _ => uint_ty,
+                    }),
+                    _ => return Err("Invalid type for shift".to_owned()),
+                },
+                _ => unreachable!(),
+            };
+            if !is_assignment {
+                lhs = HirExpr {
+                    kind: HirExprKind::Cast(Box::new(lhs.clone())),
+                    ty: common_ty,
+                    span: lhs.span,
+                };
+            }
+            rhs = HirExpr {
+                kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                ty: common_ty,
+                span: rhs.span,
+            };
+        }
+
         if matches!(op, HirBinOp::Add | HirBinOp::Sub) {
             let lhs_is_ptr = matches!(lhs.ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
             let rhs_is_ptr = matches!(rhs.ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
@@ -979,23 +1011,26 @@ impl HirCtx<'_> {
             }
         }
 
-        if is_numeric_ty(lhs.ty) && is_numeric_ty(rhs.ty) {
-            if lhs.ty != rhs.ty {
-                if let Some(common_ty) = common_numeric_ty(lhs.ty, rhs.ty) {
-                    if !is_assignment {
-                        lhs = HirExpr {
-                            kind: HirExprKind::Cast(Box::new(lhs.clone())),
-                            ty: common_ty,
-                            span: lhs.span,
-                        };
-                    }
-                    rhs = HirExpr {
-                        kind: HirExprKind::Cast(Box::new(rhs.clone())),
-                        ty: common_ty,
-                        span: rhs.span,
-                    };
-                }
+        if is_numeric_ty(lhs.ty)
+            && is_numeric_ty(rhs.ty)
+            && !matches!(op, HirBinOp::Shl | HirBinOp::Shr)
+            && lhs.ty != rhs.ty
+        {
+            let Some(common_ty) = common_numeric_ty(lhs.ty, rhs.ty) else {
+                return Err("failed to find common ty in binop".to_owned());
+            };
+            if !is_assignment {
+                lhs = HirExpr {
+                    kind: HirExprKind::Cast(Box::new(lhs.clone())),
+                    ty: common_ty,
+                    span: lhs.span,
+                };
             }
+            rhs = HirExpr {
+                kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                ty: common_ty,
+                span: rhs.span,
+            };
         }
 
         if op.is_comparison() && lhs.ty != rhs.ty {
@@ -1121,7 +1156,7 @@ fn int_suffix_ty(suffix: IntegerSuffix, value: i128) -> Ty {
             } else {
                 Ty::signed_ty(IntTy::I128)
             }
-        },
+        }
         IntegerSuffix::Long | IntegerSuffix::LongLong => Ty::signed_ty(IntTy::I64),
         IntegerSuffix::Unsigned => Ty::unsigned_ty(UintTy::U32),
         IntegerSuffix::UnsignedLong | IntegerSuffix::UnsignedLongLong => {

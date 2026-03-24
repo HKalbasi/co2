@@ -126,9 +126,16 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                     def.fn_sig().skip_binder().output(),
                 );
 
-                let hir = co2_hir::lower_function_body(body, def, &param_names, &mut hir_ctx).unwrap();
+                let hir =
+                    co2_hir::lower_function_body(body, def, &param_names, &mut hir_ctx).unwrap();
 
-                co2_mir::build_mir_for_body(&hir, &self.deps, &ctx, self.file_id, self.wellknown_defs)
+                co2_mir::build_mir_for_body(
+                    &hir,
+                    &self.deps,
+                    &ctx,
+                    self.file_id,
+                    self.wellknown_defs,
+                )
             }
         }
     }

@@ -2040,8 +2040,14 @@ fn generated_resolutions<'tcx>(
                 false,
             ),
             DefinedItemKind::Static(_) => (
-                Res::Def(DefKind::Static {
-                    safety: rustc_hir::Safety::Safe, mutability: ty::Mutability::Mut, nested: false }, local_def_id.to_def_id()),
+                Res::Def(
+                    DefKind::Static {
+                        safety: rustc_hir::Safety::Safe,
+                        mutability: ty::Mutability::Mut,
+                        nested: false,
+                    },
+                    local_def_id.to_def_id(),
+                ),
                 true,
                 false,
             ),

@@ -8,6 +8,7 @@ mod resolver;
 mod stmt;
 mod ty;
 
+pub use co2_crate_sig::WellknownDefs;
 pub use decl::HirDecl;
 pub use expr::{HirBinOp, HirExpr, HirExprKind, HirLogicalOp, ReturnSemantic};
 pub use item::{
@@ -16,4 +17,3 @@ pub use item::{
 pub use resolver::{HirCtx, ResolvedValue};
 pub use stmt::HirStmt;
 pub use ty::primitive_type;
-pub use co2_crate_sig::WellknownDefs;

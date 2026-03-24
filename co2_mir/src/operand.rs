@@ -1,13 +1,16 @@
 use co2_hir::{HirExpr, HirExprKind, HirLogicalOp, ResolvedValue, ReturnSemantic};
 use rustc_public_generative::rustc_public::{
+    CrateDefType,
     mir::{
         AggregateKind, BorrowKind, CastKind, ConstOperand, MutBorrowKind, Mutability,
         Operand as MirOperand, PointerCoercion, ProjectionElem as MirProjection, RawPtrKind,
         Rvalue, Safety, Statement as MirStatement, StatementKind as MirStatementKind,
         SwitchTargets, TerminatorKind,
-    }, ty::{
-        FloatTy, GenericArgKind, GenericArgs, IntTy, MirConst, Region, RegionKind, RigidTy, Span as RustSpan, Ty, TyKind
-    }, CrateDefType
+    },
+    ty::{
+        FloatTy, GenericArgKind, GenericArgs, IntTy, MirConst, Region, RegionKind, RigidTy,
+        Span as RustSpan, Ty, TyKind,
+    },
 };
 
 use crate::{
@@ -210,9 +213,7 @@ impl Builder<'_> {
                 self.stmts.push(MirStatement {
                     kind: MirStatementKind::Assign(
                         args,
-                        Rvalue::Use(
-                            MirOperand::Move(place(self.c_variadic_local.unwrap())),
-                        ),
+                        Rvalue::Use(MirOperand::Move(place(self.c_variadic_local.unwrap()))),
                     ),
                     span: expr.span,
                 });
@@ -221,7 +222,9 @@ impl Builder<'_> {
                 MirOperand::Copy(place(temp))
             }
             HirExprKind::VaArg(args) => {
-                let reg = Region { kind: RegionKind::ReErased };
+                let reg = Region {
+                    kind: RegionKind::ReErased,
+                };
                 let mut target_ty = expr.ty;
                 let mut need_deref = false;
                 if target_ty.kind().is_adt() {
@@ -233,15 +236,15 @@ impl Builder<'_> {
                     panic!("VaArg operand was not lvalue");
                 };
                 let arg_ref = {
-                    let tmp = self.new_temp(
-                        arg_ref_ty,
-                        Mutability::Mut, expr.span);
+                    let tmp = self.new_temp(arg_ref_ty, Mutability::Mut, expr.span);
                     self.stmts.push(MirStatement {
                         kind: MirStatementKind::Assign(
                             place(tmp),
                             Rvalue::Ref(
                                 reg.clone(),
-                                BorrowKind::Mut { kind: MutBorrowKind::Default },
+                                BorrowKind::Mut {
+                                    kind: MutBorrowKind::Default,
+                                },
                                 args,
                             ),
                         ),
@@ -257,13 +260,11 @@ impl Builder<'_> {
                 ];
                 self.emit_call_block(
                     fn_const_operand(self.wellknown_defs.valist_fn_arg, generic_args, expr.span),
-                    vec![
-                        arg_ref
-                    ],
+                    vec![arg_ref],
                     place(ret_local),
                     expr.span,
                 );
-                let mut ret_place = place(ret_local); 
+                let mut ret_place = place(ret_local);
                 if need_deref {
                     ret_place.projection.push(MirProjection::Deref);
                 }
@@ -275,9 +276,9 @@ impl Builder<'_> {
                 };
                 let temp = self.new_temp(expr.ty, Mutability::Mut, expr.span);
                 self.lower_zeroed_to_destination(place(temp), expr.span, expr.ty);
-                MirOperand::Copy(place(temp))    
+                MirOperand::Copy(place(temp))
             }
-            
+
             HirExprKind::Zeroed => {
                 let temp = self.new_temp(expr.ty, Mutability::Mut, expr.span);
                 self.lower_zeroed_to_destination(place(temp), expr.span, expr.ty);

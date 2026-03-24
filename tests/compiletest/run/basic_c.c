@@ -1189,8 +1189,21 @@ int main43() {
     if (-uint < 0) {
 		return 1;
 	}
-	if ((sint << uint) < 0) {
+	if ((sint << uint) >= 0) {
 		return 2;
+	}
+
+	unsigned short ushort = 0xabcd;
+	uint = 8;
+	if ((ushort << uint) != 0xabcd00) {
+		return 3;
+	}
+
+	long long ll = 12;
+	uint = 0x12345678;
+
+	if ((uint << ll) != 0x45678000) {
+		return 4;
 	}
 
 	return 0;
@@ -1209,7 +1222,7 @@ int main() {
 		main26, main27, main28, main29, main30,
 		main31, main32, main33, main34, main35,
 		main36, main37, main38, main39, main40,
-		main41, main42,
+		main41, main42, main43,
 	};
 	
 	int i;
