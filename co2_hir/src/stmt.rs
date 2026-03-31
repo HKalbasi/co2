@@ -6,7 +6,7 @@ use la_arena::Arena;
 use rustc_public_generative::rustc_public::ty::{IntTy, Span as RustSpan, Ty};
 
 use crate::HirDecl;
-use crate::expr::{HirExpr, HirExprKind};
+use crate::expr::{HirExpr, HirExprKind, coerce_expr_to_type};
 use crate::item::{HirLocal, LabelId, LocalId};
 use crate::resolver::HirCtx;
 use crate::ty::{is_condition_ty, needs_implicit_cast};
@@ -82,6 +82,13 @@ impl HirCtx<'_> {
                         case_expr.ty
                     ));
                 }
+                let case_expr_ty = case_expr.ty;
+                let case_expr = coerce_expr_to_type(case_expr, discr_ty).map_err(|_| {
+                    format!(
+                        "switch case expression type mismatch: expected {:?}, got {:?}",
+                        discr_ty, case_expr_ty
+                    )
+                })?;
                 let discr_expr = HirExpr {
                     kind: HirExprKind::Local(discr_local),
                     ty: discr_ty,

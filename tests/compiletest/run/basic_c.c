@@ -1210,6 +1210,21 @@ int main44() {
 	} while(1);
 }
 
+int main45_aux(unsigned long input) {
+	switch(input) {
+		case 2:
+			return 10;
+		case 1:
+			return 20;
+		default:
+			return 3;
+	};
+}
+
+int main45() {
+	return main45_aux(1) + 2 * main45_aux(2) + 3 * main45_aux(3) - 59;
+}
+
 typedef int (*main_ty)();
 
 int main() {
