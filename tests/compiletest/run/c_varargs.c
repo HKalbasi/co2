@@ -39,6 +39,24 @@ int multiple_types(int normal_arg, ...) {
     return 0;
 }
 
+int helper_fn(int n, va_list ap) {
+	int total = 0;
+	int i;
+	for (i = 0; i < n; i += 1) {
+		total += va_arg(ap, int);
+	}
+	return total;
+}
+
+int sum_using_helper_fn(int n, ...) {
+	va_list ap;
+	va_start(ap, n);
+	int total = helper_fn(n, ap);
+	va_end(ap);
+	return total;
+}
+
+
 int main() {
     if (simple_varargs(5, 2, "salam") != 5) {
         return 1;
@@ -50,7 +68,9 @@ int main() {
     if (multiple_types(5, p, &p, s7)) {
         return 3;
     }
-
+    if (sum_using_helper_fn(3, 1, 2, 4) != 7) {
+        return 4;
+    }
 
     return 0;
 }

@@ -295,16 +295,26 @@ impl Builder<'_> {
                 MirOperand::Copy(place(ptr_local))
             }
             HirExprKind::VaStart(args) => {
+                let args_ty = args.ty;
                 let Some(args) = self.lower_expr_to_place(args) else {
                     panic!("VaStart operand was not lvalue");
                 };
-                self.stmts.push(MirStatement {
-                    kind: MirStatementKind::Assign(
-                        args,
-                        Rvalue::Use(MirOperand::Move(place(self.c_variadic_local.unwrap()))),
-                    ),
-                    span: expr.span,
-                });
+                let transmute_fn = crate::build::dep_fn_any(
+                    self.deps,
+                    &["core::mem::transmute", "std::mem::transmute"],
+                );
+                let src_local = self.c_variadic_local.unwrap();
+                let src_ty = self.locals[src_local].ty;
+                let generic_args = vec![
+                    GenericArgKind::Type(src_ty),
+                    GenericArgKind::Type(args_ty),
+                ];
+                self.emit_call_block(
+                    fn_const_operand(transmute_fn, generic_args, expr.span),
+                    vec![MirOperand::Move(place(src_local))],
+                    args,
+                    expr.span,
+                );
                 let temp = self.new_temp(expr.ty, Mutability::Mut, expr.span);
                 self.lower_zeroed_to_destination(place(temp), expr.span, expr.ty);
                 MirOperand::Copy(place(temp))
@@ -1343,6 +1353,52 @@ impl Builder<'_> {
     }
 
     pub(crate) fn lower_call_arg(&mut self, arg: &HirExpr, expected_ty: Ty) -> MirOperand {
+        if let TyKind::RigidTy(RigidTy::Adt(adt, _)) = expected_ty.kind() {
+            if adt == self.wellknown_defs.valist {
+                let borrowed_place = if let Some(place) = self.lower_expr_to_place(arg) {
+                    place
+                } else {
+                    let tmp = self.new_temp(arg.ty, Mutability::Mut, arg.span);
+                    let value = self.lower_expr_to_operand(arg);
+                    self.stmts.push(MirStatement {
+                        kind: MirStatementKind::Assign(place(tmp), Rvalue::Use(value)),
+                        span: arg.span,
+                    });
+                    place(tmp)
+                };
+
+                let reg = Region {
+                    kind: RegionKind::ReErased,
+                };
+                let ref_ty = Ty::new_ref(reg.clone(), arg.ty, Mutability::Not);
+                let ref_local = self.new_temp(ref_ty, Mutability::Not, arg.span);
+                self.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(ref_local),
+                        Rvalue::Ref(reg, BorrowKind::Shared, borrowed_place),
+                    ),
+                    span: arg.span,
+                });
+
+                let transmute_copy_fn = crate::build::dep_fn_any(
+                    self.deps,
+                    &["core::mem::transmute_copy", "std::mem::transmute_copy"],
+                );
+                let generic_args = vec![
+                    GenericArgKind::Type(arg.ty),
+                    GenericArgKind::Type(expected_ty),
+                ];
+                let tmp = self.new_temp(expected_ty, Mutability::Mut, arg.span);
+                self.emit_call_block(
+                    fn_const_operand(transmute_copy_fn, generic_args, arg.span),
+                    vec![MirOperand::Copy(place(ref_local))],
+                    place(tmp),
+                    arg.span,
+                );
+                return MirOperand::Move(place(tmp));
+            }
+        }
+
         let TyKind::RigidTy(RigidTy::Ref(region, inner, mutability)) = expected_ty.kind() else {
             return self.lower_expr_to_operand(arg);
         };
