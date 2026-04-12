@@ -232,14 +232,12 @@ pub(crate) fn resolve_field_path_in_adt(base: Ty, field: &str) -> Option<(Vec<us
     let TyKind::RigidTy(RigidTy::Adt(adt, args)) = base.kind() else {
         return None;
     };
-    let adt_is_union = is_union_ty(base);
     let variant = adt.variant(variant_idx(0))?;
     let fields = variant.fields();
     for (idx, field_def) in fields.iter().enumerate() {
         let name = field_def.name.to_string();
         if name == field {
-            let storage_idx = if adt_is_union { 0 } else { idx };
-            return Some((vec![storage_idx], field_def.ty_with_args(&args)));
+            return Some((vec![idx], field_def.ty_with_args(&args)));
         }
     }
     for (idx, field_def) in fields.iter().enumerate() {

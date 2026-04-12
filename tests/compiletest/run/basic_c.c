@@ -1431,6 +1431,21 @@ int main58() {
 	return p != (void *)1;
 }
 
+struct main59_schema {
+	int x;
+};
+
+int main59() {
+	struct {
+		union {
+			struct main59_schema *schema;
+			char *name;
+		};
+	} v;
+	v.name = "abc";
+	return v.name[1] != 'b';
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1447,7 +1462,7 @@ int main() {
 		main41, main42, main43, main44, main45,
 		main46, main47, main48, main49, main50,
 		main51, main52, main53, main54, main55,
-		main56, main57, main58,
+		main56, main57, main58, main59,
 	};
 	
 	int i;
