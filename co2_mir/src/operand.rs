@@ -1082,7 +1082,26 @@ impl Builder {
             span,
         });
 
-        let lhs_op = self.lower_expr_to_operand(lhs);
+        let lhs_is_maybe_uninit_fn_ptr = matches!(
+            lhs.ty.kind(),
+            TyKind::RigidTy(RigidTy::Adt(_, args))
+                if args.0.len() == 1
+                    && matches!(args.0[0], GenericArgKind::Type(ty) if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_))))
+        );
+        let lhs_expr = if matches!(
+            lhs.ty.kind(),
+            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
+        ) || lhs_is_maybe_uninit_fn_ptr
+        {
+            HirExpr {
+                kind: HirExprKind::Cast(Box::new(lhs.clone())),
+                ty: Ty::usize_ty(),
+                span: lhs.span,
+            }
+        } else {
+            lhs.clone()
+        };
+        let lhs_op = self.lower_expr_to_operand(&lhs_expr);
         let entry_bb = self.blocks.len();
         self.blocks
             .push(rustc_public_generative::rustc_public::mir::BasicBlock {
@@ -1114,7 +1133,26 @@ impl Builder {
             self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
 
         debug_assert_eq!(rhs_eval_bb, self.blocks.len());
-        let rhs_op = self.lower_expr_to_operand(rhs);
+        let rhs_is_maybe_uninit_fn_ptr = matches!(
+            rhs.ty.kind(),
+            TyKind::RigidTy(RigidTy::Adt(_, args))
+                if args.0.len() == 1
+                    && matches!(args.0[0], GenericArgKind::Type(ty) if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_))))
+        );
+        let rhs_expr = if matches!(
+            rhs.ty.kind(),
+            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
+        ) || rhs_is_maybe_uninit_fn_ptr
+        {
+            HirExpr {
+                kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                ty: Ty::usize_ty(),
+                span: rhs.span,
+            }
+        } else {
+            rhs.clone()
+        };
+        let rhs_op = self.lower_expr_to_operand(&rhs_expr);
         let rhs_switch_bb = self.blocks.len();
         self.blocks
             .push(rustc_public_generative::rustc_public::mir::BasicBlock {
@@ -1182,7 +1220,26 @@ impl Builder {
             kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(zero_init)),
             span,
         });
-        let inner_op = self.lower_expr_to_operand(inner);
+        let inner_is_maybe_uninit_fn_ptr = matches!(
+            inner.ty.kind(),
+            TyKind::RigidTy(RigidTy::Adt(_, args))
+                if args.0.len() == 1
+                    && matches!(args.0[0], GenericArgKind::Type(ty) if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_))))
+        );
+        let inner_expr = if matches!(
+            inner.ty.kind(),
+            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
+        ) || inner_is_maybe_uninit_fn_ptr
+        {
+            HirExpr {
+                kind: HirExprKind::Cast(Box::new(inner.clone())),
+                ty: Ty::usize_ty(),
+                span: inner.span,
+            }
+        } else {
+            inner.clone()
+        };
+        let inner_op = self.lower_expr_to_operand(&inner_expr);
         let entry_bb = self.blocks.len();
         self.blocks
             .push(rustc_public_generative::rustc_public::mir::BasicBlock {

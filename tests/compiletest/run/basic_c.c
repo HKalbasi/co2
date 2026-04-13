@@ -1455,6 +1455,14 @@ int main60() {
 	return p == 0;
 }
 
+int main61() {
+	int *p = 0;
+	if (!p) {
+		return 0;
+	}
+	return 1;
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1472,6 +1480,7 @@ int main() {
 		main46, main47, main48, main49, main50,
 		main51, main52, main53, main54, main55,
 		main56, main57, main58, main59, main60,
+		main61,
 	};
 	
 	int i;
