@@ -116,6 +116,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             }
             MirOwnerInfo::Fn {
                 def,
+                function_name,
                 param_names,
                 resolver,
                 body,
@@ -128,6 +129,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                     &span_converter,
                     self.src_static,
                     self.source_name.clone(),
+                    Some(function_name),
                     def.fn_sig().skip_binder().output(),
                 );
                 hir_ctx.set_decl_resolver(resolver);
@@ -161,6 +163,7 @@ impl Co2GeneratorState {
             &span_converter,
             self.src_static,
             self.source_name.clone(),
+            None,
             CrateItem(def).ty(),
         );
 
@@ -200,6 +203,7 @@ impl Co2GeneratorState {
                     &len_span_converter,
                     self.src_static,
                     self.source_name.clone(),
+                    None,
                     Ty::usize_ty(),
                 );
                 let evaluated_len = eval_usize_initializer(array_len, &len_hir_ctx)
@@ -219,6 +223,7 @@ impl Co2GeneratorState {
             &span_converter,
             self.src_static,
             self.source_name.clone(),
+            None,
             target_ty,
         );
         let hir = lower_static_body_for_ty(initializer, target_ty, &hir_ctx).unwrap();

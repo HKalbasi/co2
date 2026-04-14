@@ -208,6 +208,7 @@ pub fn lower_crate_sig(
                 if name == "main" && !no_main {
                     sig.abi = FunctionAbi::Rust;
                 }
+                let function_name = name.clone();
                 let param_tys = sig.inputs.clone();
                 let id = FnDef(id);
                 ctx.hir_items.push(HirModuleItem::Function {
@@ -238,6 +239,7 @@ pub fn lower_crate_sig(
                     id.0,
                     MirOwnerInfo::Fn {
                         def: id,
+                        function_name,
                         param_names,
                         resolver: resolver.clone(),
                         body,
@@ -362,27 +364,43 @@ pub fn lower_crate_sig(
                         }
                         CTy::UnsizedArray(elem_ty) => {
                             let (id, _) = ctx.resolve_in_current([&*name]).unwrap();
-                            let initializer = if let Some((initializer, span)) = initializer {
-                                (initializer.transform(&resolver), span)
+                            if let Some((initializer, init_span)) = initializer {
+                                let initializer = (initializer.transform(&resolver), init_span);
+                                ctx.mir_owners.insert(
+                                    id,
+                                    MirOwnerInfo::Static {
+                                        initializer: initializer.clone(),
+                                    },
+                                );
+                                let len = infer_unsized_array_len(&initializer.0, &resolver, &elem_ty)
+                                    .unwrap_or_else(|err| {
+                                        ctx.terminate_with_error(parser_span, &err)
+                                    });
+                                let ty = HirTy::new_array(elem_ty, HirTyConst::Literal(len), span);
+                                ctx.resolver.borrow_mut().global_value_tys.insert(id, ty.clone());
+                                ctx.hir_items.push(HirModuleItem::Static {
+                                    name,
+                                    id,
+                                    ty,
+                                    mutable: true,
+                                    span,
+                                });
+                            } else if is_extern {
+                                let ty = HirTy::new_array(elem_ty, HirTyConst::Literal(0), span);
+                                ctx.resolver.borrow_mut().global_value_tys.insert(id, ty.clone());
+                                foreign_items.push(ForeignModItem::ForeignStatic {
+                                    name,
+                                    id,
+                                    ty,
+                                    mutable: true,
+                                    span,
+                                });
                             } else {
                                 ctx.terminate_with_error(
                                     parser_span,
                                     "static with unsized array type should have initializer",
                                 );
-                            };
-                            ctx.mir_owners
-                                .insert(id, MirOwnerInfo::Static { initializer: initializer.clone() });
-                            let len = infer_unsized_array_len(&initializer.0, &resolver, &elem_ty)
-                                .unwrap_or_else(|err| ctx.terminate_with_error(parser_span, &err));
-                            let ty = HirTy::new_array(elem_ty, HirTyConst::Literal(len), span);
-                            ctx.resolver.borrow_mut().global_value_tys.insert(id, ty.clone());
-                            ctx.hir_items.push(HirModuleItem::Static {
-                                name,
-                                id,
-                                ty,
-                                mutable: true,
-                                span,
-                            });
+                            }
                         }
                         CTy::Function(sig) => {
                             let def_id = ctx.resolve_in_current([&*name]).unwrap().0;

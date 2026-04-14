@@ -147,6 +147,8 @@ pub(crate) fn is_array_ty(ty: Ty) -> bool {
 pub(crate) fn is_condition_ty(ty: Ty) -> bool {
     matches!(
         ty.kind(),
+        TyKind::RigidTy(RigidTy::Bool)
+            |
         TyKind::RigidTy(RigidTy::Int(_))
             | TyKind::RigidTy(RigidTy::Uint(_))
             | TyKind::RigidTy(RigidTy::RawPtr(_, _))
@@ -182,6 +184,9 @@ pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
     let src_is_mu_fn_ptr = is_maybe_uninit_fn_ptr_ty(src).is_some();
     let dst_is_mu_fn_ptr = is_maybe_uninit_fn_ptr_ty(dst).is_some();
     matches!(
+        (dst.kind(), src.kind()),
+        (TyKind::RigidTy(RigidTy::Bool), _) if is_condition_ty(src)
+    ) || matches!(
         (dst.kind(), src.kind()),
         (
             TyKind::RigidTy(RigidTy::RawPtr(_, _)),

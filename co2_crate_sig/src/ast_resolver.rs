@@ -142,6 +142,10 @@ impl LocalResolver {
         id
     }
 
+    pub fn set_local_ty(&self, local: u32, ty: HirTy) {
+        self.base.borrow_mut().set_local_ty(local, ty);
+    }
+
     fn register_array_len_const(
         &self,
         subscription: Spanned<co2_ast::LazySubscription>,
@@ -177,6 +181,7 @@ impl LocalResolver {
 pub enum DefOrLocal {
     Def(DefId),
     Local(u32),
+    FuncName,
     Prim(PrimitiveTy),
     UnrepresentableType(CTy),
 }
@@ -194,6 +199,9 @@ impl co2_ast::TypeResolver for LocalResolver {
         path: &co2_ast::RustPath,
     ) -> Option<(TypeQueryResult, Self::ResolvedRustPath)> {
         let path = path.to_pretty();
+        if path == "__func__" {
+            return Some((TypeQueryResult::Expr, DefOrLocal::FuncName));
+        }
         let base = self.base.borrow();
         if let Some(prim) = PrimitiveTy::parse(&path) {
             return Some((TypeQueryResult::Type, DefOrLocal::Prim(prim)));

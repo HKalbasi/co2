@@ -1612,20 +1612,35 @@ where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
-    use_item()
+    #[derive(Clone)]
+    enum TranslationUnitItem<R: TypeResolver> {
+        Use(Spanned<UseItem>),
+        Declaration(Spanned<Declaration<R>>),
+        Empty,
+    }
+
+    choice((
+        use_item().map(TranslationUnitItem::Use),
+        declaration(resolver.clone(), statement(resolver.clone()))
+            .map(|x| TranslationUnitItem::Declaration(x.0)),
+        just(Token::Semicolon).map(|_| TranslationUnitItem::Empty),
+    ))
         .repeated()
-        .collect()
-        .then(
-            declaration(resolver.clone(), statement(resolver.clone()))
-                .map(|x| x.0)
-                .repeated()
-                .collect(),
-        )
-        .map_with(|(rust_use_items, items), e| {
+        .collect::<Vec<_>>()
+        .map_with(|items, e| {
+            let mut rust_use_items = Vec::new();
+            let mut declarations = Vec::new();
+            for item in items {
+                match item {
+                    TranslationUnitItem::Use(item) => rust_use_items.push(item),
+                    TranslationUnitItem::Declaration(item) => declarations.push(item),
+                    TranslationUnitItem::Empty => {}
+                }
+            }
             (
                 TranslationUnit {
                     rust_use_items,
-                    items,
+                    items: declarations,
                 },
                 e.span(),
             )

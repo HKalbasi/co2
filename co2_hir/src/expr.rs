@@ -268,6 +268,18 @@ impl HirCtx<'_> {
                         span,
                     });
                 }
+                co2_crate_sig::DefOrLocal::FuncName => Ok(HirExpr {
+                    kind: HirExprKind::ConstStr(
+                        self.function_name.clone().unwrap_or_else(|| {
+                            self.terminate_with_error(
+                                parser_span,
+                                "__func__ is only available inside function bodies",
+                            )
+                        }),
+                    ),
+                    ty: Ty::new_ptr(Ty::signed_ty(IntTy::I8), Mutability::Mut),
+                    span,
+                }),
                 co2_crate_sig::DefOrLocal::Prim(_)
                 | co2_crate_sig::DefOrLocal::UnrepresentableType(_) => {
                     panic!("Invalid type in expression")
@@ -342,10 +354,13 @@ impl HirCtx<'_> {
                         };
                     }
                     if !ty_matches_expected(expected, actual.ty) {
-                        return Err(format!(
-                            "call argument type mismatch at index {idx}: expected {expected:?}, got {:?}",
-                            actual.ty
-                        ));
+                        self.terminate_with_error(
+                            parser_span,
+                            &format!(
+                                "call argument type mismatch at index {idx}: expected {expected:?}, got {:?}",
+                                actual.ty
+                            ),
+                        );
                     }
                 }
 

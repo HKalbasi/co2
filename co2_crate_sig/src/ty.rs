@@ -57,7 +57,7 @@ impl CompressedTypeSpecifier {
                         CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::FloatTy(FloatTy::F32))
                     }
                     TypeSpecifier::Bool => {
-                        CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::IntTy(IntTy::I8))
+                        CompressedTypeSpecifier::PrimitiveTy(PrimitiveTy::Bool)
                     }
                     &TypeSpecifier::StructOrUnion { kind, specifier } => {
                         CompressedTypeSpecifier::StructOrUnion { kind, specifier }
@@ -481,6 +481,7 @@ impl LocalResolverBase {
                     .get(def)
                     .cloned()
                     .ok_or_else(|| format!("missing global type for def {def:?}")),
+                crate::DefOrLocal::FuncName => Err("__func__ is invalid in sizeof".to_owned()),
                 crate::DefOrLocal::Prim(primitive_ty) => Ok(self.hir_ty_of_prim(*primitive_ty, rust_span)),
                 _ => Err("unsupported identifier in sizeof(array size expr)".to_owned()),
             },
@@ -706,6 +707,10 @@ impl LocalResolverBase {
         span: rustc_public_generative::rustc_public::ty::Span,
     ) -> HirTy {
         match primitive_ty {
+            PrimitiveTy::Bool => HirTy {
+                kind: HirTyKind::Bool,
+                span,
+            },
             PrimitiveTy::IntTy(int_ty) => HirTy::signed_ty(int_ty, span),
             PrimitiveTy::UintTy(uint_ty) => HirTy::unsigned_ty(uint_ty, span),
             PrimitiveTy::FloatTy(float_ty) => HirTy::float_ty(float_ty, span),
@@ -732,6 +737,7 @@ impl LocalResolverBase {
             CompressedTypeSpecifier::TypedefName((path, _)) => match path {
                 crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
                 crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
+                crate::DefOrLocal::FuncName => panic!("invalid __func__ in type position"),
                 crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(primitive_ty, span),
                 crate::DefOrLocal::UnrepresentableType(ty) => {
                     return ty;
@@ -908,6 +914,7 @@ fn function_param_names(decl: &Declarator<LocalResolver>) -> Option<Vec<Option<S
 
 #[derive(Debug, Clone, Copy)]
 pub enum PrimitiveTy {
+    Bool,
     IntTy(IntTy),
     UintTy(UintTy),
     FloatTy(FloatTy),

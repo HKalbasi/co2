@@ -823,12 +823,38 @@ impl Builder {
         let src_is_fn_def = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnDef(_, _)));
         let src_mu_fn_ptr = maybe_uninit_fn_ptr_inner(src_ty);
         let dst_mu_fn_ptr = maybe_uninit_fn_ptr_inner(dst_ty);
+        let dst_is_bool = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::Bool));
         let dst_is_void =
             matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::Tuple(l)) if l.is_empty());
         if dst_is_void {
             let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
             self.lower_zeroed_to_destination(place(tmp), span, dst_ty);
             return MirOperand::Copy(place(tmp));
+        }
+        if dst_is_bool
+            && (src_is_int || src_is_ptr || src_is_fn_ptr || src_is_fn_def || src_mu_fn_ptr.is_some())
+        {
+            let usize_ty = Ty::usize_ty();
+            let cmp_op = if src_ty == usize_ty {
+                inner_op
+            } else {
+                self.lower_cast(inner_op, src_ty, usize_ty, span)
+            };
+            let zero = MirOperand::Constant(ConstOperand {
+                span,
+                user_ty: None,
+                const_: MirConst::try_from_uint(0, rustc_public_generative::rustc_public::ty::UintTy::Usize)
+                    .expect("failed to build zero usize const"),
+            });
+            let bool_local = self.new_temp(Ty::bool_ty(), Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(bool_local),
+                    Rvalue::BinaryOp(rustc_public_generative::rustc_public::mir::BinOp::Ne, cmp_op, zero),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(bool_local));
         }
         if src_is_int && dst_is_int {
             let tmp = self.new_temp(dst_ty, Mutability::Mut, span);

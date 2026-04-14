@@ -49,6 +49,7 @@ pub struct HirCtx<'a> {
     switch_scopes: RefCell<Vec<SwitchScope>>,
     pub(crate) c_variadic_local: Option<LocalId>,
     pub(crate) decl_resolver: Option<LocalResolver>,
+    pub(crate) function_name: Option<String>,
     pub(crate) source_name: String,
     pub(crate) source: &'static str,
     pub(crate) ret_ty: Ty,
@@ -60,6 +61,7 @@ impl<'a> HirCtx<'a> {
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
         source: &'static str,
         source_name: String,
+        function_name: Option<String>,
         ret_ty: Ty,
     ) -> Self {
         Self {
@@ -72,6 +74,7 @@ impl<'a> HirCtx<'a> {
             switch_scopes: RefCell::new(Vec::new()),
             c_variadic_local: None,
             decl_resolver: None,
+            function_name,
             source,
             source_name,
             ret_ty,

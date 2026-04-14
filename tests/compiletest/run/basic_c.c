@@ -1592,6 +1592,36 @@ int main71() {
 	return main71_i != 3;
 }
 
+extern const char main72_ext[];
+extern const char main72_decl_only[];
+const char main72_ext[] = "ok";
+
+int main72() {
+	return main72_ext[1] != 'k';
+}
+
+; // This is to test if empty decl works
+
+int main73() {
+	const char *name = __func__;
+	return name[0] != 'm' || name[4] != '7' || name[5] != '3';
+}
+
+int main74() {
+	int r = 0;
+	unsigned char a[sizeof(r)];
+	return sizeof(a) != sizeof(int);
+}
+
+static int main75_expect_true(_Bool value) {
+	return !value;
+}
+
+int main75() {
+	int x = 0;
+	return main75_expect_true(&x);
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1611,7 +1641,7 @@ int main() {
 		main56, main57, main58, main59, main60,
 		main61, main62, main63, main64, main65,
 		main66, main67, main68, main69, main70,
-		main71,
+		main71, main72, main73, main74, main75,
 	};
 	
 	int i;

@@ -7,13 +7,13 @@ use co2_ast::{
 use co2_crate_sig::{CompressedTypeSpecifier, LocalResolver, eval_registered_array_len_const};
 use la_arena::Arena;
 use rustc_public_generative::{
-    HirTy,
+    FunctionAbi, FunctionSignature, HirGenericArg, HirLifetime, HirTy, HirTyConst,
     rustc_public::{
         CrateItem,
         mir::{Mutability, Safety},
         ty::{
-            Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RigidTy,
-            Span as RustSpan, Ty, TyConst,
+            Abi, AdtDef, Binder, FnSig, GenericArgKind, GenericArgs, IntTy, RegionKind, RigidTy,
+            Span as RustSpan, Ty, TyConst, TyKind,
         },
     },
 };
@@ -119,6 +119,10 @@ impl HirCtx<'_> {
                     };
 
                     let span = self.to_rust_span(parser_span);
+                    if let Some(resolver) = &self.decl_resolver {
+                        let hir_ty = self.ty_to_hir_ty(ty, span);
+                        resolver.set_local_ty(name.0 as u32, hir_ty);
+                    }
 
                     let local = locals.alloc(HirLocal {
                         name: name.1.clone(),
@@ -287,6 +291,9 @@ impl HirCtx<'_> {
                     co2_crate_sig::DefOrLocal::Local(_) => {
                         panic!("Invalid local in type position")
                     }
+                    co2_crate_sig::DefOrLocal::FuncName => {
+                        panic!("Invalid __func__ in type position")
+                    }
                     co2_crate_sig::DefOrLocal::Prim(primitive_ty) => {
                         (CTy::Ty(prim_ty_to_ty(*primitive_ty)), specifiers)
                     }
@@ -443,6 +450,89 @@ impl HirCtx<'_> {
         }
     }
 
+    fn ty_to_hir_ty(&self, ty: Ty, span: RustSpan) -> HirTy {
+        match ty.kind() {
+            TyKind::RigidTy(RigidTy::Bool) => HirTy {
+                kind: rustc_public_generative::HirTyKind::Bool,
+                span,
+            },
+            TyKind::RigidTy(RigidTy::Char) => HirTy {
+                kind: rustc_public_generative::HirTyKind::Char,
+                span,
+            },
+            TyKind::RigidTy(RigidTy::Int(int_ty)) => HirTy::signed_ty(int_ty, span),
+            TyKind::RigidTy(RigidTy::Uint(uint_ty)) => HirTy::unsigned_ty(uint_ty, span),
+            TyKind::RigidTy(RigidTy::Float(float_ty)) => HirTy::float_ty(float_ty, span),
+            TyKind::RigidTy(RigidTy::Tuple(items)) => HirTy::new_tuple(
+                items.iter().map(|ty| self.ty_to_hir_ty(*ty, span)).collect(),
+                span,
+            ),
+            TyKind::RigidTy(RigidTy::RawPtr(inner, mutability)) => {
+                HirTy::new_ptr(self.ty_to_hir_ty(inner, span), mutability, span)
+            }
+            TyKind::RigidTy(RigidTy::Array(inner, len)) => {
+                let len = len
+                    .eval_target_usize()
+                    .expect("local array type should have concrete length")
+                    as usize;
+                HirTy::new_array(
+                    self.ty_to_hir_ty(inner, span),
+                    HirTyConst::Literal(len),
+                    span,
+                )
+            }
+            TyKind::RigidTy(RigidTy::Adt(def, args)) => HirTy::adt(
+                def.0,
+                args.0
+                    .iter()
+                    .map(|arg| match arg {
+                        GenericArgKind::Type(ty) => {
+                            HirGenericArg::Ty(self.ty_to_hir_ty(*ty, span))
+                        }
+                        GenericArgKind::Lifetime(_) => HirGenericArg::Lifetime(HirLifetime::Static),
+                        _ => panic!("unsupported generic arg in local C type"),
+                    })
+                    .collect(),
+                span,
+            ),
+            TyKind::RigidTy(RigidTy::FnPtr(sig)) => {
+                let sig = sig.skip_binder();
+                let abi = match sig.abi {
+                    Abi::C { .. } => FunctionAbi::C,
+                    Abi::Rust => FunctionAbi::Rust,
+                    _ => panic!("unsupported fn ptr abi in local C type: {:?}", sig.abi),
+                };
+                HirTy {
+                    kind: rustc_public_generative::HirTyKind::FnPtr(Box::new(
+                        FunctionSignature {
+                            lifetimes: vec![],
+                            inputs: sig
+                                .inputs()
+                                .iter()
+                                .map(|ty| self.ty_to_hir_ty(*ty, span))
+                                .collect(),
+                            output: self.ty_to_hir_ty(sig.output(), span),
+                            abi,
+                            is_unsafe: matches!(sig.safety, Safety::Unsafe),
+                            c_variadic: sig.c_variadic,
+                        },
+                    )),
+                    span,
+                }
+            }
+            TyKind::RigidTy(RigidTy::Ref(region, inner, mutability)) => HirTy::new_ref(
+                self.ty_to_hir_ty(inner, span),
+                mutability,
+                match region.kind {
+                    RegionKind::ReStatic => HirLifetime::Static,
+                    _ => panic!("unsupported region in local C ref type: {:?}", region.kind),
+                },
+                span,
+            ),
+            other => panic!("unsupported local C type for array-size evaluation: {other:?}"),
+        }
+    }
+
     fn sig_cty_to_cty(&self, sig_ty: &co2_crate_sig::CTy) -> CTy {
         match sig_ty {
             co2_crate_sig::CTy::Ty(hir_ty) => CTy::Ty(self.hir_ty_to_ty(hir_ty)),
@@ -467,6 +557,7 @@ fn has_const_qualifier_in_decl_specs(
 
 fn prim_ty_to_ty(primitive_ty: co2_crate_sig::PrimitiveTy) -> Ty {
     match primitive_ty {
+        co2_crate_sig::PrimitiveTy::Bool => Ty::bool_ty(),
         co2_crate_sig::PrimitiveTy::IntTy(int_ty) => Ty::from_rigid_kind(RigidTy::Int(int_ty)),
         co2_crate_sig::PrimitiveTy::UintTy(uint_ty) => Ty::from_rigid_kind(RigidTy::Uint(uint_ty)),
         co2_crate_sig::PrimitiveTy::FloatTy(float_ty) => {

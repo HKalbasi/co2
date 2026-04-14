@@ -23,6 +23,7 @@ pub enum MirOwnerInfo {
     },
     Fn {
         def: FnDef,
+        function_name: String,
         param_names: Vec<(usize, String)>,
         resolver: LocalResolver,
         body: co2_ast::Spanned<co2_ast::CompoundStatement<LocalResolver>>,
