@@ -17,6 +17,7 @@ const _: () = {
     let _: *const support_lib::Co2Double = null::<ffi::c_double>(); 
     let _: *const support_lib::Co2Char = null::<ffi::c_char>(); 
     let _: *const support_lib::Co2UChar = null::<ffi::c_uchar>(); 
+    let _: *const support_lib::Co2Bool = null::<bool>(); 
 
     let _: *const support_lib::Union1MutPtr = null::<*mut Union1>(); 
     let _: *const support_lib::Union1ConstPtr = null::<*const Union1>(); 

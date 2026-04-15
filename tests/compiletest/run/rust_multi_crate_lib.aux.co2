@@ -32,6 +32,7 @@ typedef float Co2Float;
 typedef double Co2Double;
 typedef char Co2Char;
 typedef unsigned char Co2UChar;
+typedef _Bool Co2Bool;
 
 typedef Union1* Union1MutPtr;
 typedef const Union1* Union1ConstPtr;
