@@ -818,6 +818,8 @@ impl Builder {
         let dst_is_float = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::Float(_)),);
         let src_is_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
         let dst_is_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::RawPtr(_, _)));
+        let src_is_ref = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::Ref(_, _, _)));
+        let dst_is_ref = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::Ref(_, _, _)));
         let src_is_fn_ptr = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
         let dst_is_fn_ptr = matches!(dst_ty.kind(), TyKind::RigidTy(RigidTy::FnPtr(_)));
         let src_is_fn_def = matches!(src_ty.kind(), TyKind::RigidTy(RigidTy::FnDef(_, _)));
@@ -830,6 +832,38 @@ impl Builder {
             let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
             self.lower_zeroed_to_destination(place(tmp), span, dst_ty);
             return MirOperand::Copy(place(tmp));
+        }
+        if src_is_ref && dst_is_ptr {
+            todo!()
+        }
+        if src_is_ptr && dst_is_ref {
+            let TyKind::RigidTy(RigidTy::Ref(region, _, kind)) = dst_ty.kind() else {
+                unreachable!();
+            };
+            let kind = match kind {
+                Mutability::Not => BorrowKind::Shared,
+                Mutability::Mut => BorrowKind::Mut { kind: MutBorrowKind::Default },
+            };
+            let tmp1 = self.new_temp(src_ty, Mutability::Mut, span);
+            let tmp1_place = place(tmp1);
+            let mut tmp1_deref = tmp1_place.clone();
+            tmp1_deref.projection.push(MirProjection::Deref);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    tmp1_place,
+                    Rvalue::Use(inner_op),
+                ),
+                span,
+            });
+            let tmp2 = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp2),
+                    Rvalue::Ref(region, kind, tmp1_deref),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp2));
         }
         if dst_is_bool
             && (src_is_int || src_is_ptr || src_is_fn_ptr || src_is_fn_def || src_mu_fn_ptr.is_some())
@@ -1525,9 +1559,8 @@ impl Builder {
         destination: rustc_public_generative::rustc_public::mir::Place,
         ret_ty: Ty,
     ) {
-        let sig = callable_sig(func.ty)
-            .expect("call target has no fn signature")
-            .skip_binder();
+        let sig = callable_sig(func.ty).expect("call target has no fn signature");
+        let sig = rustc_public_generative::erase_late_bound_regions_in_fn_sig(sig);
 
         let mut arg_ops = Vec::with_capacity(args.len());
         for (idx, arg) in args.iter().enumerate() {
@@ -1626,42 +1659,6 @@ impl Builder {
             }
         }
 
-        let TyKind::RigidTy(RigidTy::Ref(region, inner, mutability)) = expected_ty.kind() else {
-            return self.lower_expr_to_operand(arg);
-        };
-
-        if !ty_matches_expected(inner, arg.ty) {
-            return self.lower_expr_to_operand(arg);
-        }
-
-        let borrowed_place = if let Some(place) = self.lower_expr_to_place(arg) {
-            place
-        } else {
-            let tmp = self.new_temp(arg.ty, Mutability::Mut, arg.span);
-            let value = self.lower_expr_to_operand(arg);
-            self.stmts.push(MirStatement {
-                kind: MirStatementKind::Assign(place(tmp), Rvalue::Use(value)),
-                span: arg.span,
-            });
-            place(tmp)
-        };
-
-        let borrow_kind = if mutability == Mutability::Mut {
-            BorrowKind::Mut {
-                kind: MutBorrowKind::Default,
-            }
-        } else {
-            BorrowKind::Shared
-        };
-        let concrete_ref_ty = Ty::new_ref(region.clone(), arg.ty, mutability);
-        let ref_local = self.new_temp(concrete_ref_ty, Mutability::Not, arg.span);
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(ref_local),
-                Rvalue::Ref(region.clone(), borrow_kind, borrowed_place),
-            ),
-            span: arg.span,
-        });
-        MirOperand::Copy(place(ref_local))
+        self.lower_expr_to_operand(arg)
     }
 }

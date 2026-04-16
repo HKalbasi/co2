@@ -409,7 +409,7 @@ impl HirCtx<'_> {
                     self.terminate_with_error(parser_span, "Type is not callable");
                 };
 
-                let sig = sig.skip_binder();
+                let sig = rustc_public_generative::erase_late_bound_regions_in_fn_sig(sig);
 
                 let mut lowered_args = Vec::with_capacity(params.len());
                 for param in params {

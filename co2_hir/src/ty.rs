@@ -192,8 +192,8 @@ pub(crate) fn needs_implicit_cast(dst: Ty, src: Ty) -> bool {
             TyKind::RigidTy(RigidTy::RawPtr(_, _)),
             TyKind::RigidTy(RigidTy::Int(_) | RigidTy::Uint(_))
         ) | (
-            TyKind::RigidTy(RigidTy::RawPtr(_, _)),
-            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
+            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::Ref(_, _, _)),
+            TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::Ref(_, _, _) | RigidTy::FnPtr(_))
         ) | (
             TyKind::RigidTy(RigidTy::FnPtr(_)),
             TyKind::RigidTy(RigidTy::FnDef(_, _))
@@ -316,10 +316,6 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
             }
             false
         }
-        (TyKind::Param(_), _) => true,
-        (TyKind::RigidTy(RigidTy::Ref(_, exp_inner, _)), _) => {
-            ty_matches_expected(exp_inner, actual)
-        }
         (
             TyKind::RigidTy(RigidTy::Adt(exp_adt, exp_args)),
             TyKind::RigidTy(RigidTy::Adt(act_adt, act_args)),
@@ -336,6 +332,10 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
                         rustc_public_generative::rustc_public::ty::GenericArgKind::Type(et),
                         rustc_public_generative::rustc_public::ty::GenericArgKind::Type(at),
                     ) => ty_matches_expected(*et, *at),
+                    (
+                        rustc_public_generative::rustc_public::ty::GenericArgKind::Lifetime(_),
+                        rustc_public_generative::rustc_public::ty::GenericArgKind::Lifetime(_),
+                    ) => true,
                     _ => e == a,
                 })
         }

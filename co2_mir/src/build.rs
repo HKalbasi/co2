@@ -155,6 +155,7 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
                         (GenericArgKind::Type(et), GenericArgKind::Type(at)) => {
                             ty_matches_expected(*et, *at)
                         }
+                        (GenericArgKind::Lifetime(_), GenericArgKind::Lifetime(_)) => true,
                         _ => e == a,
                     })
         }
