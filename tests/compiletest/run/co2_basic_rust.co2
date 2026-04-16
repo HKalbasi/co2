@@ -1,0 +1,10 @@
+//@ mode: co2
+//@ run-status: 0
+
+use std::f64::consts::PI;
+
+void main(void) {
+    if (PI < 3.14 || std::f64::consts::PI > 3.15) {
+        std::process::exit(1);
+    }
+}

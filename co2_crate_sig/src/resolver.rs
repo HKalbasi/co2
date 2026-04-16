@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use co2_ast::{Declaration, Declarator, StatelessResolver, TranslationUnit, TypeQueryResult};
-use rustc_public_generative::{DefData, DependencyInfo, HirStructureCtx, rustc_public::DefId};
+use rustc_public_generative::{
+    DefData, DependencyInfo, DependencyValueKind, HirStructureCtx,
+    rustc_public::DefId,
+};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ModuleData {
     id: Option<(DefId, TypeQueryResult)>,
     items: HashMap<String, ModuleData>,
@@ -44,16 +47,28 @@ impl ModuleData {
 
     fn resolve_path<'a>(
         &self,
-        mut path: impl Iterator<Item = &'a str>,
+        path: impl Iterator<Item = &'a str>,
     ) -> Result<(DefId, co2_ast::TypeQueryResult), String> {
+        self.lookup_path(path)?
+            .id
+            .ok_or_else(|| "path does not refer to a value or type".to_owned())
+    }
+
+    fn lookup_path<'a>(&self, mut path: impl Iterator<Item = &'a str>) -> Result<&Self, String> {
         let Some(seg1) = path.next() else {
-            return self.id.ok_or_else(|| format!("self id is None"));
+            return Ok(self);
         };
-        let part = self
-            .items
-            .get(seg1)
-            .ok_or_else(|| format!("Failed to lookup {seg1}.\nAvailable items are: {:?}", self.items.keys()))?;
-        part.resolve_path(path)
+        let part = self.items.get(seg1).ok_or_else(|| {
+            format!(
+                "Failed to lookup {seg1}.\nAvailable items are: {:?}",
+                self.items.keys()
+            )
+        })?;
+        part.lookup_path(path)
+    }
+
+    fn insert_alias(&mut self, alias: &str, item: ModuleData) {
+        self.items.insert(alias.to_owned(), item);
     }
 
     fn forward_pass_parsed_module(
@@ -136,6 +151,7 @@ impl ModuleData {
 
 #[derive(Debug, Default)]
 pub struct Resolver {
+    const_values: HashMap<String, DefId>,
     dependencies: HashMap<String, ModuleData>,
     current: ModuleData,
 }
@@ -170,6 +186,21 @@ impl Resolver {
                 rest.split("::"),
                 t.fn_def.map(|x| (x.0, TypeQueryResult::Expr)),
             );
+        }
+        for t in deps.values {
+            match t.kind {
+                DependencyValueKind::Def(def_id) => {
+                    let (mut crate_name, rest) = t.path.split_once("::").unwrap();
+                    normalize_crate_name(&mut crate_name);
+                    let Some(i) = this.dependencies.get_mut(crate_name) else {
+                        continue;
+                    };
+                    i.insert_path(rest.split("::"), Some((def_id, TypeQueryResult::Expr)));
+                }
+                DependencyValueKind::ConstDef(def_id) => {
+                    this.const_values.insert(normalized_path(&t.path), def_id);
+                }
+            }
         }
         for t in deps.traits {
             let (mut crate_name, rest) = t.path.split_once("::").unwrap();
@@ -210,7 +241,33 @@ impl Resolver {
                     .unwrap(),
             ),
         );
+        this.import_use_items(p);
         this
+    }
+
+    fn import_use_items(&mut self, p: &TranslationUnit<StatelessResolver>) {
+        for (use_item, _) in &p.rust_use_items {
+            let Some(alias) = use_item.path.last().map(|(segment, _)| segment.as_str()) else {
+                continue;
+            };
+            if self.resolve_in_current([alias]).is_ok() || self.const_values.contains_key(alias) {
+                continue;
+            }
+            let full_path = use_item
+                .path
+                .iter()
+                .map(|(segment, _)| segment.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if let Some(def_id) = self.const_values.get(&normalized_path(&full_path)).copied() {
+                self.const_values.insert(alias.to_owned(), def_id);
+                continue;
+            }
+            let Ok(item) = self.resolve_module_path(use_item.path.iter().map(|(segment, _)| segment.as_str())) else {
+                continue;
+            };
+            self.current.insert_alias(alias, item);
+        }
     }
 
     pub(crate) fn resolve_in_deps<'a>(
@@ -233,6 +290,22 @@ impl Resolver {
         self.current.resolve_path(path.into_iter())
     }
 
+    fn resolve_module_path<'a>(
+        &self,
+        path: impl IntoIterator<Item = &'a str>,
+    ) -> Result<ModuleData, String> {
+        let parts = path.into_iter().collect::<Vec<_>>();
+        let Some(first) = parts.first().copied() else {
+            return Err("empty path".to_owned());
+        };
+        let mut crate_name = first;
+        normalize_crate_name(&mut crate_name);
+        if let Some(crate_data) = self.dependencies.get(crate_name) {
+            return crate_data.lookup_path(parts[1..].iter().copied()).cloned();
+        }
+        self.current.lookup_path(parts.iter().copied()).cloned()
+    }
+
     pub fn resolve(&self, path: &str) -> Result<(DefId, co2_ast::TypeQueryResult), String> {
         let Some((mut crate_name, rest)) = path.split_once("::") else {
             return self.resolve_in_current([path]);
@@ -244,4 +317,26 @@ impl Resolver {
             self.resolve_in_current(path.split("::"))
         }
     }
+
+    pub(crate) fn resolve_expr_path(&self, path: &str) -> Result<ResolvedExprPath, String> {
+        if let Some(def_id) = self.const_values.get(&normalized_path(path)) {
+            return Ok(ResolvedExprPath::Const(*def_id));
+        }
+        let (def_id, class) = self.resolve(path)?;
+        Ok(ResolvedExprPath::Def(def_id, class))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ResolvedExprPath {
+    Def(DefId, TypeQueryResult),
+    Const(DefId),
+}
+
+fn normalized_path(path: &str) -> String {
+    let Some((mut crate_name, rest)) = path.split_once("::") else {
+        return path.to_owned();
+    };
+    normalize_crate_name(&mut crate_name);
+    format!("{crate_name}::{rest}")
 }

@@ -37,8 +37,8 @@ use crate::hir_structure::{AdtRepr, FunctionAbi, FunctionSignature, StructField}
 use crate::hir_ty::HirTyConst;
 pub use crate::hir_ty::{HirTy, HirTyKind};
 use crate::{
-    CrateGeneratorState, DependencyCrate, DependencyFunction, DependencyInfo, DependencyTrait,
-    DependencyType, FileId,
+    CrateGeneratorState, DependencyConstValue, DependencyCrate, DependencyFunction,
+    DependencyInfo, DependencyTrait, DependencyType, DependencyValue, DependencyValueKind, FileId,
 };
 use rustc_public::DefId;
 use rustc_public::mir::{
@@ -1833,6 +1833,22 @@ fn collect_dependency_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: RustcDefId, info: &mu
         });
     }
 
+    if matches!(kind, DefKind::Const | DefKind::Static { .. }) {
+        let hash = tcx.def_path_hash(def_id);
+        let (hi, lo): (u64, u64) =
+            unsafe { std::mem::transmute::<Fingerprint, (u64, u64)>(hash.0) };
+        info.values.push(DependencyValue {
+            kind: match kind {
+                DefKind::Const => DependencyValueKind::ConstDef(rustc_def_to_my_def(tcx, def_id)),
+                DefKind::Static { .. } => DependencyValueKind::Def(rustc_def_to_my_def(tcx, def_id)),
+                _ => unreachable!(),
+            },
+            path: tcx.def_path_str(def_id),
+            def_path_hash_hi: hi,
+            def_path_hash_lo: lo,
+        });
+    }
+
     if matches!(kind, DefKind::Struct | DefKind::Enum | DefKind::Union) {
         if let Some(adt) = stable_adt_from_def_id(tcx, def_id) {
             let hash = tcx.def_path_hash(def_id);
@@ -1886,6 +1902,64 @@ fn stable_fn_from_def_id<'tcx>(
         TyKind::RigidTy(RigidTy::FnDef(def, _)) => Some(def),
         _ => None,
     }
+}
+
+fn dependency_const_value<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: RustcDefId,
+) -> Option<DependencyConstValue> {
+    let kind = tcx.def_kind(def_id);
+    if !matches!(kind, DefKind::Const) {
+        return None;
+    }
+
+    let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tcx.const_eval_poly(def_id)))
+        .ok()?
+        .ok()?;
+    let scalar = value.try_to_scalar()?;
+    let ty = tcx.type_of(def_id).instantiate_identity();
+
+    match ty.kind() {
+        ty::Bool => Some(DependencyConstValue::Bool(scalar.to_bool().discard_err()?)),
+        ty::Char => Some(DependencyConstValue::Char(scalar.to_char().discard_err()?)),
+        ty::Int(int_ty) => Some(match int_ty {
+            IntTy::I8 => DependencyConstValue::I8(scalar.to_i8().discard_err()?),
+            IntTy::I16 => DependencyConstValue::I16(scalar.to_i16().discard_err()?),
+            IntTy::I32 => DependencyConstValue::I32(scalar.to_i32().discard_err()?),
+            IntTy::I64 => DependencyConstValue::I64(scalar.to_i64().discard_err()?),
+            IntTy::I128 => DependencyConstValue::I128(scalar.to_i128().discard_err()?),
+            IntTy::Isize => {
+                DependencyConstValue::Isize(scalar.to_target_isize(&tcx).discard_err()?)
+            }
+        }),
+        ty::Uint(uint_ty) => Some(match uint_ty {
+            UintTy::U8 => DependencyConstValue::U8(scalar.to_u8().discard_err()?),
+            UintTy::U16 => DependencyConstValue::U16(scalar.to_u16().discard_err()?),
+            UintTy::U32 => DependencyConstValue::U32(scalar.to_u32().discard_err()?),
+            UintTy::U64 => DependencyConstValue::U64(scalar.to_u64().discard_err()?),
+            UintTy::U128 => DependencyConstValue::U128(scalar.to_u128().discard_err()?),
+            UintTy::Usize => {
+                DependencyConstValue::Usize(scalar.to_target_usize(&tcx).discard_err()?)
+            }
+        }),
+        ty::Float(float_ty) => match float_ty {
+            FloatTy::F32 => Some(DependencyConstValue::F32(f32::from_bits(
+                scalar.to_u32().discard_err()?,
+            ))),
+            FloatTy::F64 => Some(DependencyConstValue::F64(f64::from_bits(
+                scalar.to_u64().discard_err()?,
+            ))),
+            FloatTy::F16 | FloatTy::F128 => None,
+        },
+        _ => None,
+    }
+}
+
+pub(crate) fn dependency_const_value_for_def_id<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+) -> Option<DependencyConstValue> {
+    dependency_const_value(tcx, my_def_id_to_rustc_def_id(tcx, def_id))
 }
 
 fn override_queries<S: CrateGeneratorState>(

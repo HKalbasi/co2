@@ -23,6 +23,94 @@ use crate::ty::{
 };
 use crate::{initializer_tree::InitializerTree, ty::common_ternary_ty};
 
+fn lower_dependency_const(
+    value: rustc_public_generative::DependencyConstValue,
+    span: RustSpan,
+) -> HirExpr {
+    match value {
+        rustc_public_generative::DependencyConstValue::Bool(v) => HirExpr {
+            kind: HirExprKind::ConstInt(if v { 1 } else { 0 }),
+            ty: Ty::bool_ty(),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::Char(ch) => HirExpr {
+            kind: HirExprKind::ConstInt(ch as i128),
+            ty: Ty::signed_ty(IntTy::I32),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::I8(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::signed_ty(IntTy::I8),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::I16(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::signed_ty(IntTy::I16),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::I32(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::signed_ty(IntTy::I32),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::I64(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::signed_ty(IntTy::I64),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::I128(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v),
+            ty: Ty::signed_ty(IntTy::I128),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::Isize(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::signed_ty(IntTy::Isize),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::U8(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::U8),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::U16(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::U16),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::U32(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::U32),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::U64(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::U64),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::U128(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::U128),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::Usize(v) => HirExpr {
+            kind: HirExprKind::ConstInt(v as i128),
+            ty: Ty::unsigned_ty(UintTy::Usize),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::F32(v) => HirExpr {
+            kind: HirExprKind::ConstFloat(v as f64),
+            ty: Ty::from_rigid_kind(RigidTy::Float(FloatTy::F32)),
+            span,
+        },
+        rustc_public_generative::DependencyConstValue::F64(v) => HirExpr {
+            kind: HirExprKind::ConstFloat(v),
+            ty: Ty::from_rigid_kind(RigidTy::Float(FloatTy::F64)),
+            span,
+        },
+    }
+}
+
 #[derive(Clone)]
 pub struct HirExpr {
     pub kind: HirExprKind,
@@ -253,6 +341,16 @@ impl HirCtx<'_> {
                         ty: resolved.ty(),
                         span,
                     })
+                }
+                co2_crate_sig::DefOrLocal::Const(def_id) => {
+                    let resolver = self
+                        .decl_resolver
+                        .as_ref()
+                        .expect("const path lowering requires decl resolver");
+                    let value = resolver
+                        .dependency_const_value(def_id)
+                        .ok_or_else(|| format!("missing scalar constant value for def {def_id:?}"))?;
+                    Ok(lower_dependency_const(value, span))
                 }
                 co2_crate_sig::DefOrLocal::Local(l) => {
                     let Some(&local) = local_map.get(&(l as usize)) else {

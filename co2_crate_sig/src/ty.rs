@@ -481,6 +481,63 @@ impl LocalResolverBase {
                     .get(def)
                     .cloned()
                     .ok_or_else(|| format!("missing global type for def {def:?}")),
+                crate::DefOrLocal::Const(def_id) => Ok(match self
+                    .hir_ctx
+                    .dependency_const_value(*def_id)
+                    .ok_or_else(|| format!("missing scalar constant value for def {def_id:?}"))?
+                {
+                    rustc_public_generative::DependencyConstValue::Bool(_) => {
+                        HirTy {
+                            kind: HirTyKind::Bool,
+                            span: rust_span,
+                        }
+                    }
+                    rustc_public_generative::DependencyConstValue::Char(_) => {
+                        HirTy::signed_ty(IntTy::I32, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::I8(_) => {
+                        HirTy::signed_ty(IntTy::I8, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::I16(_) => {
+                        HirTy::signed_ty(IntTy::I16, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::I32(_) => {
+                        HirTy::signed_ty(IntTy::I32, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::I64(_) => {
+                        HirTy::signed_ty(IntTy::I64, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::I128(_) => {
+                        HirTy::signed_ty(IntTy::I128, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::Isize(_) => {
+                        HirTy::signed_ty(IntTy::Isize, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::U8(_) => {
+                        HirTy::unsigned_ty(UintTy::U8, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::U16(_) => {
+                        HirTy::unsigned_ty(UintTy::U16, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::U32(_) => {
+                        HirTy::unsigned_ty(UintTy::U32, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::U64(_) => {
+                        HirTy::unsigned_ty(UintTy::U64, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::U128(_) => {
+                        HirTy::unsigned_ty(UintTy::U128, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::Usize(_) => {
+                        HirTy::unsigned_ty(UintTy::Usize, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::F32(_) => {
+                        HirTy::float_ty(FloatTy::F32, rust_span)
+                    }
+                    rustc_public_generative::DependencyConstValue::F64(_) => {
+                        HirTy::float_ty(FloatTy::F64, rust_span)
+                    }
+                }),
                 crate::DefOrLocal::FuncName => Err("__func__ is invalid in sizeof".to_owned()),
                 crate::DefOrLocal::Prim(primitive_ty) => Ok(self.hir_ty_of_prim(*primitive_ty, rust_span)),
                 _ => Err("unsupported identifier in sizeof(array size expr)".to_owned()),
@@ -736,6 +793,7 @@ impl LocalResolverBase {
             }
             CompressedTypeSpecifier::TypedefName((path, _)) => match path {
                 crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
+                crate::DefOrLocal::Const(_) => panic!("invalid const in type position"),
                 crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
                 crate::DefOrLocal::FuncName => panic!("invalid __func__ in type position"),
                 crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(primitive_ty, span),

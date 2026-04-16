@@ -44,6 +44,7 @@ pub use hir_ty::{HirGenericArg, HirLifetime, HirTy, HirTyConst, HirTyKind};
 pub struct DependencyInfo {
     pub crates: Vec<DependencyCrate>,
     pub functions: Vec<DependencyFunction>,
+    pub values: Vec<DependencyValue>,
     pub types: Vec<DependencyType>,
     pub traits: Vec<DependencyTrait>,
 }
@@ -60,6 +61,40 @@ pub struct DependencyFunction {
     pub def_path_hash_hi: u64,
     pub def_path_hash_lo: u64,
     pub fn_def: Option<FnDef>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DependencyConstValue {
+    Bool(bool),
+    Char(char),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    I128(i128),
+    Isize(i64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    U128(u128),
+    Usize(u64),
+    F32(f32),
+    F64(f64),
+}
+
+#[derive(Debug, Clone)]
+pub enum DependencyValueKind {
+    Def(DefId),
+    ConstDef(DefId),
+}
+
+#[derive(Debug, Clone)]
+pub struct DependencyValue {
+    pub kind: DependencyValueKind,
+    pub path: String,
+    pub def_path_hash_hi: u64,
+    pub def_path_hash_lo: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +148,10 @@ impl HirStructureCtx<'_> {
 
     pub fn allocate_def_id(&self, parent: DefId, data: DefData) -> DefId {
         internal::allocate_def_id(self.tcx, parent, data)
+    }
+
+    pub fn dependency_const_value(&self, def_id: DefId) -> Option<DependencyConstValue> {
+        internal::dependency_const_value_for_def_id(self.tcx, def_id)
     }
 }
 

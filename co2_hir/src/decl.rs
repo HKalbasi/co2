@@ -288,6 +288,9 @@ impl HirCtx<'_> {
                     co2_crate_sig::DefOrLocal::Def(def_id) => {
                         (CTy::Ty(CrateItem(*def_id).ty()), specifiers)
                     }
+                    co2_crate_sig::DefOrLocal::Const(_) => {
+                        panic!("Invalid const in type position")
+                    }
                     co2_crate_sig::DefOrLocal::Local(_) => {
                         panic!("Invalid local in type position")
                     }

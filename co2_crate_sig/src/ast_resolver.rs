@@ -11,6 +11,7 @@ use rustc_public_generative::HirTy;
 
 use crate::{
     Resolver,
+    resolver::ResolvedExprPath,
     struct_manager::StructManager,
     ty::{CTy, PrimitiveTy},
 };
@@ -146,6 +147,13 @@ impl LocalResolver {
         self.base.borrow_mut().set_local_ty(local, ty);
     }
 
+    pub fn dependency_const_value(
+        &self,
+        def_id: DefId,
+    ) -> Option<rustc_public_generative::DependencyConstValue> {
+        self.base.borrow().hir_ctx.dependency_const_value(def_id)
+    }
+
     fn register_array_len_const(
         &self,
         subscription: Spanned<co2_ast::LazySubscription>,
@@ -180,6 +188,7 @@ impl LocalResolver {
 #[derive(Debug, Clone)]
 pub enum DefOrLocal {
     Def(DefId),
+    Const(DefId),
     Local(u32),
     FuncName,
     Prim(PrimitiveTy),
@@ -213,8 +222,12 @@ impl co2_ast::TypeResolver for LocalResolver {
             ));
         }
         let (def, class) = self.locals.borrow().get(&path).cloned().or_else(|| {
-            let (def_id, class) = base.resolver.resolve(&path).ok()?;
-            Some((DefOrLocal::Def(def_id), class))
+            match base.resolver.resolve_expr_path(&path).ok()? {
+                ResolvedExprPath::Def(def_id, class) => Some((DefOrLocal::Def(def_id), class)),
+                ResolvedExprPath::Const(def_id) => {
+                    Some((DefOrLocal::Const(def_id), TypeQueryResult::Expr))
+                }
+            }
         })?;
         Some((class, def))
     }
