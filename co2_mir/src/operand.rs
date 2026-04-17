@@ -609,8 +609,11 @@ impl Builder {
             },
             HirExprKind::ConstStr(s) => self.lower_const_string(s, expr.span),
             HirExprKind::Path(path) => match path {
-                ResolvedValue::Fn(fn_def) => {
-                    let fn_ty = Ty::from_rigid_kind(RigidTy::FnDef(*fn_def, GenericArgs(vec![])));
+                ResolvedValue::Fn(fn_def, generic_args) => {
+                    let fn_ty = Ty::from_rigid_kind(RigidTy::FnDef(
+                        *fn_def,
+                        GenericArgs(generic_args.clone()),
+                    ));
                     let c = MirConst::try_new_zero_sized(fn_ty).expect("failed to build fn const");
                     MirOperand::Constant(ConstOperand {
                         span: expr.span,
@@ -1572,8 +1575,12 @@ impl Builder {
             arg_ops.push(op);
         }
         match &func.kind {
-            HirExprKind::Path(ResolvedValue::Fn(fn_def)) => {
-                let generic_args = infer_fn_generic_args(&sig, args, ret_ty);
+            HirExprKind::Path(ResolvedValue::Fn(fn_def, existing_generic_args)) => {
+                let generic_args = if existing_generic_args.is_empty() {
+                    infer_fn_generic_args(&sig, args, ret_ty)
+                } else {
+                    existing_generic_args.clone()
+                };
                 self.emit_call_block(
                     fn_const_operand(*fn_def, generic_args, span),
                     arg_ops,

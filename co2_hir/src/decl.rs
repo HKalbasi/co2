@@ -50,7 +50,7 @@ impl HirCtx<'_> {
         ));
     }
 
-    fn lower_generic_args(
+    pub(crate) fn lower_generic_args(
         &self,
         generic_args: &[Spanned<co2_crate_sig::DefOrLocal>],
     ) -> Vec<GenericArgKind> {
@@ -62,7 +62,11 @@ impl HirCtx<'_> {
             .collect()
     }
 
-    fn ty_of_resolved_path(&self, path: &co2_crate_sig::DefOrLocal, _span: RustSpan) -> Ty {
+    pub(crate) fn ty_of_resolved_path(
+        &self,
+        path: &co2_crate_sig::DefOrLocal,
+        _span: RustSpan,
+    ) -> Ty {
         match path {
             co2_crate_sig::DefOrLocal::Def {
                 def_id,

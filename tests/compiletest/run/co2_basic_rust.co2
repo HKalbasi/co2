@@ -30,4 +30,11 @@ void main(void) {
     Vec<i32>* v2 = 0;
     (void)v;
     (void)v2;
+
+    i32 a = 2, b = 5;
+    std::ptr::swap::<i32>(&a, &b);
+
+    if (a != 5 || b != 2) {
+        std::process::exit(3);
+    }
 }

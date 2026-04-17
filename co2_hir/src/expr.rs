@@ -379,7 +379,7 @@ impl HirCtx<'_> {
         }
         let resolved = self.resolve_value(method_def);
         let func_ty = resolved.ty();
-        let ResolvedValue::Fn(fn_def) = resolved else {
+        let ResolvedValue::Fn(fn_def, generic_args) = resolved else {
             return Ok(None);
         };
         let Some(sig) = callable_sig(func_ty) else {
@@ -403,7 +403,7 @@ impl HirCtx<'_> {
 
         Ok(Some((
             HirExpr {
-                kind: HirExprKind::Path(ResolvedValue::Fn(fn_def)),
+                kind: HirExprKind::Path(ResolvedValue::Fn(fn_def, generic_args)),
                 ty: func_ty,
                 span: self.to_rust_span(parser_span),
             },
@@ -442,7 +442,7 @@ impl HirCtx<'_> {
 
         let resolved = self.resolve_value(method_def);
         let func_ty = resolved.ty();
-        let ResolvedValue::Fn(fn_def) = resolved else {
+        let ResolvedValue::Fn(fn_def, generic_args) = resolved else {
             return Ok(None);
         };
         let Some(sig) = callable_sig(func_ty) else {
@@ -459,7 +459,7 @@ impl HirCtx<'_> {
 
         Ok(Some((
             HirExpr {
-                kind: HirExprKind::Path(ResolvedValue::Fn(fn_def)),
+                kind: HirExprKind::Path(ResolvedValue::Fn(fn_def, generic_args)),
                 ty: func_ty,
                 span: self.to_rust_span(parser_span),
             },
@@ -541,8 +541,11 @@ impl HirCtx<'_> {
         let span = self.to_rust_span(parser_span);
         match expr {
             Expression::Identifier(path) => match path.0 {
-                co2_crate_sig::DefOrLocal::Def { def_id, .. } => {
-                    let resolved = self.resolve_value(def_id);
+                co2_crate_sig::DefOrLocal::Def {
+                    def_id,
+                    generic_args,
+                } => {
+                    let resolved = self.resolve_value_with_generic_args(def_id, &generic_args);
                     Ok(HirExpr {
                         kind: HirExprKind::Path(resolved.clone()),
                         ty: resolved.ty(),

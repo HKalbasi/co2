@@ -1,7 +1,7 @@
 use co2_crate_sig::{LocalResolver, WellknownDefs};
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
-    ty::{FnDef, RigidTy, Span as RustSpan, Ty, TyKind},
+    ty::{FnDef, GenericArgKind, GenericArgs, RigidTy, Span as RustSpan, Ty, TyKind},
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ pub(crate) struct SwitchScope {
 
 #[derive(Clone, Debug)]
 pub enum ResolvedValue {
-    Fn(FnDef),
+    Fn(FnDef, Vec<GenericArgKind>),
     ConstInt(i128),
     Static(DefId),
 }
@@ -28,7 +28,10 @@ pub enum ResolvedValue {
 impl ResolvedValue {
     pub(crate) fn ty(&self) -> Ty {
         match self {
-            ResolvedValue::Fn(fn_def) => fn_def.ty(),
+            ResolvedValue::Fn(fn_def, generic_args) if generic_args.is_empty() => fn_def.ty(),
+            ResolvedValue::Fn(fn_def, generic_args) => {
+                Ty::from_rigid_kind(RigidTy::FnDef(*fn_def, GenericArgs(generic_args.clone())))
+            }
             ResolvedValue::ConstInt(_) => {
                 Ty::signed_ty(rustc_public_generative::rustc_public::ty::IntTy::I32)
             }
@@ -88,7 +91,20 @@ impl<'a> HirCtx<'a> {
     pub(crate) fn resolve_value(&self, def_id: DefId) -> ResolvedValue {
         let ty = CrateItem(def_id).ty();
         if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnDef(..))) {
-            ResolvedValue::Fn(FnDef(def_id))
+            ResolvedValue::Fn(FnDef(def_id), vec![])
+        } else {
+            ResolvedValue::Static(def_id)
+        }
+    }
+
+    pub(crate) fn resolve_value_with_generic_args(
+        &self,
+        def_id: DefId,
+        generic_args: &[co2_ast::Spanned<co2_crate_sig::DefOrLocal>],
+    ) -> ResolvedValue {
+        let ty = CrateItem(def_id).ty();
+        if matches!(ty.kind(), TyKind::RigidTy(RigidTy::FnDef(..))) {
+            ResolvedValue::Fn(FnDef(def_id), self.lower_generic_args(generic_args))
         } else {
             ResolvedValue::Static(def_id)
         }
