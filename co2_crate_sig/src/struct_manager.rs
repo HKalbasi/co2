@@ -108,7 +108,13 @@ impl LocalResolver {
 
         self.locals.borrow_mut().insert(
             enumerator.ident.0,
-            (DefOrLocal::Def(def_id), TypeQueryResult::Expr),
+            (
+                DefOrLocal::Def {
+                    def_id,
+                    generic_args: vec![],
+                },
+                TypeQueryResult::Expr,
+            ),
         );
         (def_id, fake_name, enumerator.value)
     }

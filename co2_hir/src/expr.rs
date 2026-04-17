@@ -425,7 +425,7 @@ impl HirCtx<'_> {
         };
 
         let (receiver, method_name, parser_span) = match &func.0 {
-            Expression::Identifier((co2_crate_sig::DefOrLocal::AssocMethod { receiver, method }, _)) => {
+            Expression::Identifier((co2_crate_sig::DefOrLocal::AssocMethod { receiver, method, .. }, _)) => {
                 (*receiver, method.as_str(), func.1)
             }
             _ => return Ok(None),
@@ -541,7 +541,7 @@ impl HirCtx<'_> {
         let span = self.to_rust_span(parser_span);
         match expr {
             Expression::Identifier(path) => match path.0 {
-                co2_crate_sig::DefOrLocal::Def(def_id) => {
+                co2_crate_sig::DefOrLocal::Def { def_id, .. } => {
                     let resolved = self.resolve_value(def_id);
                     Ok(HirExpr {
                         kind: HirExprKind::Path(resolved.clone()),

@@ -201,11 +201,15 @@ impl LocalResolver {
 
 #[derive(Debug, Clone)]
 pub enum DefOrLocal {
-    Def(DefId),
+    Def {
+        def_id: DefId,
+        generic_args: Vec<Spanned<DefOrLocal>>,
+    },
     Const(DefId),
     AssocMethod {
         receiver: DefId,
         method: String,
+        receiver_generic_args: Vec<Spanned<DefOrLocal>>,
     },
     Local(u32),
     FuncName,
@@ -225,7 +229,27 @@ impl co2_ast::TypeResolver for LocalResolver {
         &self,
         path: &co2_ast::RustPath,
     ) -> Option<(TypeQueryResult, Self::ResolvedRustPath)> {
-        let path_pretty = path.to_pretty();
+        let stripped_path = co2_ast::RustPath {
+            segments: path
+                .segments
+                .iter()
+                .filter_map(|(segment, span)| match segment {
+                    co2_ast::RustPathSegment::Ident(ident) => Some((
+                        co2_ast::RustPathSegment::Ident(ident.clone()),
+                        *span,
+                    )),
+                    co2_ast::RustPathSegment::Generics(_) => None,
+                })
+                .collect(),
+        };
+        let path_pretty = stripped_path.to_pretty();
+        let generic_args = match path.segments.last() {
+            Some((co2_ast::RustPathSegment::Generics(args), _)) => args
+                .iter()
+                .map(|(arg, span)| self.classify_path(arg).map(|(_, resolved)| (resolved, *span)))
+                .collect::<Option<Vec<_>>>()?,
+            _ => vec![],
+        };
         if ["__func__", "__PRETTY_FUNCTION__", "__FUNCTION__"].contains(&&*path_pretty) {
             return Some((TypeQueryResult::Expr, DefOrLocal::FuncName));
         }
@@ -240,33 +264,48 @@ impl co2_ast::TypeResolver for LocalResolver {
             ));
         }
         let (def, class) = self.locals.borrow().get(&path_pretty).cloned().or_else(|| {
-            let (method_segment, _) = path.segments.last()?;
-            let co2_ast::RustPathSegment::Ident(method) = method_segment else {
+            let Some((co2_ast::RustPathSegment::Ident(method), _)) = stripped_path.segments.last()
+            else {
                 return None;
             };
-            if path.segments.len() < 2 {
+            if stripped_path.segments.len() < 2 {
                 return None;
             }
+            let receiver_end = path
+                .segments
+                .iter()
+                .rposition(|(segment, _)| matches!(segment, co2_ast::RustPathSegment::Ident(_)))?;
             let receiver_path = co2_ast::RustPath {
-                segments: path.segments[..path.segments.len() - 1].to_vec(),
+                segments: path.segments[..receiver_end].to_vec(),
             };
             let (receiver_class, receiver) = self.classify_path(&receiver_path)?;
             if receiver_class != TypeQueryResult::Type {
                 return None;
             }
-            let DefOrLocal::Def(receiver) = receiver else {
+            let DefOrLocal::Def {
+                def_id: receiver,
+                generic_args: receiver_generic_args,
+            } = receiver
+            else {
                 return None;
             };
             Some((
                 DefOrLocal::AssocMethod {
                     receiver,
                     method: method.clone(),
+                    receiver_generic_args,
                 },
                 TypeQueryResult::Expr,
             ))
         }).or_else(|| {
             match base.resolver.resolve_expr_path(&path_pretty).ok()? {
-                ResolvedExprPath::Def(def_id, class) => Some((DefOrLocal::Def(def_id), class)),
+                ResolvedExprPath::Def(def_id, class) => Some((
+                    DefOrLocal::Def {
+                        def_id,
+                        generic_args: generic_args.clone(),
+                    },
+                    class,
+                )),
                 ResolvedExprPath::Const(def_id) => {
                     Some((DefOrLocal::Const(def_id), TypeQueryResult::Expr))
                 }
@@ -330,7 +369,16 @@ impl co2_ast::TypeResolver for LocalResolver {
                         ));
                         next.locals
                             .borrow_mut()
-                            .insert(name.1, (DefOrLocal::Def(def_id), TypeQueryResult::Type));
+                            .insert(
+                                name.1,
+                                (
+                                    DefOrLocal::Def {
+                                        def_id,
+                                        generic_args: vec![],
+                                    },
+                                    TypeQueryResult::Type,
+                                ),
+                            );
                     } else if is_static {
                         let mut base = next.base.borrow_mut();
                         let (def_id, fake_name) =
@@ -344,7 +392,16 @@ impl co2_ast::TypeResolver for LocalResolver {
                         ));
                         next.locals
                             .borrow_mut()
-                            .insert(name.1, (DefOrLocal::Def(def_id), TypeQueryResult::Expr));
+                            .insert(
+                                name.1,
+                                (
+                                    DefOrLocal::Def {
+                                        def_id,
+                                        generic_args: vec![],
+                                    },
+                                    TypeQueryResult::Expr,
+                                ),
+                            );
                     } else if decl.0.declarator.0.is_function() {
                         // TODO: detect if we need to emit an extern function here.
                     } else {

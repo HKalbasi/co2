@@ -50,6 +50,48 @@ impl HirCtx<'_> {
         ));
     }
 
+    fn lower_generic_args(
+        &self,
+        generic_args: &[Spanned<co2_crate_sig::DefOrLocal>],
+    ) -> Vec<GenericArgKind> {
+        generic_args
+            .iter()
+            .map(|(arg, arg_span)| {
+                GenericArgKind::Type(self.ty_of_resolved_path(arg, self.to_rust_span(*arg_span)))
+            })
+            .collect()
+    }
+
+    fn ty_of_resolved_path(&self, path: &co2_crate_sig::DefOrLocal, _span: RustSpan) -> Ty {
+        match path {
+            co2_crate_sig::DefOrLocal::Def {
+                def_id,
+                generic_args,
+            } if generic_args.is_empty() => CrateItem(*def_id).ty(),
+            co2_crate_sig::DefOrLocal::Def {
+                def_id,
+                generic_args,
+            } => Ty::from_rigid_kind(RigidTy::Adt(
+                AdtDef(*def_id),
+                GenericArgs(self.lower_generic_args(generic_args)),
+            )),
+            co2_crate_sig::DefOrLocal::Const(_) => panic!("Invalid const in type position"),
+            co2_crate_sig::DefOrLocal::AssocMethod { .. } => {
+                panic!("Invalid associated method in type position")
+            }
+            co2_crate_sig::DefOrLocal::Local(_) => panic!("Invalid local in type position"),
+            co2_crate_sig::DefOrLocal::FuncName => panic!("Invalid __func__ in type position"),
+            co2_crate_sig::DefOrLocal::Prim(primitive_ty) => prim_ty_to_ty(*primitive_ty),
+            co2_crate_sig::DefOrLocal::UnrepresentableType(sig_ty) => {
+                match self.sig_cty_to_cty(sig_ty) {
+                    CTy::Ty(ty) => ty,
+                    CTy::Function(_) => panic!("Function is invalid as a type name"),
+                    CTy::UnsizedArray(_) => panic!("Unsized array is invalid as a type name"),
+                }
+            }
+        }
+    }
+
     pub(crate) fn lower_decl(
         &self,
         decl: Declaration<LocalResolver>,
@@ -285,27 +327,13 @@ impl HirCtx<'_> {
             CompressedTypeSpecifier::Enum(_) => Ty::signed_ty(IntTy::I32),
             CompressedTypeSpecifier::TypedefName(path) => {
                 return match &path.0 {
-                    co2_crate_sig::DefOrLocal::Def(def_id) => {
-                        (CTy::Ty(CrateItem(*def_id).ty()), specifiers)
-                    }
-                    co2_crate_sig::DefOrLocal::Const(_) => {
-                        panic!("Invalid const in type position")
-                    }
-                    co2_crate_sig::DefOrLocal::AssocMethod { .. } => {
-                        panic!("Invalid associated method in type position")
-                    }
-                    co2_crate_sig::DefOrLocal::Local(_) => {
-                        panic!("Invalid local in type position")
-                    }
-                    co2_crate_sig::DefOrLocal::FuncName => {
-                        panic!("Invalid __func__ in type position")
-                    }
-                    co2_crate_sig::DefOrLocal::Prim(primitive_ty) => {
-                        (CTy::Ty(prim_ty_to_ty(*primitive_ty)), specifiers)
-                    }
                     co2_crate_sig::DefOrLocal::UnrepresentableType(sig_ty) => {
                         (self.sig_cty_to_cty(sig_ty), specifiers)
                     }
+                    _ => (
+                        CTy::Ty(self.ty_of_resolved_path(&path.0, self.to_rust_span(span))),
+                        specifiers,
+                    ),
                 };
             }
         };

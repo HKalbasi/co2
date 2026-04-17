@@ -5,8 +5,10 @@ use std::f64::consts::PI;
 use std::time::Instant;
 use std::time::Duration;
 use std::thread;
+use std::vec::Vec;
 
 typedef Instant MyInstant;
+typedef Vec<i32> MyVec;
 
 void main(void) {
     if (PI < 3.14 || std::f64::consts::PI > 3.15) {
@@ -23,4 +25,9 @@ void main(void) {
     Instant instant2 = MyInstant::now();
     MyInstant instant3 = instant2;
     (void)instant3;
+
+    MyVec* v = 0;
+    Vec<i32>* v2 = 0;
+    (void)v;
+    (void)v2;
 }

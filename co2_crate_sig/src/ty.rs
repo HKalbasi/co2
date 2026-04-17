@@ -382,6 +382,43 @@ fn round_up(value: usize, align: usize) -> usize {
 }
 
 impl LocalResolverBase {
+    fn hir_generic_args_of_resolved_path(
+        &mut self,
+        generic_args: &[Spanned<crate::DefOrLocal>],
+    ) -> Vec<HirGenericArg> {
+        generic_args
+            .iter()
+            .map(|(arg, span)| {
+                HirGenericArg::Ty(self.hir_ty_of_resolved_path(arg, self.co2_span_to_rustc(*span)))
+            })
+            .collect()
+    }
+
+    fn hir_ty_of_resolved_path(
+        &mut self,
+        path: &crate::DefOrLocal,
+        span: rustc_public_generative::rustc_public::ty::Span,
+    ) -> HirTy {
+        match path {
+            crate::DefOrLocal::Def {
+                def_id,
+                generic_args,
+            } => HirTy::adt(*def_id, self.hir_generic_args_of_resolved_path(generic_args), span),
+            crate::DefOrLocal::Const(_) => panic!("invalid const in type position"),
+            crate::DefOrLocal::AssocMethod { .. } => {
+                panic!("invalid associated method in type position")
+            }
+            crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
+            crate::DefOrLocal::FuncName => panic!("invalid __func__ in type position"),
+            crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(*primitive_ty, span),
+            crate::DefOrLocal::UnrepresentableType(ty) => match ty {
+                CTy::Ty(ty) => ty.clone(),
+                CTy::Function(_) => panic!("function is invalid as a type name"),
+                CTy::UnsizedArray(_) => panic!("unsized array is invalid as a type name"),
+            },
+        }
+    }
+
     pub(crate) fn eval_array_len_expr(
         &mut self,
         expr: &Spanned<Expression<LocalResolver>>,
@@ -476,7 +513,7 @@ impl LocalResolverBase {
                     .get(local)
                     .cloned()
                     .ok_or_else(|| format!("missing local type for local {local}")),
-                crate::DefOrLocal::Def(def) => self
+                crate::DefOrLocal::Def { def_id: def, .. } => self
                     .global_value_tys
                     .get(def)
                     .cloned()
@@ -795,17 +832,10 @@ impl LocalResolverBase {
                 HirTy::adt(specifier.0, vec![], span)
             }
             CompressedTypeSpecifier::TypedefName((path, _)) => match path {
-                crate::DefOrLocal::Def(def_id) => HirTy::adt(def_id, vec![], span),
-                crate::DefOrLocal::Const(_) => panic!("invalid const in type position"),
-                crate::DefOrLocal::AssocMethod { .. } => {
-                    panic!("invalid associated method in type position")
-                }
-                crate::DefOrLocal::Local(_) => panic!("invalid parsing"),
-                crate::DefOrLocal::FuncName => panic!("invalid __func__ in type position"),
-                crate::DefOrLocal::Prim(primitive_ty) => self.hir_ty_of_prim(primitive_ty, span),
                 crate::DefOrLocal::UnrepresentableType(ty) => {
                     return ty;
                 }
+                _ => self.hir_ty_of_resolved_path(&path, span),
             },
         };
         CTy::Ty(ty)
