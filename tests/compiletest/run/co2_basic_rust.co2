@@ -10,7 +10,7 @@ use std::vec::Vec;
 typedef Instant MyInstant;
 typedef Vec<i32> MyVec;
 
-void main(void) {
+fn main() {
     if (PI < 3.14 || std::f64::consts::PI > 3.15) {
         std::process::exit(1);
     }

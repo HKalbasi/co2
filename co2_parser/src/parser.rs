@@ -1375,41 +1375,6 @@ where
         .delimited_by(just(Token::LParen), just(Token::RParen))
 }
 
-fn rust_style_type_specifiers<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<
-    'src,
-    I,
-    Vec<Spanned<DeclarationSpecifier<R>>>,
-    extra::Err<Rich<'src, Token, Span>>,
-> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_path()
-        .map({
-            let resolver = resolver.clone();
-            move |path| (resolver.classify_path(&path.0), path.1)
-        })
-        .filter(|r| {
-            let Some(r) = &r.0 else { return false };
-            match r.0 {
-                TypeQueryResult::Expr => false,
-                TypeQueryResult::Unsure | TypeQueryResult::Type => true,
-            }
-        })
-        .map(|(resolved, span)| {
-            vec![(
-                DeclarationSpecifier::TypeSpecifier((
-                    TypeSpecifier::TypedefName((resolved.unwrap().1, span)),
-                    span,
-                )),
-                span,
-            )]
-        })
-}
-
 fn rust_ty<'src, I, R: TypeResolver>(
     resolver: R,
 ) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone

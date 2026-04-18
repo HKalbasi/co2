@@ -195,7 +195,7 @@ pub fn lower_crate_sig(
                 signature,
                 body,
             } => {
-                let (name, mut sig, param_names, is_static, syntax_is_rust) = match signature {
+                let (name, sig, param_names, no_mangle) = match signature {
                     FunctionDefinitionSignature::C {
                         declaration_specifiers,
                         declarator,
@@ -207,18 +207,15 @@ pub fn lower_crate_sig(
                         let (name, sig, param_names) = ctx
                             .lower_function_signature(base, base_const, declarator)
                             .expect("failed to lower function signature");
-                        (name, sig, param_names, is_static, false)
+                        (name, sig, param_names, !is_static)
                     }
                     FunctionDefinitionSignature::Rust(sig) => {
                         let (name, lower_sig, param_names) = ctx.lower_rust_function_signature(sig);
-                        (name, lower_sig, param_names, false, true)
+                        (name, lower_sig, param_names, false)
                     }
                 };
 
                 let id = ctx.resolve_in_current([&*name]).unwrap().0;
-                if syntax_is_rust || (name == "main" && !no_main) {
-                    sig.abi = FunctionAbi::Rust;
-                }
                 let function_name = name.clone();
                 let param_tys = sig.inputs.clone();
                 let id = FnDef(id);
@@ -226,7 +223,7 @@ pub fn lower_crate_sig(
                     name,
                     id,
                     sig,
-                    no_mangle: !is_static,
+                    no_mangle,
                     span,
                 });
                 resolver = resolver.start_new_scope();
