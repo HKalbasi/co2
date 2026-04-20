@@ -42,7 +42,7 @@ jobs:
       - name: Clone rustc fork (co2-changes)
         if: steps.cache-rustc.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 -b co2-changes \
+          git clone -b co2-changes \
             https://github.com/HKalbasi/rust /tmp/rust-fork
 
       - name: Configure rustc build
