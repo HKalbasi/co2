@@ -1,5 +1,7 @@
 #![feature(rustc_private)]
 
+pub mod preprocess;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -415,11 +417,13 @@ fn build_clone_method_body(
 }
 
 pub fn compile_co2_file(mode: CompileMode, co2_file: &Path, rustc_args: Vec<String>) {
-    let src = std::fs::read_to_string(co2_file).expect("failed to read co2 file");
+    let preprocessed = preprocess::preprocess(co2_file, &Vec::new());
+    let normalized = preprocess::normalize_preprocessed(&preprocessed);
+
     compile_co2_source(
         mode,
         co2_file.to_path_buf(),
-        src,
+        normalized,
         rustc_args,
     );
 }
