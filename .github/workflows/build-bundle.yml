@@ -85,6 +85,9 @@ jobs:
           source "$HOME/.cargo/env"
           rustup toolchain link co2 ~/co2-toolchain
           rustup override set co2
+          # libLLVM-*.so lives in <toolchain>/lib, not in the rustlib subdir the linker
+          # searches by default, so we add it to RUSTFLAGS for all subsequent steps.
+          echo "RUSTFLAGS=-L $HOME/co2-toolchain/lib" >> "$GITHUB_ENV"
 
       - name: Build co2-multicall
         run: |
