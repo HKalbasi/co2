@@ -1,11 +1,20 @@
 //@ mode: c
 //@ compile-fail
 
-int foo() {
+int f1() {
     missing;
   //^^^^^^^ error: Unresolved name
 }
 
+int f2() {
+    missing x = 5;
+  //^^^^^^^ error: Unresolved name
+}
+
+int f3() {
+    const missing x = 5;
+        //^^^^^^^ error: Unresolved name
+}
 
 int main() {
     return missing;

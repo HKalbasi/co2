@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use clap::{Parser, ValueEnum};
 use tempfile::{Builder as TempDirBuilder, TempDir};
 
@@ -80,6 +81,8 @@ struct TestCase {
     path: PathBuf,
     kind: TestKind,
     directives: HashMap<String, Vec<String>>,
+    #[allow(dead_code)]
+    source: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,27 +102,116 @@ enum TestOutcome {
     Skip(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UiSpanExpectation {
     byte_start: usize,
     byte_end: usize,
-    line: usize,
-    column_start: usize,
-    column_end: usize,
     message: Option<String>,
+    src_byte_start: usize,
+    src_byte_end: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UiDiagnostic {
     message: String,
     spans: Vec<UiDiagnosticSpan>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct UiDiagnosticSpan {
     byte_start: usize,
     byte_end: usize,
     is_primary: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TestError {
+    source: String,
+    span: Option<(usize, usize)>,
+    message: String,
+}
+
+impl std::fmt::Display for TestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for TestError {}
+
+#[derive(Debug, Clone)]
+struct UiTestError {
+    path: PathBuf,
+    source: String,
+    expected_span: UiSpanExpectation,
+    reason: String,
+}
+
+impl std::fmt::Display for UiTestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
+impl std::error::Error for UiTestError {}
+
+fn render_ui_error(err: &UiTestError) {
+    let path = &err.path;
+    let name = path.display().to_string();
+    let source = &err.source;
+
+    if err.expected_span.src_byte_start < source.len() && err.expected_span.src_byte_end <= source.len() {
+        let mut r = Report::build(
+            ReportKind::Error,
+            (&*name, err.expected_span.src_byte_start..err.expected_span.src_byte_end),
+        );
+        r.add_label(
+            Label::new((&*name, err.expected_span.src_byte_start..err.expected_span.src_byte_end))
+                .with_color(Color::Red)
+                .with_message(&err.reason),
+        );
+        r.finish()
+            .eprint((&*name, Source::from(source)))
+            .unwrap_or_else(|e| eprintln!("{e:#}"));
+    } else {
+        let line_starts: Vec<usize> = {
+            let mut starts = vec![0];
+            for (idx, ch) in source.char_indices() {
+                if ch == '\n' {
+                    starts.push(idx + 1);
+                }
+            }
+            starts
+        };
+        let line_idx = err.expected_span.byte_start;
+        let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
+        let mut r = Report::build(ReportKind::Error, (&*name, line_start..line_start));
+        r.set_note(&err.reason);
+        r.finish()
+            .eprint((&*name, Source::from(source)))
+            .unwrap_or_else(|e| eprintln!("{e:#}"));
+    }
+}
+
+fn render_test_error(path: &Path, err: &TestError) {
+    let source = &err.source;
+    if let Some((start, end)) = err.span {
+        let mut r = Report::build(ReportKind::Error, (path.display().to_string(), start..end));
+        r.add_label(
+            Label::new((path.display().to_string(), start..end))
+                .with_color(Color::Red)
+                .with_message(&err.message),
+        );
+        r.finish()
+            .eprint((path.display().to_string(), Source::from(source)))
+            .unwrap_or_else(|e| eprintln!("{e:#}"));
+    } else {
+        let mut r = Report::build(ReportKind::Error, (path.display().to_string(), 0..0));
+        r.set_note(&err.message);
+        r.finish()
+            .eprint((path.display().to_string(), Source::from(source)))
+            .unwrap_or_else(|e| eprintln!("{e:#}"));
+    }
 }
 
 fn main() {
@@ -242,7 +334,16 @@ fn run_suite(root: &Path, suite: Suite, filter: Option<&str>, stats: &mut Stats)
             }
             Err(err) => {
                 stats.failed += 1;
-                eprintln!("FAIL {name}\n{err:#}");
+                let name = test.path.strip_prefix(root).unwrap_or(&test.path).display();
+                if let Some(e) = err.downcast_ref::<TestError>() {
+                    eprintln!("FAIL {name}");
+                    render_test_error(&test.path, e);
+                } else if let Some(e) = err.downcast_ref::<UiTestError>() {
+                    eprintln!("FAIL {name}");
+                    render_ui_error(e);
+                } else {
+                    eprintln!("FAIL {name}\n{err:#}");
+                }
             }
         }
     }
@@ -483,7 +584,7 @@ fn check_ui(
 
     let diagnostics = parse_ui_diagnostics(&stderr)?;
     for expected in span_expectations {
-        let matched = diagnostics.iter().any(|diagnostic| {
+        let message_matches = diagnostics.iter().any(|diagnostic| {
             if let Some(message) = &expected.message
                 && !diagnostic.message.contains(message)
             {
@@ -497,21 +598,24 @@ fn check_ui(
             })
         });
 
-        if !matched {
-            bail!(
-                "missing UI span annotation at {}:{}-{} (bytes {}..{}){}\nstderr:\n{}",
-                expected.line,
-                expected.column_start,
-                expected.column_end,
-                expected.byte_start,
-                expected.byte_end,
-                expected
-                    .message
-                    .as_ref()
-                    .map(|message| format!(" ({message})"))
-                    .unwrap_or_default(),
-                stderr
-            );
+        if !message_matches {
+            let reason = if let Some(msg) = &expected.message {
+                let found = diagnostics.iter().any(|d| d.message.contains(msg));
+                if found {
+                    format!("Missing diagnostic span for: {}", msg)
+                } else {
+                    format!("Missing diagnostic: {}", msg)
+                }
+            } else {
+                "missing UI span annotation".to_string()
+            };
+            return Err(UiTestError {
+                path: test.path.clone(),
+                source: test.source.clone(),
+                expected_span: expected.clone(),
+                reason,
+            }
+            .into());
         }
     }
 
@@ -536,7 +640,15 @@ fn check_run(test: &TestCase, compile: &CompileResult) -> Result<()> {
     let got_status = output.status.code().unwrap_or(-1);
     let expected_status = directive_i32(test, "run-status")?.unwrap_or(0);
     if got_status != expected_status {
-        bail!("run status mismatch: expected {expected_status}, got {got_status}");
+return Err(TestError {
+                source: test.source.clone(),
+                span: None,
+                message: format!(
+                    "exit code mismatch: expected `{}`, got `{}`",
+                    expected_status, got_status
+                ),
+            }
+            .into());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -545,21 +657,33 @@ fn check_run(test: &TestCase, compile: &CompileResult) -> Result<()> {
     if let Some(expected) = directive_text(test, "run-stdout") {
         let expected = unescape_text(&expected);
         if normalize(&expected) != normalize(&stdout) {
-            bail!(
-                "stdout mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
-                expected,
-                stdout
-            );
+            return Err(TestError {
+                source: test.source.clone(),
+                span: None,
+                message: format!(
+                    "stdout mismatch:\n  expected: {}\n  actual:   {}",
+                    expected.lines().next().unwrap_or(""),
+                    stdout.lines().next().unwrap_or("")
+                ),
+                
+            }
+            .into());
         }
     }
     if let Some(expected) = directive_text(test, "run-stderr") {
         let expected = unescape_text(&expected);
         if normalize(&expected) != normalize(&stderr) {
-            bail!(
-                "stderr mismatch\n--- expected ---\n{}\n--- actual ---\n{}",
-                expected,
-                stderr
-            );
+            return Err(TestError {
+                source: test.source.clone(),
+                span: None,
+                message: format!(
+                    "stderr mismatch:\n  expected: {}\n  actual:   {}",
+                    expected.lines().next().unwrap_or(""),
+                    stderr.lines().next().unwrap_or("")
+                ),
+                
+            }
+            .into());
         }
     }
 
@@ -570,7 +694,17 @@ fn check_run(test: &TestCase, compile: &CompileResult) -> Result<()> {
         .unwrap_or_default()
     {
         if !stdout.contains(&pat) {
-            bail!("missing run-stdout-contains pattern `{pat}` in stdout\n{stdout}");
+            return Err(TestError {
+                source: test.source.clone(),
+                span: None,
+                message: format!(
+                    "stdout missing pattern `{}` (got `{}`)",
+                    pat,
+                    stdout.lines().next().unwrap_or("")
+                ),
+                
+            }
+            .into());
         }
     }
     for pat in test
@@ -580,7 +714,17 @@ fn check_run(test: &TestCase, compile: &CompileResult) -> Result<()> {
         .unwrap_or_default()
     {
         if !stderr.contains(&pat) {
-            bail!("missing run-stderr-contains pattern `{pat}` in stderr\n{stderr}");
+            return Err(TestError {
+                source: test.source.clone(),
+                span: None,
+                message: format!(
+                    "stderr missing pattern `{}` (got `{}`)",
+                    pat,
+                    stderr.lines().next().unwrap_or("")
+                ),
+                
+            }
+            .into());
         }
     }
 
@@ -735,6 +879,7 @@ fn collect_tests_inner(dir: &Path, filter: Option<&str>, out: &mut Vec<TestCase>
                     directives: parse_directives(&main_nu)?,
                     path,
                     kind: TestKind::NuDir,
+                    source: String::new(),
                 });
                 continue;
             }
@@ -754,10 +899,13 @@ fn collect_tests_inner(dir: &Path, filter: Option<&str>, out: &mut Vec<TestCase>
             continue;
         }
 
+        let source = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read test source {}", path.display()))?;
         out.push(TestCase {
             directives: parse_directives(&path)?,
             path,
             kind: TestKind::File,
+            source,
         });
     }
     Ok(())
@@ -792,7 +940,8 @@ fn parse_ui_span_expectations(path: &Path, mode: Mode) -> Result<Vec<UiSpanExpec
     let src = fs::read_to_string(path)
         .with_context(|| format!("failed to read test source {}", path.display()))?;
     let effective_src = source_for_ui_byte_offsets(&src, mode);
-    let line_starts = line_start_offsets(&effective_src);
+    let line_starts_eff = line_start_offsets(&effective_src);
+    let line_starts_orig = line_start_offsets(&src);
     let mut out = Vec::new();
 
     for (idx, line) in src.lines().enumerate() {
@@ -807,14 +956,14 @@ fn parse_ui_span_expectations(path: &Path, mode: Mode) -> Result<Vec<UiSpanExpec
             );
         }
         let source_line_idx = line_no - 2;
-        let line_start = line_starts[source_line_idx];
+        let line_start_eff = line_starts_eff[source_line_idx];
+        let line_start_orig = line_starts_orig[source_line_idx];
         out.push(UiSpanExpectation {
-            byte_start: line_start + (column_start - 1),
-            byte_end: line_start + (column_end - 1),
-            line: line_no - 1,
-            column_start,
-            column_end,
+            byte_start: line_start_eff + (column_start - 1),
+            byte_end: line_start_eff + (column_end - 1),
             message,
+            src_byte_start: line_start_orig + (column_start - 1),
+            src_byte_end: line_start_orig + (column_end - 1),
         });
     }
 
