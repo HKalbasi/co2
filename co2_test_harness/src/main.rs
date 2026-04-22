@@ -273,14 +273,14 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
     )?;
 
     let ui_spans = if suite == Suite::Ui {
-        parse_ui_span_expectations(&test.path)?
+        parse_ui_span_expectations(&test.path, mode)?
     } else {
         Vec::new()
     };
-    let compile = compile_test(root, suite, mode, test, !ui_spans.is_empty())?;
+        let compile = compile_test(root, suite, mode, test, !ui_spans.is_empty())?;
     match suite {
         Suite::Ui => {
-            check_ui(test, &compile.output, &ui_spans)?;
+            check_ui(test, mode, &compile.output, &ui_spans)?;
             Ok(TestOutcome::Pass)
         }
         Suite::Run => {
@@ -431,9 +431,25 @@ fn compile_test(
     })
 }
 
-fn check_ui(test: &TestCase, output: &Output, span_expectations: &[UiSpanExpectation]) -> Result<()> {
+fn check_ui(
+    test: &TestCase,
+    mode: Mode,
+    output: &Output,
+    span_expectations: &[UiSpanExpectation],
+) -> Result<()> {
     if output.status.success() {
         bail!("UI test unexpectedly succeeded");
+    }
+    let expected_status = match mode {
+        Mode::Rust => 1,
+        Mode::C | Mode::Co2 => 5,
+    };
+    let got_status = output.status.code().unwrap_or(-1);
+    if got_status != expected_status {
+        bail!(
+            "compile-fail status mismatch: expected {expected_status}, got {got_status}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     if test.directives.contains_key("ui-error") || test.directives.contains_key("ui-stderr-contains")
@@ -772,10 +788,11 @@ fn parse_directives(path: &Path) -> Result<HashMap<String, Vec<String>>> {
     Ok(map)
 }
 
-fn parse_ui_span_expectations(path: &Path) -> Result<Vec<UiSpanExpectation>> {
+fn parse_ui_span_expectations(path: &Path, mode: Mode) -> Result<Vec<UiSpanExpectation>> {
     let src = fs::read_to_string(path)
         .with_context(|| format!("failed to read test source {}", path.display()))?;
-    let line_starts = line_start_offsets(&src);
+    let effective_src = source_for_ui_byte_offsets(&src, mode);
+    let line_starts = line_start_offsets(&effective_src);
     let mut out = Vec::new();
 
     for (idx, line) in src.lines().enumerate() {
@@ -802,6 +819,24 @@ fn parse_ui_span_expectations(path: &Path) -> Result<Vec<UiSpanExpectation>> {
     }
 
     Ok(out)
+}
+
+fn source_for_ui_byte_offsets(src: &str, mode: Mode) -> String {
+    match mode {
+        Mode::Rust => src.to_owned(),
+        Mode::C | Mode::Co2 => {
+            let mut out = String::with_capacity(src.len());
+            for line in src.lines() {
+                if parse_ui_span_annotation(line).is_some() {
+                    out.push('\n');
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            out
+        }
+    }
 }
 
 fn parse_ui_span_annotation(line: &str) -> Option<(usize, usize, Option<String>)> {

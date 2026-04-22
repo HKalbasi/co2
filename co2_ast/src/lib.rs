@@ -12,7 +12,9 @@ pub type Spanned<T> = (T, Span);
 
 pub use chumsky::prelude::Rich;
 pub use diagnostic::{
-    emit_mapped_errors_and_terminate, print_errors_and_terminate, safe_range, take_errors,
+    DiagnosticAbort, diagnostics_were_emitted, emit_mapped_errors_and_terminate,
+    is_diagnostic_abort, panic_with_diagnostic_abort, print_errors_and_terminate,
+    reset_diagnostic_state, safe_range, take_errors,
 };
 pub use resolver::{StatelessResolver, TypeResolver};
 pub use transform::{DoTransform, Transformable};

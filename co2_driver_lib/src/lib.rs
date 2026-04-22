@@ -5,14 +5,16 @@ pub mod preprocess;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::panic::AssertUnwindSafe;
 
 use co2_ast::Initializer;
 use co2_crate_sig::{LocalResolver, MirOwnerInfo, WellknownDefs};
 use co2_hir::{
-    HirBody, HirCtx, HirExpr, HirStmt, ResolvedValue, eval_usize_initializer,
+    HirBody, HirCtx, HirExpr, HirExprKind, HirLocal, HirStmt, ResolvedValue, eval_usize_initializer,
     infer_array_len_from_initializer,
     lower_static_body_for_ty,
 };
+use la_arena::Arena;
 use rustc_public_generative::rustc_public::ty::IntTy;
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
@@ -136,9 +138,43 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                 );
                 hir_ctx.set_decl_resolver(resolver);
 
-                let hir =
-                    co2_hir::lower_function_body(body, def, &param_names, &mut hir_ctx).unwrap();
+                let hir = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    co2_hir::lower_function_body(body, def, &param_names, &mut hir_ctx).unwrap()
+                })) {
+                    Ok(hir) => hir,
+                    Err(payload) => {
+                        if co2_ast::is_diagnostic_abort(payload.as_ref()) {
+                            let hir = build_error_fn_body(
+                                &self.wellknown_defs,
+                                &def.fn_sig().skip_binder(),
+                                ctx.span_in_file(self.file_id, 0, 0),
+                            );
+                            return co2_mir::build_mir_for_body(
+                                &hir,
+                                &ctx,
+                                def.0,
+                                self.file_id,
+                                self.wellknown_defs,
+                            );
+                        }
+                        std::panic::resume_unwind(payload);
+                    }
+                };
 
+                co2_mir::build_mir_for_body(
+                    &hir,
+                    &ctx,
+                    def.0,
+                    self.file_id,
+                    self.wellknown_defs,
+                )
+            }
+            MirOwnerInfo::FnBodyError { def, body_span } => {
+                let hir = build_error_fn_body(
+                &self.wellknown_defs,
+                &def.fn_sig().skip_binder(),
+                ctx.span_in_file(self.file_id, body_span.start as u32, body_span.end as u32),
+                );
                 co2_mir::build_mir_for_body(
                     &hir,
                     &ctx,
@@ -365,6 +401,67 @@ fn build_zeroed_static_initializer_body(
     )
 }
 
+fn build_error_fn_body(
+    wellknown_defs: &WellknownDefs,
+    sig: &rustc_public_generative::rustc_public::ty::FnSig,
+    span: rustc_public_generative::rustc_public::ty::Span,
+) -> HirBody {
+    let mut locals = Arena::new();
+    locals.alloc(HirLocal {
+        name: "_ret".to_owned(),
+        ty: sig.output(),
+        span,
+    });
+
+    let mut params = Vec::new();
+    for (idx, ty) in sig.inputs().iter().enumerate() {
+        let id = locals.alloc(HirLocal {
+            name: format!("_arg{idx}"),
+            ty: *ty,
+            span,
+        });
+        params.push(id);
+    }
+
+    let mut c_variadic_local = None;
+    if sig.c_variadic {
+        let id = locals.alloc(HirLocal {
+            name: "__co2_c_vararg".to_owned(),
+            ty: Ty::from_rigid_kind(RigidTy::Adt(
+                wellknown_defs.valist,
+                GenericArgs(vec![GenericArgKind::Lifetime(Region {
+                    kind: RegionKind::ReErased,
+                })]),
+            )),
+            span,
+        });
+        params.push(id);
+        c_variadic_local = Some(id);
+    }
+
+    let stmts = if matches!(sig.output().kind(), TyKind::RigidTy(RigidTy::Never)) {
+        vec![]
+    } else {
+        vec![HirStmt::Return(
+            Some(HirExpr {
+                kind: HirExprKind::Zeroed,
+                ty: sig.output(),
+                span,
+            }),
+            span,
+        )]
+    };
+
+    HirBody {
+        locals,
+        labels: Arena::new(),
+        params,
+        c_variadic_local,
+        stmts,
+        span,
+    }
+}
+
 fn build_clone_method_body(
     adt: AdtDef,
     span: rustc_public_generative::rustc_public::ty::Span,
@@ -434,6 +531,7 @@ pub fn compile_co2_source(
     source: String,
     rustc_args: Vec<String>,
 ) {
+    co2_ast::reset_diagnostic_state();
     *pending_compile_cell().try_lock().unwrap() = Some(PendingCompile {
         mode,
         source_path,
@@ -441,4 +539,7 @@ pub fn compile_co2_source(
     });
 
     rustc_gen::generate_with_args::<Co2GeneratorState>(rustc_args);
+    if co2_ast::diagnostics_were_emitted() {
+        co2_ast::panic_with_diagnostic_abort();
+    }
 }

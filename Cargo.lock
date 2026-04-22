@@ -225,6 +225,7 @@ dependencies = [
  "co2_crate_sig",
  "co2_hir",
  "co2_mir",
+ "la-arena",
  "rustc_public_generative",
 ]
 
@@ -279,6 +280,7 @@ dependencies = [
 name = "co2cc"
 version = "0.1.0"
 dependencies = [
+ "co2_ast",
  "co2_driver_lib",
 ]
 
@@ -286,6 +288,7 @@ dependencies = [
 name = "co2rustc"
 version = "0.1.0"
 dependencies = [
+ "co2_ast",
  "co2_driver_lib",
  "itertools",
 ]

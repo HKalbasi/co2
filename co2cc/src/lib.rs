@@ -29,6 +29,9 @@ pub fn main_with_args(args: Vec<String>) -> std::process::ExitCode {
     };
 
     if let Err(payload) = std::panic::catch_unwind(|| run_co2c(cc_args)) {
+        if co2_ast::is_diagnostic_abort(payload.as_ref()) {
+            return std::process::ExitCode::from(5);
+        }
         if let Some(msg) = payload.downcast_ref::<String>() {
             eprintln!("co2cc panic: {msg}");
         } else if let Some(msg) = payload.downcast_ref::<&str>() {
@@ -262,6 +265,9 @@ fn compile_c_to_object(input: &Path, output: &Path, cpp_args: &[String]) {
 
     let status = cmd.status().expect("failed to execute co2c object compile");
     if !status.success() {
+        if status.code() == Some(5) {
+            co2_ast::panic_with_diagnostic_abort();
+        }
         panic!("co2c object compile failed with status {status}");
     }
 }

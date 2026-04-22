@@ -238,6 +238,22 @@ where
                 name,
                 statement: Box::new(statement),
             });
+        let labeled_or_expression_statement = custom({
+            let expression_statement = expression_statement.clone();
+            let labeled_statement = labeled_statement.clone();
+            move |inp| {
+                let checkpoint = inp.save();
+                let is_label = inp
+                    .parse(identifier().ignored().then_ignore(look_ahead(Token::Colon)))
+                    .is_ok();
+                inp.rewind(checkpoint);
+                if is_label {
+                    inp.parse(labeled_statement.clone())
+                } else {
+                    inp.parse(expression_statement.clone())
+                }
+            }
+        });
 
         let for_statement = just(Token::For).ignore_then(custom({
             let resolver = resolver.clone();
@@ -292,12 +308,11 @@ where
             switch_statement,
             case_statement,
             default_statement,
-            labeled_statement,
+            labeled_or_expression_statement,
             goto_statement,
             break_statement,
             continue_statement,
             jump_statement,
-            expression_statement,
             empty_statement,
             compound,
         ))

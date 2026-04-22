@@ -28,4 +28,8 @@ pub enum MirOwnerInfo {
         resolver: LocalResolver,
         body: co2_ast::Spanned<co2_ast::CompoundStatement<LocalResolver>>,
     },
+    FnBodyError {
+        def: FnDef,
+        body_span: co2_ast::Span,
+    },
 }

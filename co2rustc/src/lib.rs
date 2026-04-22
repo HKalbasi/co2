@@ -26,6 +26,9 @@ pub fn main_with_args(args: Vec<String>) -> std::process::ExitCode {
     if let Err(payload) =
         std::panic::catch_unwind(|| compile_co2_file(CompileMode::RUST, &co2_file, args))
     {
+        if co2_ast::is_diagnostic_abort(payload.as_ref()) {
+            return std::process::ExitCode::from(5);
+        }
         if let Some(msg) = payload.downcast_ref::<String>() {
             eprintln!("co2rustc panic: {msg}");
         } else if let Some(msg) = payload.downcast_ref::<&str>() {

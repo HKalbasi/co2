@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+co2_ast = { path = "../co2_ast" }
 co2_driver_lib = { path = "../co2_driver_lib" }
 
 [package.metadata.rust-analyzer]

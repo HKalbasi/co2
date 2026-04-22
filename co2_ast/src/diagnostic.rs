@@ -1,4 +1,9 @@
-use std::sync::Mutex;
+use std::any::Any;
+use std::sync::{
+    Once,
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use ariadne::{Color, Label, Report, ReportKind, sources};
 use chumsky::{error::Rich, span::SimpleSpan};
@@ -7,6 +12,11 @@ use serde_json::json;
 use crate::Token;
 
 static ERRORS: Mutex<Vec<Rich<'static, Token, SimpleSpan>>> = Mutex::new(Vec::new());
+static DIAGNOSTICS_EMITTED: AtomicBool = AtomicBool::new(false);
+static INSTALL_HOOK: Once = Once::new();
+
+#[derive(Debug)]
+pub struct DiagnosticAbort;
 
 pub fn take_errors() -> Vec<Rich<'static, Token, SimpleSpan>> {
     let mut guard = ERRORS.try_lock().unwrap();
@@ -20,6 +30,36 @@ pub fn safe_range(span: SimpleSpan, src_len: usize) -> std::ops::Range<usize> {
         std::mem::swap(&mut start, &mut end);
     }
     start..end
+}
+
+pub fn reset_diagnostic_state() {
+    install_diagnostic_panic_hook();
+    DIAGNOSTICS_EMITTED.store(false, Ordering::SeqCst);
+}
+
+pub fn diagnostics_were_emitted() -> bool {
+    DIAGNOSTICS_EMITTED.load(Ordering::SeqCst)
+}
+
+pub fn panic_with_diagnostic_abort() -> ! {
+    install_diagnostic_panic_hook();
+    std::panic::panic_any(DiagnosticAbort);
+}
+
+pub fn is_diagnostic_abort(payload: &(dyn Any + Send)) -> bool {
+    payload.is::<DiagnosticAbort>()
+}
+
+fn install_diagnostic_panic_hook() {
+    INSTALL_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if info.payload().is::<DiagnosticAbort>() {
+                return;
+            }
+            previous(info);
+        }));
+    });
 }
 
 pub fn print_errors_and_terminate(
@@ -44,6 +84,7 @@ pub fn emit_mapped_errors_and_terminate(
     src: &'static str,
     errs: Vec<Rich<'_, String, SimpleSpan>>,
 ) -> ! {
+    DIAGNOSTICS_EMITTED.store(true, Ordering::SeqCst);
     if std::env::var_os("CO2_FORCE_JSON_DIAGNOSTICS").is_some() {
         for e in errs {
             emit_json_diagnostic(&filename, src, &e);
@@ -53,7 +94,7 @@ pub fn emit_mapped_errors_and_terminate(
             emit_human_diagnostic(&filename, src, &e);
         }
     }
-    std::process::exit(5);
+    panic_with_diagnostic_abort();
 }
 
 fn emit_human_diagnostic(filename: &str, src: &str, e: &Rich<'_, String, SimpleSpan>) {

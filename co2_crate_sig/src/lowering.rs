@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, panic::AssertUnwindSafe, rc::Rc};
 
 use co2_ast::{
     Declaration, DeclarationSpecifier, Designator, DoTransform as _, FunctionDefinitionSignature,
@@ -236,23 +236,36 @@ pub fn lower_crate_sig(
                         (id, name)
                     })
                     .collect();
-                let body = parse_compound_statement(
-                    &body.0.tokens.0,
-                    ctx.source_name.clone(),
-                    ctx.source,
-                    resolver.clone(),
-                );
+                let parsed_body = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    parse_compound_statement(
+                        &body.0.tokens.0,
+                        ctx.source_name.clone(),
+                        ctx.source,
+                        resolver.clone(),
+                    )
+                }));
 
-                ctx.mir_owners.insert(
-                    id.0,
-                    MirOwnerInfo::Fn {
+                let mir_owner = match parsed_body {
+                    Ok(body) => MirOwnerInfo::Fn {
                         def: id,
                         function_name,
                         param_names,
                         resolver: resolver.clone(),
                         body,
                     },
-                );
+                    Err(payload) => {
+                        if co2_ast::is_diagnostic_abort(payload.as_ref()) {
+                            MirOwnerInfo::FnBodyError {
+                                def: id,
+                                body_span: body.1,
+                            }
+                        } else {
+                            std::panic::resume_unwind(payload);
+                        }
+                    }
+                };
+
+                ctx.mir_owners.insert(id.0, mir_owner);
             }
             Declaration::Declaration {
                 declaration_specifiers,
