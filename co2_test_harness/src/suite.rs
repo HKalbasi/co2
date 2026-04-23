@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process::Command;
 use std::path::{Path};
 
@@ -106,7 +107,12 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
     )?;
 
     let mut ui_spans = Vec::new();
+    let mut sources = HashMap::new();
     if suite == Suite::Ui {
+        sources.insert(
+            test.path.file_name().unwrap().to_string_lossy().into_owned(),
+            test.source.clone(),
+        );
         ui_spans.extend(parse_ui_span_expectations(&test.path, mode)?);
         let test_dir = test.path.parent().context("test path has no parent")?;
         let test_stem = test.path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -118,6 +124,10 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
                 if stem.starts_with(test_stem) {
                     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                         if matches!(ext, "c" | "h" | "co2" | "rs") {
+                            sources.insert(
+                                path.file_name().unwrap().to_string_lossy().into_owned(),
+                                std::fs::read_to_string(&path)?,
+                            );
                             ui_spans.extend(parse_ui_span_expectations(&path, mode)?);
                         }
                     }
@@ -129,7 +139,7 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
     let compile = compile_test(root, suite, mode, test, !ui_spans.is_empty())?;
     match suite {
         Suite::Ui => {
-            check_ui(test, mode, &compile.output, &ui_spans)?;
+            check_ui(test, mode, &compile.output, &ui_spans, sources)?;
             Ok(TestOutcome::Pass)
         }
         Suite::Run => {

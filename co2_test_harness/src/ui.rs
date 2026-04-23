@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Output;
@@ -35,6 +36,7 @@ pub fn check_ui(
     mode: Mode,
     output: &Output,
     span_expectations: &[UiSpanExpectation],
+    sources: HashMap<String, String>,
 ) -> Result<()> {
     if output.status.success() {
         bail!("UI test unexpectedly succeeded");
@@ -142,7 +144,7 @@ pub fn check_ui(
                         byte_start: primary_span.byte_start,
                         byte_end: primary_span.byte_end,
                     }),
-                    reason: format!("Unexpected diagnostic in {}: {}", primary_span.file_name, diagnostic.message),
+                    reason: format!("Unexpected diagnostic: {}", diagnostic.message),
                 });
             } else {
                 issues.push(UiTestIssue {
@@ -156,7 +158,7 @@ pub fn check_ui(
     if !issues.is_empty() {
         return Err(UiTestError {
             path: test.path.clone(),
-            source: test.source.clone(),
+            sources,
             issues,
         }
         .into());
