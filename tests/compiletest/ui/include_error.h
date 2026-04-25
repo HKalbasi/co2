@@ -3,7 +3,7 @@
 
 int f() {
     return missing;
-    //     ^^^^^^^ error: Unresolved name
+    //     ^^^^^^^ error: Unresolved name missing
 }
 
 int f2() {

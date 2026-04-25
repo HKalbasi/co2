@@ -622,7 +622,7 @@ where
                     Some((TypeQueryResult::Type, _)) => {
                         Err(Rich::custom(path_span, "expected expression, found type name"))
                     }
-                    None => Err(Rich::custom(path_span, "Unresolved name")),
+                    None => Err(Rich::custom(path_span, format!("Unresolved name {}", path.0))),
                     }
                 }
             }),
@@ -1378,7 +1378,10 @@ where
                         path_span,
                         "expected type name, found expression",
                     )),
-                    None => Err(Rich::custom(path_span, "Unresolved name")),
+                    None => Err(Rich::custom(
+                        path_span,
+                        format!("Unresolved name {}", path.0),
+                    )),
                 }
             }
         }))
@@ -2017,8 +2020,12 @@ where
     })
 }
 
-fn use_tree<'src, I>()
--> impl Parser<'src, I, Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>, extra::Err<Rich<'src, Token, Span>>> + Clone
+fn use_tree<'src, I>() -> impl Parser<
+    'src,
+    I,
+    Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>,
+    extra::Err<Rich<'src, Token, Span>>,
+> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
@@ -2033,7 +2040,8 @@ where
             .ignore_then(identifier())
             .or_not();
 
-        let star = just(Token::Star).map_with(|_, e| vec![(vec![("*".to_string(), e.span())], None)]);
+        let star =
+            just(Token::Star).map_with(|_, e| vec![(vec![("*".to_string(), e.span())], None)]);
 
         let group_or_simple = path
             .then(

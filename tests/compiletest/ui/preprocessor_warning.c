@@ -6,5 +6,5 @@
 
 int main(void) {
     return missing;
-    //     ^^^^^^^ error: Unresolved name
+    //     ^^^^^^^ error: Unresolved name missing
 }

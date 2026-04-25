@@ -8,5 +8,5 @@ use std::missing::thing;
 
 int main() {
     return missing;
-        // ^^^^^^^ error: Unresolved name
+        // ^^^^^^^ error: Unresolved name missing
 }

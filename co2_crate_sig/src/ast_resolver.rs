@@ -583,7 +583,7 @@ impl co2_ast::Transformable<StatelessResolver> for LocalResolver {
         let Some(r) = self.classify_path(path) else {
             self.base
                 .borrow()
-                .terminate_with_error(*span, "Unresolved name");
+                .terminate_with_error(*span, &format!("Unresolved name {}", path));
         };
         (r.1, *span)
     }

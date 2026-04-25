@@ -92,7 +92,7 @@ pub fn check_ui(
     for expected in span_expectations {
         let message_matches = diagnostics.iter().any(|diagnostic| {
             if let Some(message) = &expected.message
-                && !diagnostic.message.contains(message)
+                && diagnostic.message != *message
             {
                 return false;
             }
@@ -107,7 +107,7 @@ pub fn check_ui(
 
         if !message_matches {
             let reason = if let Some(msg) = &expected.message {
-                let found = diagnostics.iter().any(|d| d.message.contains(msg));
+                let found = diagnostics.iter().any(|d| d.message == *msg);
                 if found {
                     format!(
                         "Missing diagnostic span in {} for: {}",
@@ -129,7 +129,7 @@ pub fn check_ui(
     for diagnostic in &diagnostics {
         let matched = span_expectations.iter().any(|expected| {
             if let Some(message) = &expected.message
-                && !diagnostic.message.contains(message)
+                && diagnostic.message != *message
             {
                 return false;
             }
