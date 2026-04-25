@@ -21,6 +21,8 @@ struct ConditionalState {
     current_branch_active: bool,
     /// Whether the parent context is active
     parent_active: bool,
+    /// Line number and col where this conditional started (1-based)
+    position: (usize, usize),
 }
 
 /// Tracks the stack of nested conditionals.
@@ -42,13 +44,14 @@ impl ConditionalStack {
     }
 
     /// Push a new #if/#ifdef/#ifndef.
-    pub fn push_if(&mut self, condition: bool) {
+    pub fn push_if(&mut self, condition: bool, position: (usize, usize)) {
         let parent_active = self.is_active();
         let active = parent_active && condition;
         self.stack.push(ConditionalState {
             any_branch_taken: condition,
             current_branch_active: active,
             parent_active,
+            position,
         });
     }
 
@@ -82,6 +85,11 @@ impl ConditionalStack {
     /// Handle #endif.
     pub fn handle_endif(&mut self) {
         self.stack.pop();
+    }
+
+    /// Returns the line number of the first unclosed conditional.
+    pub fn unclosed_line(&self) -> Option<(usize, usize)> {
+        self.stack.first().map(|s| s.position)
     }
 }
 

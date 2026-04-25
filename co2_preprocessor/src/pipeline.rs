@@ -137,6 +137,17 @@ impl Preprocessor {
         // Emit initial line marker for the main file
         let line_marker = format!("# 1 \"{}\"\n", self.filename);
         let main_output = self.preprocess_source(source, false);
+
+        // Check for unclosed conditionals
+        if let Some((line, col)) = self.conditionals.unclosed_line() {
+            self.errors.push(PreprocessorDiagnostic {
+                file: self.filename.clone(),
+                line,
+                col,
+                message: "Unterminated conditional directive".to_string(),
+            });
+        }
+
         // Prepend any output from force-included files (e.g., pragma synthetic tokens)
         let result = if self.force_include_output.is_empty() {
             let mut result = line_marker;
@@ -689,7 +700,7 @@ impl Preprocessor {
             "ifdef" | "ifndef" | "if" => {
                 if !self.conditionals.is_active() {
                     // In an inactive block, just push a nested inactive conditional
-                    self.conditionals.push_if(false);
+                    self.conditionals.push_if(false, (line_num, col));
                     return None;
                 }
             }
@@ -725,9 +736,9 @@ impl Preprocessor {
             }
             "define" => self.handle_define(rest),
             "undef" => self.handle_undef(rest),
-            "ifdef" => self.handle_ifdef(rest, false),
-            "ifndef" => self.handle_ifdef(rest, true),
-            "if" => self.handle_if(rest),
+            "ifdef" => self.handle_ifdef(rest, false, (line_num, col)),
+            "ifndef" => self.handle_ifdef(rest, true, (line_num, col)),
+            "if" => self.handle_if(rest, (line_num, col)),
             "pragma" => {
                 return self.handle_pragma(rest);
             }
@@ -785,14 +796,14 @@ impl Preprocessor {
         }
     }
 
-    fn handle_ifdef(&mut self, rest: &str, negate: bool) {
+    fn handle_ifdef(&mut self, rest: &str, negate: bool, position: (usize, usize)) {
         let name = rest.split_whitespace().next().unwrap_or("");
         let defined = self.macros.is_defined(name);
         let condition = if negate { !defined } else { defined };
-        self.conditionals.push_if(condition);
+        self.conditionals.push_if(condition, position);
     }
 
-    fn handle_if(&mut self, expr: &str) {
+    fn handle_if(&mut self, expr: &str, position: (usize, usize)) {
         // First resolve `defined(X)` and `__has_*()` before macro expansion
         let resolved = self.resolve_defined_in_expr(expr);
         // Expand macros in the resolved expression (reuse directive_expanding set)
@@ -805,7 +816,7 @@ impl Preprocessor {
         // Replace any remaining identifiers with 0 (standard C behavior for #if)
         let final_expr = self.replace_remaining_idents_with_zero(&expanded);
         let condition = evaluate_condition(&final_expr, &self.macros);
-        self.conditionals.push_if(condition);
+        self.conditionals.push_if(condition, position);
     }
 
     fn handle_elif(&mut self, expr: &str) {

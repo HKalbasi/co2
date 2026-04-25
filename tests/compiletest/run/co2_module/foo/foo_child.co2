@@ -2,6 +2,10 @@ fn f_foo() {
 
 }
 
+#ifndef CHECK_PREPROCESSOR_INDEPENDENCE
+
 fn something_else() {
 
 }
+
+#endif

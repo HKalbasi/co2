@@ -1,6 +1,12 @@
 mod foo_child;
 mod foo_child2;
 
+#define CHECK_PREPROCESSOR_INDEPENDENCE 1
+
+#ifdef CHECK_PREPROCESSOR_INDEPENDENCE
+
 fn f_foo() {
     foo_child::f_foo();
 }
+
+#endif
