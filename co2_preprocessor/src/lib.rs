@@ -204,7 +204,9 @@ pub fn preprocess(input: &Path, cpp_args: &[String]) -> PreprocessedSource {
     let mut preprocessor = Preprocessor::new();
     configure_preprocessor(&mut preprocessor, &input, cpp_args);
 
-    let input_bytes = fs::read_to_string(&input).expect("failed to read C input for preprocessing");
+    let Ok(input_bytes) = fs::read_to_string(&input) else {
+        panic!("Failed to read {input:?}. Ensure you have starting point file in your crate.");
+    };
     let input_source = rewrite_main_source_for_preprocess(&input_bytes);
     let preprocessed = preprocessor.preprocess(&input_source.text);
     let source = build_preprocessed_source(&input, preprocessed, &input_source.boundaries);

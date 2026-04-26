@@ -9,8 +9,8 @@ use std::{
 
 use co2_ast::{
     Declaration, DeclarationSpecifier, Designator, DoTransform as _, FunctionDefinitionSignature,
-    InitDeclarator, StatelessResolver, StorageClassSpecifier, StructOrUnionKind, TranslationUnit,
-    TypeQualifier, TypeResolver,
+    InitDeclarator, ModItem, Rich, StatelessResolver, StorageClassSpecifier, StructOrUnionKind,
+    TranslationUnit, TypeQualifier, TypeResolver,
 };
 use co2_parser::{parse_compound_statement, parse_translation_unit};
 use co2_preprocessor::PreprocessedSource;
@@ -170,21 +170,18 @@ fn child_module_dir(source_path: &Path) -> PathBuf {
     }
 }
 
-fn resolve_module_source(module_dir: &Path, module_name: &str) -> PathBuf {
+fn resolve_module_source(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
     let direct = module_dir.join(format!("{module_name}.co2"));
     if direct.is_file() {
-        return direct;
+        return Some(direct);
     }
 
     let nested = module_dir.join(module_name).join("mod.co2");
     if nested.is_file() {
-        return nested;
+        return Some(nested);
     }
 
-    panic!(
-        "failed to resolve module `{module_name}` in {}",
-        module_dir.display()
-    );
+    None
 }
 
 fn register_preprocessed_files(
@@ -211,11 +208,13 @@ fn load_modules(
     rustc_file_ids: &mut HashMap<co2_ast::FileId, FileId>,
     source_files: &mut HashMap<co2_ast::FileId, (String, Arc<str>)>,
     loaded_paths: &mut HashSet<PathBuf>,
-) -> Vec<LoadedModule> {
+) -> Result<Vec<LoadedModule>, ModItem> {
     let mut modules = Vec::with_capacity(rust_mod_items.len());
 
     for (mod_item, mod_span) in rust_mod_items {
-        let module_path = resolve_module_source(module_dir, &mod_item.name.0);
+        let Some(module_path) = resolve_module_source(module_dir, &mod_item.name.0) else {
+            return Err(mod_item.clone());
+        };
         if !loaded_paths.insert(module_path.clone()) {
             panic!("module loaded multiple times: {}", module_path.display());
         }
@@ -243,7 +242,7 @@ fn load_modules(
             rustc_file_ids,
             source_files,
             loaded_paths,
-        );
+        )?;
 
         modules.push(LoadedModule {
             name: mod_item.name.0.clone(),
@@ -256,7 +255,7 @@ fn load_modules(
         });
     }
 
-    modules
+    Ok(modules)
 }
 
 fn build_module_data_tree(
@@ -632,6 +631,15 @@ pub fn lower_crate_sig(
 
     let ctx = &*Box::leak(Box::new(ctx));
     let mut resolver = Resolver::new(&ctx, deps, &tu, foreign_mod);
+
+    let loaded_modules = match loaded_modules {
+        Ok(l) => l,
+        Err(e) => co2_ast::emit_errors_and_terminate(vec![Rich::custom(
+            e.name.1,
+            format!("file not found for module `{}`", e.name.0),
+        )]),
+    };
+
     for module in &loaded_modules {
         resolver.insert_module_data(
             &[],

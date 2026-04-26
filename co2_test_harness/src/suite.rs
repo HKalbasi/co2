@@ -128,7 +128,7 @@ fn run_test(root: &Path, suite: Suite, test: &TestCase) -> Result<TestOutcome> {
             let path = entry.path();
             if path.is_file() && path != test.path {
                 let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                if stem.starts_with(test_stem) {
+                if stem == test_stem {
                     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
                         if matches!(ext, "c" | "h" | "co2" | "rs") {
                             sources.insert(

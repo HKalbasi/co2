@@ -1,0 +1,9 @@
+//@ mode: co2
+//@ compile-fail
+
+mod missing_mod;
+  //^^^^^^^^^^^ error: file not found for module `missing_mod`
+
+fn main() {
+    driven_by_error; // Don't report this, it is probably going to be fixed with the include.
+}
