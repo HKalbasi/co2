@@ -649,7 +649,8 @@ struct MappedText {
 }
 
 fn normalize_preprocessed_chunk(chunk: &str) -> MappedText {
-    let chunk = strip_gnu_attributes_mapped(chunk);
+    let chunk = strip_balanced_call_mapped(chunk, "__we_dont_need_this_just_create_a_new_mapped__");
+    let chunk = strip_gnu_attributes_mapped(&chunk);
     let chunk = strip_gnu_asm_annotations_mapped(&chunk);
     let chunk = replace_gnu_typeof_with_usize_mapped(&chunk);
     strip_extension_keywords_mapped(&chunk)
@@ -776,8 +777,15 @@ fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn strip_gnu_attributes_mapped(src: &str) -> MappedText {
-    strip_balanced_call_mapped(src, "__attribute__")
+fn strip_gnu_attributes_mapped(src: &MappedText) -> MappedText {
+    let src = compose_boundaries(
+        strip_balanced_call_mapped(src.text.as_str(), "__attribute__"),
+        &src.boundaries,
+    );
+    compose_boundaries(
+        strip_balanced_call_mapped(src.text.as_str(), "__attribute"),
+        &src.boundaries,
+    )
 }
 
 fn strip_gnu_asm_annotations_mapped(src: &MappedText) -> MappedText {
@@ -797,7 +805,7 @@ fn strip_balanced_call_mapped(src: &str, keyword: &str) -> MappedText {
     let mut boundaries = vec![0];
     let mut i = 0usize;
     while i < bytes.len() {
-        if src[i..].starts_with(keyword) {
+        if matches_keyword(src, i, keyword) {
             let mut j = i + keyword.len();
             while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                 j += 1;
@@ -856,11 +864,11 @@ fn replace_gnu_typeof_with_usize_mapped(src: &MappedText) -> MappedText {
     let mut boundaries = vec![0];
     let mut i = 0usize;
     while i < bytes.len() {
-        let kw_len = if src.text[i..].starts_with("__typeof__") {
+        let kw_len = if matches_keyword(&src.text, i, "__typeof__") {
             Some("__typeof__".len())
-        } else if src.text[i..].starts_with("__typeof") {
+        } else if matches_keyword(&src.text, i, "__typeof") {
             Some("__typeof".len())
-        } else if src.text[i..].starts_with("typeof") {
+        } else if matches_keyword(&src.text, i, "typeof") {
             Some("typeof".len())
         } else {
             None
@@ -903,6 +911,15 @@ fn replace_gnu_typeof_with_usize_mapped(src: &MappedText) -> MappedText {
         },
         &src.boundaries,
     )
+}
+
+fn matches_keyword(src: &str, start: usize, kw: &str) -> bool {
+    let bytes = src.as_bytes();
+    src[start..].starts_with(kw)
+        && (start == 0 || !is_ident_continue(bytes[start - 1]))
+        && !bytes
+            .get(start + kw.len())
+            .is_some_and(|b| is_ident_continue(*b))
 }
 
 fn strip_extension_keywords_mapped(src: &MappedText) -> MappedText {
