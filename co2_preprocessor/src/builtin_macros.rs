@@ -31,6 +31,7 @@ pub fn define_builtin_macros(macros: &mut MacroTable) {
     // which properly handles NDEBUG. Code that uses assert() without including
     // <assert.h> will correctly get a compilation error.
     define_type_traits_macros(macros);
+    define_builtin_expect_macros(macros);
 }
 
 /// <limits.h> macros for LP64 (x86-64 Linux)
@@ -461,4 +462,17 @@ fn define_type_traits_macros(macros: &mut MacroTable) {
     def(macros, "SIG_DFL", "((void(*)(int))0)");
     def(macros, "SIG_IGN", "((void(*)(int))1)");
     def(macros, "SIG_ERR", "((void(*)(int))-1)");
+}
+
+/// __builtin_expect macros - treated as identity function (ignoring hint)
+fn define_builtin_expect_macros(macros: &mut MacroTable) {
+    macros.define(MacroDef {
+        name: "__builtin_expect".to_string(),
+        is_function_like: true,
+        params: vec!["x".to_string(), "c".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        // Return just the first argument, ignoring the hint
+        body: "x".to_string(),
+    });
 }
