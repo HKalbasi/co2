@@ -397,7 +397,22 @@ impl Preprocessor {
                     // We do this after preprocessing so that the guard macro is
                     // now defined (the #define inside the file was processed).
                     if let Some(guard) = detected_guard {
-                        self.include_guard_macros.insert(resolved_path, guard);
+                        self.include_guard_macros
+                            .insert(resolved_path.clone(), guard);
+                    }
+
+                    // For math.h, redefine isinf after preprocessing to override
+                    // any definition from the system header that uses unsupported
+                    // __builtin_isinf_sign
+                    if include_path == "math.h" {
+                        self.macros.define(MacroDef {
+                            name: "isinf".to_string(),
+                            is_function_like: true,
+                            params: vec!["x".to_string()],
+                            is_variadic: false,
+                            has_named_variadic: false,
+                            body: "((x) == __builtin_inf() || (x) == -__builtin_inf())".to_string(),
+                        });
                     }
 
                     Some(result)
@@ -769,6 +784,10 @@ impl Preprocessor {
                 });
                 // __gnuc_va_list is also handled natively by the parser/sema/lowerer
                 // (see comment above about not injecting typedef text).
+            }
+            "math.h" => {
+                // isinf will be re-defined after reading the system header
+                // to override any definition that uses unsupported __builtin_isinf_sign
             }
             _ => {}
         }
