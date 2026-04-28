@@ -414,6 +414,14 @@ impl Preprocessor {
                             body: "((x) == __builtin_inf() || (x) == -__builtin_inf())".to_string(),
                         });
                         self.macros.define(MacroDef {
+                            name: "isfinite".to_string(),
+                            is_function_like: true,
+                            params: vec!["x".to_string()],
+                            is_variadic: false,
+                            has_named_variadic: false,
+                            body: "((x) != __builtin_inf() && (x) != -__builtin_inf())".to_string(),
+                        });
+                        self.macros.define(MacroDef {
                             name: "isnan".to_string(),
                             is_function_like: true,
                             params: vec!["x".to_string()],
