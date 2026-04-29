@@ -20,6 +20,75 @@ use crate::{
     ty::{CTy, PrimitiveTy},
 };
 
+fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
+    match expr {
+        Expression::LabelAddress(_) => true,
+        Expression::Field(base, _)
+        | Expression::Arrow(base, _)
+        | Expression::UnaryOp(_, base)
+        | Expression::Sizeof(base) => expr_contains_label_address(&base.0),
+        Expression::Subscript(base, index) | Expression::BinOp(base, _, index) => {
+            expr_contains_label_address(&base.0) || expr_contains_label_address(&index.0)
+        }
+        Expression::Call { func, params } => {
+            expr_contains_label_address(&func.0)
+                || params
+                    .iter()
+                    .any(|param| expr_contains_label_address(&param.0))
+        }
+        Expression::Update { expr, .. } => expr_contains_label_address(&expr.0),
+        Expression::AssignWithOp { lhs, rhs, .. } => {
+            expr_contains_label_address(&lhs.0) || expr_contains_label_address(&rhs.0)
+        }
+        Expression::Cast { expr, .. } => expr_contains_label_address(&expr.0),
+        Expression::Conditional {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_label_address(&cond.0)
+                || expr_contains_label_address(&then_expr.0)
+                || expr_contains_label_address(&else_expr.0)
+        }
+        Expression::CompoundLiteral { initializer, .. } => {
+            initializer_contains_label_address(&initializer.0)
+        }
+        Expression::GenericSelection {
+            controlling,
+            associations,
+        } => {
+            expr_contains_label_address(&controlling.0)
+                || associations.iter().any(|assoc| match &assoc.0 {
+                    co2_ast::GenericAssociation::Type { expr, .. }
+                    | co2_ast::GenericAssociation::Default { expr } => {
+                        expr_contains_label_address(&expr.0)
+                    }
+                })
+        }
+        Expression::VaStart { args, .. } | Expression::VaEnd { args } => {
+            expr_contains_label_address(&args.0)
+        }
+        Expression::VaArg { args, .. } => expr_contains_label_address(&args.0),
+        Expression::Identifier(_)
+        | Expression::Empty
+        | Expression::Constant(_)
+        | Expression::SizeofType(_)
+        | Expression::Offsetof { .. }
+        | Expression::GnuStatementExpr { .. } => false,
+    }
+}
+
+fn initializer_contains_label_address<R: TypeResolver>(
+    initializer: &co2_ast::Initializer<R>,
+) -> bool {
+    match initializer {
+        co2_ast::Initializer::Expr(expr) => expr_contains_label_address(&expr.0),
+        co2_ast::Initializer::List(items) => items
+            .iter()
+            .any(|item| initializer_contains_label_address(&item.0.initializer.0)),
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct StructAndEnumData {
     pub struct_tags: im::HashMap<String, DefId>,
@@ -517,7 +586,13 @@ impl co2_ast::TypeResolver for LocalResolver {
                                 TypeQueryResult::Type,
                             ),
                         );
-                    } else if is_static {
+                    } else if is_static
+                        && !decl
+                            .0
+                            .initializer
+                            .as_ref()
+                            .is_some_and(|init| initializer_contains_label_address(&init.0))
+                    {
                         let mut base = next.base.borrow_mut();
                         let (def_id, fake_name) =
                             base.emit_fake_def(rustc_public_generative::DefData::ValueNs);

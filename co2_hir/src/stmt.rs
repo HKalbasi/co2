@@ -17,6 +17,7 @@ pub enum HirStmt {
     Expr(HirExpr),
     Label(LabelId, RustSpan),
     Goto(LabelId, RustSpan),
+    IndirectGoto(HirExpr, RustSpan),
     Return(Option<HirExpr>, RustSpan),
     If {
         cond: HirExpr,
@@ -34,7 +35,6 @@ impl HirCtx<'_> {
         locals: &mut Arena<HirLocal>,
         local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<(), String> {
-        let mut hoisted_zeroed_decls = Vec::new();
         let mut body_stmts = Vec::new();
         for (stmt_or_decl, _) in compound.statements {
             let mut lowered = Vec::new();
@@ -57,13 +57,12 @@ impl HirCtx<'_> {
                         ..
                     })
                 ) {
-                    hoisted_zeroed_decls.push(stmt);
+                    self.hoist_zeroed_decl(stmt);
                 } else {
                     body_stmts.push(stmt);
                 }
             }
         }
-        out.extend(hoisted_zeroed_decls);
         out.extend(body_stmts);
         Ok(())
     }
@@ -139,6 +138,16 @@ impl HirCtx<'_> {
             }
             Statement::Goto(name) => {
                 out.push(HirStmt::Goto(self.resolve_or_insert_label(name.0), span))
+            }
+            Statement::IndirectGoto(expr) => {
+                let expr = self.lower_expr(expr, locals, local_map)?;
+                if !is_condition_ty(expr.ty) {
+                    return Err(format!(
+                        "indirect goto operand must be scalar-like, got {:?}",
+                        expr.ty
+                    ));
+                }
+                out.push(HirStmt::IndirectGoto(expr, span));
             }
             Statement::Label { name, statement } => {
                 out.push(HirStmt::Label(self.resolve_or_insert_label(name.0), span));

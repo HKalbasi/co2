@@ -146,7 +146,12 @@ pub enum HirExprKind {
     ConstInt(i128),
     ConstFloat(f64),
     ConstStr(String),
+    LabelAddress(crate::LabelId),
     Zeroed,
+    UnionAggregate {
+        active_field: usize,
+        arg: Box<HirExpr>,
+    },
     Field {
         base: Box<HirExpr>,
         index: usize,
@@ -839,6 +844,16 @@ impl HirCtx<'_> {
                     panic!("Invalid type in expression")
                 }
             },
+            Expression::LabelAddress(label) => {
+                if self.function_name.is_none() {
+                    return Err("GNU label address is only valid inside a function body".to_owned());
+                }
+                Ok(HirExpr {
+                    kind: HirExprKind::LabelAddress(self.resolve_or_insert_label(label.0)),
+                    ty: Ty::usize_ty(),
+                    span,
+                })
+            }
             Expression::Constant(Constant::Int(v, suffix)) => Ok(HirExpr {
                 kind: HirExprKind::ConstInt(v),
                 ty: int_suffix_ty(suffix, v),
@@ -1212,7 +1227,7 @@ impl HirCtx<'_> {
                 }
                 Ok(HirExpr {
                     kind: HirExprKind::ConstInt(offset_bytes as i128),
-                    ty: Ty::signed_ty(IntTy::I32),
+                    ty: Ty::usize_ty(),
                     span,
                 })
             }
@@ -1646,7 +1661,7 @@ impl HirCtx<'_> {
                         });
                     }
                     (true, true) => {
-                        return Err("type error: adding two pointers is not supported".to_owned());
+                        return Err("type error: adding two pointers is invalid".to_owned());
                     }
                     _ => {}
                 }
@@ -1694,11 +1709,14 @@ impl HirCtx<'_> {
         if is_numeric_ty(lhs.ty)
             && is_numeric_ty(rhs.ty)
             && !matches!(op, HirBinOp::Shl | HirBinOp::Shr)
-            && lhs.ty != rhs.ty
+            && (lhs.ty != rhs.ty || lhs.ty.kind().is_bool())
         {
-            let Some(common_ty) = common_numeric_ty(lhs.ty, rhs.ty) else {
+            let Some(mut common_ty) = common_numeric_ty(lhs.ty, rhs.ty) else {
                 return Err("failed to find common ty in binop".to_owned());
             };
+            if common_ty.kind().is_bool() {
+                common_ty = Ty::signed_ty(IntTy::I32);
+            }
             if !is_assignment {
                 lhs = HirExpr {
                     kind: HirExprKind::Cast(Box::new(lhs.clone())),
@@ -1790,6 +1808,30 @@ impl HirCtx<'_> {
                     let Some(field_tys) = adt_field_tys(ty) else {
                         self.terminate_with_error(parser_span, "Can't compute adt fields");
                     };
+                    if matches!(ty.kind(), TyKind::RigidTy(RigidTy::Adt(adt, _)) if adt.kind().is_union())
+                    {
+                        let Some((active_field, child)) = children
+                            .iter()
+                            .enumerate()
+                            .find(|(_, child)| !matches!(child, InitializerTree::Zeroed))
+                        else {
+                            return HirExpr {
+                                kind: HirExprKind::Zeroed,
+                                ty,
+                                span,
+                            };
+                        };
+                        let field_ty = field_tys[active_field];
+                        let arg = self.initializer_tree_to_expr(child, field_ty, parser_span);
+                        return HirExpr {
+                            kind: HirExprKind::UnionAggregate {
+                                active_field,
+                                arg: Box::new(arg),
+                            },
+                            ty,
+                            span,
+                        };
+                    }
                     let mut args = Vec::with_capacity(children.len());
                     for (child, field_ty) in children.iter().zip(field_tys) {
                         let expr = self.initializer_tree_to_expr(child, field_ty, parser_span);

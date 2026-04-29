@@ -607,9 +607,14 @@ impl Resolver {
                 .resolve_path(prefix.into_iter().chain(rest.iter().copied()));
         }
 
+        // Only treat the first segment as a crate name when the path has `::` separators.
+        // A bare identifier (e.g. `memchr`) can never be a crate path — crate references
+        // always look like `crate_name::item`. Without this guard, a C extern whose name
+        // collides with a Rust dependency crate (e.g. the `memchr` crate) would be resolved
+        // against the crate instead of the current module scope.
         let mut crate_name = first;
         normalize_crate_name(&mut crate_name);
-        if self.dependencies.contains_key(crate_name) {
+        if parts.len() > 1 && self.dependencies.contains_key(crate_name) {
             return self.resolve(path);
         }
 

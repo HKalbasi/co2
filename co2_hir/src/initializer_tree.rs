@@ -19,7 +19,7 @@ pub(crate) enum InitializerTree {
     Zeroed,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct InitializerCursor {
     base_ty: Ty,
     stack: Vec<(usize, Ty)>,
@@ -358,22 +358,77 @@ impl HirCtx<'_> {
                 };
 
                 for (item, item_span) in items {
+                    let mut repeated_range = None;
                     if let Some(designators) = &item.designators {
-                        cursor = InitializerCursor::from_designators(
-                            self,
-                            designators,
-                            expected_ty,
-                            self.to_rust_span(item_span),
-                        )?;
+                        let range_tail = designators.split_last().and_then(|(last, prefix)| {
+                            if prefix.iter().any(|(designator, _)| {
+                                matches!(designator, Designator::Range(_, _))
+                            }) {
+                                self.terminate_with_error(
+                                    item_span,
+                                    "GNU range designator is only supported as the last designator",
+                                );
+                            }
+                            match &last.0 {
+                                Designator::Range(start, end) => Some((prefix, start, end, last.1)),
+                                _ => None,
+                            }
+                        });
+                        if let Some((prefix, start, end, range_span)) = range_tail {
+                            cursor = if prefix.is_empty() {
+                                InitializerCursor {
+                                    base_ty: expected_ty,
+                                    stack: vec![],
+                                }
+                            } else {
+                                InitializerCursor::from_designators(
+                                    self,
+                                    prefix,
+                                    expected_ty,
+                                    self.to_rust_span(item_span),
+                                )?
+                            };
+                            let start_idx = eval_const_expr_as_usize(&self.decl_resolver, start)?;
+                            let end_idx = eval_const_expr_as_usize(&self.decl_resolver, end)?;
+                            if end_idx < start_idx {
+                                self.terminate_with_error(
+                                    range_span,
+                                    "GNU range designator end must be >= start",
+                                );
+                            }
+                            let elem_ty = array_elem_ty(cursor.ty()).ok_or_else(|| {
+                                format!(
+                                    "GNU range designator used on non-array type: {:?}",
+                                    cursor.ty()
+                                )
+                            })?;
+                            repeated_range = Some((start_idx, end_idx, elem_ty));
+                        } else {
+                            cursor = InitializerCursor::from_designators(
+                                self,
+                                designators,
+                                expected_ty,
+                                self.to_rust_span(item_span),
+                            )?;
+                        }
                     }
-                    if cursor.stack.is_empty() {
+                    if cursor.stack.is_empty() && repeated_range.is_none() {
                         // Overflowing item, emit warning
                         continue;
                     }
+                    let mut range_value_cursor = cursor.clone();
+                    if let Some((start_idx, _, elem_ty)) = repeated_range {
+                        range_value_cursor.stack.push((start_idx, elem_ty));
+                    }
+                    let value_cursor = if repeated_range.is_some() {
+                        &mut range_value_cursor
+                    } else {
+                        &mut cursor
+                    };
                     let node = if let Initializer::Expr(expr) = item.initializer.0 {
                         if matches!(expr.0, Expression::Constant(co2_ast::Constant::String(_))) {
                             loop {
-                                let terminal = match cursor.ty().kind() {
+                                let terminal = match value_cursor.ty().kind() {
                                     TyKind::RigidTy(rigid_ty) => match rigid_ty {
                                         RigidTy::Adt(..) => false,
                                         RigidTy::Array(inner, _) => inner.kind().is_primitive(),
@@ -383,13 +438,13 @@ impl HirCtx<'_> {
                                 };
                                 if terminal {
                                     break self.lower_to_initializer_tree(
-                                        cursor.ty(),
+                                        value_cursor.ty(),
                                         (Initializer::Expr(expr), item_span),
                                         locals,
                                         local_map,
                                     );
                                 }
-                                if !cursor.go_through() {
+                                if !value_cursor.go_through() {
                                     self.terminate_with_error(
                                         item_span,
                                         "failed to lower string literal as initializer tree",
@@ -400,11 +455,12 @@ impl HirCtx<'_> {
                             let mut expr = self.lower_expr(expr, locals, local_map)?;
                             self.array_to_pointer_decay_if_array(&mut expr);
                             loop {
-                                if let Ok(coerced) = coerce_expr_to_type(expr.clone(), cursor.ty())
+                                if let Ok(coerced) =
+                                    coerce_expr_to_type(expr.clone(), value_cursor.ty())
                                 {
                                     break InitializerTree::Leaf(coerced);
                                 }
-                                if !cursor.go_through() {
+                                if !value_cursor.go_through() {
                                     self.terminate_with_error(
                                         item_span,
                                         "failed to lower initializer tree",
@@ -414,13 +470,22 @@ impl HirCtx<'_> {
                         }
                     } else {
                         self.lower_to_initializer_tree(
-                            cursor.ty(),
+                            value_cursor.ty(),
                             item.initializer,
                             locals,
                             local_map,
                         )
                     };
-                    cursor.insert_to_tree(&mut result, node);
+                    if let Some((start_idx, end_idx, elem_ty)) = repeated_range {
+                        for idx in start_idx..=end_idx {
+                            let mut range_cursor = cursor.clone();
+                            range_cursor.stack.push((idx, elem_ty));
+                            range_cursor.insert_to_tree(&mut result, node.clone());
+                        }
+                        cursor.stack.push((end_idx, elem_ty));
+                    } else {
+                        cursor.insert_to_tree(&mut result, node);
+                    }
                     cursor.go_next(span)?;
                 }
                 Ok(result)

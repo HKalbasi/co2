@@ -121,6 +121,7 @@ pub(crate) fn common_numeric_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
     };
 
     let ty = match (rank, unsigned) {
+        (0, _) => Ty::bool_ty(),
         (1, false) => Ty::signed_ty(IntTy::I8),
         (2, false) => Ty::signed_ty(IntTy::I16),
         (3, false) => Ty::signed_ty(IntTy::I32),

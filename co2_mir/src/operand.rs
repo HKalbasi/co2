@@ -368,6 +368,17 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
                 let local_index = self.local_to_index(*local);
                 self.place_operand_for_ty(place(local_index), self.locals[local_index].ty)
             }
+            HirExprKind::LabelAddress(label) => {
+                let discr = *self
+                    .label_discriminants
+                    .get(label)
+                    .unwrap_or_else(|| panic!("missing label discriminant for `{label:?}`"));
+                self.lower_expr_to_operand(&HirExpr {
+                    kind: HirExprKind::ConstInt(discr as i128),
+                    ty: expr.ty,
+                    span: expr.span,
+                })
+            }
             HirExprKind::ConstInt(v) => {
                 let span = expr.span;
                 let (uint_ty, bits) = crate::rvalue::int_literal_bits(*v, expr.ty);
@@ -623,6 +634,30 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
                     panic!("aggregate initializer expects adt type, got {:?}", expr.ty);
                 }
             },
+            HirExprKind::UnionAggregate { active_field, arg } => {
+                let TyKind::RigidTy(RigidTy::Adt(adt, adt_args)) = expr.ty.kind() else {
+                    panic!("union aggregate expects adt type, got {:?}", expr.ty);
+                };
+                let operand = self.lower_expr_to_operand(arg);
+                let tmp = self.new_temp(expr.ty, Mutability::Mut, expr.span);
+                self.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(tmp),
+                        Rvalue::Aggregate(
+                            AggregateKind::Adt(
+                                adt,
+                                variant_idx(0),
+                                adt_args,
+                                None,
+                                Some(*active_field),
+                            ),
+                            vec![operand],
+                        ),
+                    ),
+                    span: expr.span,
+                });
+                MirOperand::Copy(place(tmp))
+            }
             HirExprKind::ConstStr(s) => self.lower_const_string(s, expr.span),
             HirExprKind::Path(path) => match path {
                 ResolvedValue::Fn(fn_def, generic_args) => {

@@ -380,6 +380,7 @@ impl<A: TypeResolver> DoTransform for Expression<A> {
             Expression::Empty => Expression::Empty,
             Expression::Constant(constant) => Expression::Constant(constant.clone()),
             Expression::Identifier(path) => Expression::Identifier(b.transform_path(path)),
+            Expression::LabelAddress(label) => Expression::LabelAddress(label.clone()),
             Expression::Field(e, name) => Expression::Field(e.transform(b), name.clone()),
             Expression::Arrow(e, name) => Expression::Arrow(e.transform(b), name.clone()),
             Expression::Subscript(e1, e2) => {

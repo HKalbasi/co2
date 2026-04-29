@@ -760,7 +760,10 @@ impl Preprocessor {
     }
 
     fn handle_define(&mut self, rest: &str) {
-        if let Some(def) = parse_define(rest) {
+        if let Some(mut def) = parse_define(rest) {
+            if def.name == "offsetof" && def.is_function_like && def.params == ["type", "field"] {
+                def.body = "__builtin_offsetof(type, field)".to_string();
+            }
             self.macros.define(def);
         }
     }

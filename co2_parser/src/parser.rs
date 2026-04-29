@@ -250,9 +250,13 @@ where
             .map(|exp| Statement::Return(exp))
             .then_ignore(just(Token::Semicolon));
         let goto_statement = just(Token::Goto)
-            .ignore_then(identifier())
-            .then_ignore(just(Token::Semicolon))
-            .map(Statement::Goto);
+            .ignore_then(
+                just(Token::Star)
+                    .ignore_then(expression_rec.clone())
+                    .map(Statement::IndirectGoto)
+                    .or(identifier().map(Statement::Goto)),
+            )
+            .then_ignore(just(Token::Semicolon));
         let break_statement = just(Token::Break)
             .then_ignore(just(Token::Semicolon))
             .to(Statement::Break);
@@ -638,6 +642,9 @@ where
                 )
                 .then_ignore(just(Token::RParen))
                 .to(Expression::Constant(Constant::Float(f64::NAN))),
+            just(Token::And)
+                .ignore_then(identifier())
+                .map(Expression::LabelAddress),
             expression(rec.clone())
                 .delimited_by(just(Token::LParen), just(Token::RParen))
                 .map(|x: Spanned<Expression<R>>| x.0),
@@ -1492,6 +1499,7 @@ where
         just(Token::Const).to(TypeQualifier::Const),
         just(Token::Restrict).to(TypeQualifier::Restrict),
         just(Token::Volatile).to(TypeQualifier::Volatile),
+        just(Token::Atomic).to(TypeQualifier::Atomic),
     ])
     .labelled("Type qualifier")
     .map_with(|r, e| (r, e.span()))

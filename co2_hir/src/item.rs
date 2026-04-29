@@ -215,6 +215,9 @@ impl HirCtx<'_> {
 
         let mut stmts = Vec::new();
         self.lower_compound_items(compound, &mut stmts, &mut locals, &mut local_map)?;
+        let mut hoisted = self.take_hoisted_zeroed_decls();
+        hoisted.extend(stmts);
+        let stmts = hoisted;
 
         Ok(HirBody {
             locals,

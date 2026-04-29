@@ -271,12 +271,9 @@ impl Preprocessor {
         // Function-like predefined macros: (name, params, body)
         // Note: __builtin_expect is handled as a real builtin (not a macro)
         // to properly evaluate side effects in the second argument.
+        // __builtin_offsetof is also handled by the lexer/parser directly so
+        // static initializers can lower it without preprocessor macro expansion.
         const PREDEFINED_FUNC_MACROS: &[(&str, &[&str], &str)] = &[
-            (
-                "__builtin_offsetof",
-                &["type", "member"],
-                "((unsigned long)&((type *)0)->member)",
-            ),
             // __has_builtin, __has_attribute, __has_feature, __has_extension,
             // __has_include, and __has_include_next are NOT defined as macros.
             // They are handled as special preprocessor operators:

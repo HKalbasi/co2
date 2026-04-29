@@ -39,6 +39,29 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
                 let bb = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, *span);
                 self.pending_gotos.push((bb, *label));
             }
+            HirStmt::IndirectGoto(expr, span) => {
+                let discr_expr = if matches!(
+                    expr.ty.kind(),
+                    TyKind::RigidTy(RigidTy::RawPtr(_, _) | RigidTy::FnPtr(_))
+                ) {
+                    HirExpr {
+                        kind: HirExprKind::Cast(Box::new(expr.clone())),
+                        ty: Ty::usize_ty(),
+                        span: expr.span,
+                    }
+                } else {
+                    expr.clone()
+                };
+                let discr = self.lower_expr_to_operand(&discr_expr);
+                let bb = self.push_terminator(
+                    TerminatorKind::SwitchInt {
+                        discr,
+                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
+                    },
+                    *span,
+                );
+                self.pending_indirect_gotos.push(bb);
+            }
             HirStmt::Return(expr, span) => {
                 if let Some(expr) = expr {
                     if let HirExprKind::Call { func, args } = &expr.kind {
@@ -159,6 +182,9 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
                 .unwrap_or_else(|| panic!("unresolved label id `{label:?}`"));
             self.patch_goto_target(bb, target);
         }
+        for bb in std::mem::take(&mut self.pending_indirect_gotos) {
+            self.patch_indirect_goto_targets(bb);
+        }
     }
 
     pub(crate) fn emit_call_block(
@@ -217,6 +243,31 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
         match &mut self.blocks[block_idx].terminator.kind {
             TerminatorKind::SwitchInt { targets, .. } => {
                 *targets = SwitchTargets::new(vec![(0, else_bb)], then_bb);
+            }
+            _ => panic!("expected switchint terminator at block {block_idx}"),
+        }
+    }
+
+    fn patch_indirect_goto_targets(&mut self, block_idx: usize) {
+        let mut branches = self
+            .label_discriminants
+            .iter()
+            .map(|(label, discr)| {
+                let target = *self
+                    .label_blocks
+                    .get(label)
+                    .unwrap_or_else(|| panic!("unresolved label id `{label:?}`"));
+                (*discr, target)
+            })
+            .collect::<Vec<_>>();
+        branches.sort_by_key(|(discr, _)| *discr);
+        let otherwise = branches
+            .first()
+            .map(|(_, target)| *target)
+            .unwrap_or_else(|| panic!("indirect goto requires at least one named label"));
+        match &mut self.blocks[block_idx].terminator.kind {
+            TerminatorKind::SwitchInt { targets, .. } => {
+                *targets = SwitchTargets::new(branches, otherwise);
             }
             _ => panic!("expected switchint terminator at block {block_idx}"),
         }

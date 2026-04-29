@@ -37,6 +37,7 @@ pub use transform::{DoTransform, Transformable};
 pub enum Statement<R: TypeResolver> {
     Empty,
     Goto(Spanned<String>),
+    IndirectGoto(Spanned<Expression<R>>),
     Break,
     Continue,
     Switch {
@@ -97,6 +98,7 @@ pub enum Expression<R: TypeResolver> {
     Empty,
     Constant(Constant),
     Identifier(Spanned<R::ResolvedRustPath>),
+    LabelAddress(Spanned<String>),
     Field(Box<Spanned<Expression<R>>>, Spanned<String>),
     Arrow(Box<Spanned<Expression<R>>>, Spanned<String>),
     Subscript(Box<Spanned<Expression<R>>>, Box<Spanned<Expression<R>>>),
@@ -416,6 +418,7 @@ pub enum TypeQualifier {
     Const,
     Restrict,
     Volatile,
+    Atomic,
 }
 
 #[derive(Debug, Clone, Copy)]

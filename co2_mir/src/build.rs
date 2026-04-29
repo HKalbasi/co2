@@ -42,7 +42,15 @@ pub fn build_mir_for_body(
         blocks: Vec::new(),
         stmts: Vec::new(),
         label_blocks: HashMap::new(),
+        label_discriminants: body
+            .labels
+            .iter()
+            .filter(|(_, label)| label.name.is_some())
+            .enumerate()
+            .map(|(idx, (label_id, _))| (label_id, idx as u128 + 1))
+            .collect(),
         pending_gotos: Vec::new(),
+        pending_indirect_gotos: Vec::new(),
         span,
         wellknown_defs,
     };
@@ -74,7 +82,9 @@ pub(crate) struct Builder<'ctx, 'tcx> {
     pub(crate) blocks: Vec<rustc_gen::rustc_public::mir::BasicBlock>,
     pub(crate) stmts: Vec<rustc_gen::rustc_public::mir::Statement>,
     pub(crate) label_blocks: HashMap<LabelId, usize>,
+    pub(crate) label_discriminants: HashMap<LabelId, u128>,
     pub(crate) pending_gotos: Vec<(usize, LabelId)>,
+    pub(crate) pending_indirect_gotos: Vec<usize>,
     pub(crate) span: RustSpan,
     pub(crate) c_variadic_local: Option<usize>,
 }

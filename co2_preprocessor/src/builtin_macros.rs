@@ -456,6 +456,78 @@ fn define_builtin_expect_macros(macros: &mut MacroTable) {
         params: vec!["obj".to_string(), "arg".to_string(), "order".to_string()],
         is_variadic: false,
         has_named_variadic: false,
-        body: "((*(obj)) += (arg), (*(obj)) - (arg))".to_string(),
+        body: "({ __typeof__(*(obj)) __co2_old = *(obj); *(obj) += (arg); __co2_old; })"
+            .to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_fetch_sub".to_string(),
+        is_function_like: true,
+        params: vec!["obj".to_string(), "arg".to_string(), "order".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "({ __typeof__(*(obj)) __co2_old = *(obj); *(obj) -= (arg); __co2_old; })"
+            .to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_fetch_or".to_string(),
+        is_function_like: true,
+        params: vec!["obj".to_string(), "arg".to_string(), "order".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "({ __typeof__(*(obj)) __co2_old = *(obj); *(obj) |= (arg); __co2_old; })"
+            .to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_fetch_xor".to_string(),
+        is_function_like: true,
+        params: vec!["obj".to_string(), "arg".to_string(), "order".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "({ __typeof__(*(obj)) __co2_old = *(obj); *(obj) ^= (arg); __co2_old; })"
+            .to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_fetch_and".to_string(),
+        is_function_like: true,
+        params: vec!["obj".to_string(), "arg".to_string(), "order".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "({ __typeof__(*(obj)) __co2_old = *(obj); *(obj) &= (arg); __co2_old; })"
+            .to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_load_n".to_string(),
+        is_function_like: true,
+        params: vec!["obj".to_string(), "order".to_string()],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "(*(obj))".to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_store_n".to_string(),
+        is_function_like: true,
+        params: vec![
+            "obj".to_string(),
+            "desired".to_string(),
+            "order".to_string(),
+        ],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "((*(obj)) = (desired))".to_string(),
+    });
+    macros.define(MacroDef {
+        name: "__atomic_compare_exchange_n".to_string(),
+        is_function_like: true,
+        params: vec![
+            "obj".to_string(),
+            "expected".to_string(),
+            "desired".to_string(),
+            "weak".to_string(),
+            "success".to_string(),
+            "failure".to_string(),
+        ],
+        is_variadic: false,
+        has_named_variadic: false,
+        body: "({ int __co2_ok = (*(obj)) == (*(expected)); if (__co2_ok) { *(obj) = (desired); } else { *(expected) = *(obj); } __co2_ok; })".to_string(),
     });
 }
