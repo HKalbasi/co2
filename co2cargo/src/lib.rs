@@ -71,6 +71,7 @@ fn run_cargo(args: &[String]) -> i32 {
     let mut cmd = Command::new("cargo");
     cmd.args(args);
     cmd.env("RUSTC", "co2rustc");
+    cmd.env("CARGO_INCREMENTAL", "0");
 
     let status = cmd.status().expect("failed to execute cargo");
 
