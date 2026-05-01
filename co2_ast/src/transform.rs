@@ -474,6 +474,7 @@ impl<A: TypeResolver> DoTransform for RustFunctionSignature<A> {
             name: (B::transform_decl_ident(&self.name.0), self.name.1),
             params: self.params.transform(b),
             ret_ty: self.ret_ty.transform(b),
+            is_pub: self.is_pub,
         }
     }
 }

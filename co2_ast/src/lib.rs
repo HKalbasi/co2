@@ -777,6 +777,7 @@ pub struct RustFunctionSignature<R: TypeResolver> {
     pub name: Spanned<R::DeclarationIdent>,
     pub params: Vec<RustFunctionParam<R>>,
     pub ret_ty: Spanned<RustTy<R>>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]

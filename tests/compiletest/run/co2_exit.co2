@@ -15,7 +15,7 @@ fn fibo(n: i32) -> i32 {
 
 #define END_LINE '\n'
 
-fn fill_buf(buf: *mut u8) {
+pub fn fill_buf(buf: *mut u8) {
     buf[0] = 'c';
     buf[1] = 'o';
     buf[2] = '2';

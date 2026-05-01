@@ -1796,20 +1796,27 @@ where
         .or_not()
         .map_with(|ret, e| ret.unwrap_or_else(|| (RustTy::Tuple(vec![]), e.span())));
 
-    fn_token()
-        .ignore_then(identifier())
+    let pub_token = just(Token::Ident("pub".to_string()))
+        .or_not()
+        .map(|opt| opt.is_some());
+
+    pub_token
+        .then(fn_token())
+        .map(|(is_pub, _)| is_pub)
+        .then(identifier())
         .then(params)
         .then(ret)
         .then(lazy_compound_statement())
         .map({
             let resolver = resolver.clone();
-            move |(((name, params), ret_ty), body)| {
+            move |((((is_pub, name), params), ret_ty), body)| {
                 let name_span = name.1;
                 Declaration::FunctionDefinition {
                     signature: FunctionDefinitionSignature::Rust(RustFunctionSignature {
                         name: (resolver.register_ident(name.0), name_span),
                         params,
                         ret_ty,
+                        is_pub,
                     }),
                     body,
                 }
