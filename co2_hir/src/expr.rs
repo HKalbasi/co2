@@ -1992,18 +1992,22 @@ impl HirCtx<'_> {
             } else {
                 match (lhs_is_ptr, rhs_is_ptr) {
                     (true, false) if is_numeric_ty(rhs.ty) => {
-                        let rhs_ty = rhs.ty;
+                        let offset_ty = Ty::signed_ty(IntTy::Isize);
                         let neg_rhs = HirExpr {
                             kind: HirExprKind::Binary {
                                 op: HirBinOp::Sub,
                                 lhs: Box::new(HirExpr {
                                     kind: HirExprKind::ConstInt(0),
-                                    ty: rhs_ty,
+                                    ty: offset_ty,
                                     span,
                                 }),
-                                rhs: Box::new(rhs),
+                                rhs: Box::new(HirExpr {
+                                    kind: HirExprKind::Cast(Box::new(rhs)),
+                                    ty: offset_ty,
+                                    span,
+                                }),
                             },
-                            ty: rhs_ty,
+                            ty: offset_ty,
                             span,
                         };
                         return Ok(HirExpr {
