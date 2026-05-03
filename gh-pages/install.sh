@@ -3,7 +3,7 @@
 set -e
 
 REPO="hkalbasi/co2"
-API="https://aapi.github.com/repos/${REPO}"
+API="https://api.github.com/repos/${REPO}"
 INSTALLER="co2-multicall.run"
 
 # Find a writable directory in PATH (prefer shortest)
