@@ -628,9 +628,13 @@ fn rewrite_hidden_macros_in_directive(
             ));
             i += consumed;
         } else {
-            rewritten.push(line.as_bytes()[i] as char);
-            i += 1;
-            boundaries.push(absolute_start + i);
+            let c = line[i..].chars().next().unwrap();
+            let consumed = c.len_utf8();
+            rewritten.push(c);
+            i += consumed;
+            for _ in 0..consumed {
+                boundaries.push(absolute_start + i);
+            }
         }
     }
 }
@@ -832,9 +836,13 @@ fn strip_balanced_call_mapped(src: &str, keyword: &str) -> MappedText {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
-        boundaries.push(i);
+        let c = src[i..].chars().next().unwrap();
+        let consumed = c.len_utf8();
+        out.push(c);
+        i += consumed;
+        for _ in 0..consumed {
+            boundaries.push(i);
+        }
     }
     MappedText {
         text: out,
@@ -900,9 +908,13 @@ fn replace_gnu_typeof_with_usize_mapped(src: &MappedText) -> MappedText {
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
-        boundaries.push(i);
+        let c = src.text[i..].chars().next().unwrap();
+        let consumed = c.len_utf8();
+        out.push(c);
+        i += consumed;
+        for _ in 0..consumed {
+            boundaries.push(i);
+        }
     }
     compose_boundaries(
         MappedText {
@@ -914,6 +926,9 @@ fn replace_gnu_typeof_with_usize_mapped(src: &MappedText) -> MappedText {
 }
 
 fn matches_keyword(src: &str, start: usize, kw: &str) -> bool {
+    if !src.is_char_boundary(start) {
+        return false;
+    }
     let bytes = src.as_bytes();
     src[start..].starts_with(kw)
         && (start == 0 || !is_ident_continue(bytes[start - 1]))
@@ -960,9 +975,13 @@ fn strip_extension_keywords_mapped(src: &MappedText) -> MappedText {
                 }
             }
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
-            boundaries.push(i);
+            let c = src.text[i..].chars().next().unwrap();
+            let consumed = c.len_utf8();
+            out.push(c);
+            i += consumed;
+            for _ in 0..consumed {
+                boundaries.push(i);
+            }
         }
     }
     compose_boundaries(
