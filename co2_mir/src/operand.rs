@@ -1577,6 +1577,19 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
             });
             return MirOperand::Copy(place(tmp));
         }
+        if src_mu_fn_ptr.is_some() && dst_is_ptr {
+            let src_fn_ptr_ty = src_mu_fn_ptr.expect("checked is_some");
+            let fn_ptr_op = self.read_maybe_uninit_as(inner_op, src_ty, src_fn_ptr_ty, span);
+            let tmp = self.new_temp(dst_ty, Mutability::Mut, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(
+                    place(tmp),
+                    Rvalue::Cast(CastKind::FnPtrToPtr, fn_ptr_op, dst_ty),
+                ),
+                span,
+            });
+            return MirOperand::Copy(place(tmp));
+        }
         if dst_mu_fn_ptr.is_some() && src_is_fn_ptr {
             return self.write_value_into_maybe_uninit_storage(dst_ty, inner_op, src_ty, span);
         }

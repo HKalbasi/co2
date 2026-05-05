@@ -1272,6 +1272,9 @@ impl HirCtx<'_> {
                 let mut inner = self.lower_expr(*expr, locals, local_map)?;
                 self.array_to_pointer_decay_if_array(&mut inner);
                 let target_ty = self.lower_type_name(*type_name, parser_span)?;
+                if ty_matches_expected(target_ty, inner.ty) {
+                    return Ok(inner);
+                }
                 let src_is_int = is_numeric_ty(inner.ty);
                 let dst_is_int = is_numeric_ty(target_ty);
                 let src_is_ptr_like = matches!(
@@ -2237,6 +2240,17 @@ impl HirCtx<'_> {
             },
             InitializerTree::Middle { children } => {
                 if let Some(elem_ty) = array_elem_ty(ty) {
+                    if matches!(
+                        ty.kind(),
+                        TyKind::RigidTy(RigidTy::Array(_, len))
+                            if len.eval_target_usize().ok() == Some(0)
+                    ) {
+                        return HirExpr {
+                            kind: HirExprKind::Zeroed,
+                            ty,
+                            span,
+                        };
+                    }
                     let mut args = Vec::with_capacity(children.len());
                     for child in children {
                         let expr = self.initializer_tree_to_expr(child, elem_ty, parser_span);

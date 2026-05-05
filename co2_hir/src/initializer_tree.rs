@@ -74,6 +74,7 @@ impl InitializerCursor {
                         cursor_ty = next_ty;
                     }
                     assert_eq!(cursor_ty, field_ty);
+                    current_ty = field_ty;
                 }
             }
         }
@@ -327,6 +328,23 @@ impl HirCtx<'_> {
                 Ok(InitializerTree::Leaf(coerced))
             }
             Initializer::List(items) => {
+                if let [
+                    (
+                        InitializerItem {
+                            designators: None,
+                            initializer: (Initializer::List(nested), nested_span),
+                        },
+                        _,
+                    ),
+                ] = items.as_slice()
+                {
+                    return self.try_lower_to_initializer_tree(
+                        expected_ty,
+                        (Initializer::List(nested.clone()), *nested_span),
+                        locals,
+                        local_map,
+                    );
+                }
                 if self.adt_logical_field_tys(expected_ty).is_none() && !is_array_ty(expected_ty) {
                     let first = items
                         .into_iter()
@@ -468,6 +486,7 @@ impl HirCtx<'_> {
                         } else {
                             let mut expr = self.lower_expr(expr, locals, local_map)?;
                             self.array_to_pointer_decay_if_array(&mut expr);
+                            self.fn_def_to_c_fn_ptr_decay_if_fn_def(&mut expr);
                             loop {
                                 if let Ok(coerced) =
                                     coerce_expr_to_type(expr.clone(), value_cursor.ty())
