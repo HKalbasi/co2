@@ -216,6 +216,7 @@ impl ModuleData {
                         }
                     }
                 }
+                Declaration::PragmaPack { .. } => {}
             }
         }
         this

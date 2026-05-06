@@ -122,6 +122,8 @@ pub enum Expression<R: TypeResolver> {
     },
     SizeofType(Box<TypeName<R>>),
     Sizeof(Box<Spanned<Expression<R>>>),
+    AlignofType(Box<TypeName<R>>),
+    Alignof(Box<Spanned<Expression<R>>>),
     Offsetof {
         ty: Box<TypeName<R>>,
         field: String,
@@ -495,6 +497,7 @@ pub enum Token {
     Short,
     Signed,
     Sizeof,
+    Alignof,
     Offsetof,
     Static,
     Atomic,
@@ -632,6 +635,7 @@ impl Display for Token {
             Token::Short => write!(f, "short"),
             Token::Signed => write!(f, "signed"),
             Token::Sizeof => write!(f, "sizeof"),
+            Token::Alignof => write!(f, "_Alignof"),
             Token::Offsetof => write!(f, "offsetof"),
             Token::Static => write!(f, "static"),
             Token::Atomic => write!(f, "_Atomic"),
@@ -743,6 +747,20 @@ pub enum StatementOrDeclaration<R: TypeResolver> {
 }
 
 #[derive(Debug, Clone)]
+pub enum PackAction {
+    /// `#pragma pack(push, N)` — push current alignment and set to N bytes.
+    PushSet(u32),
+    /// `#pragma pack(push)` — push current alignment without changing it.
+    PushOnly,
+    /// `#pragma pack(pop)` — restore the previous alignment.
+    Pop,
+    /// `#pragma pack(N)` — set alignment to N bytes without pushing.
+    Set(u32),
+    /// `#pragma pack()` — reset to the default alignment without pushing.
+    Reset,
+}
+
+#[derive(Debug, Clone)]
 pub enum Declaration<R: TypeResolver> {
     FunctionDefinition {
         signature: FunctionDefinitionSignature<R>,
@@ -756,6 +774,9 @@ pub enum Declaration<R: TypeResolver> {
         ident: Spanned<R::DeclarationIdent>,
         ty: Spanned<RustTy<R>>,
         is_pub: bool,
+    },
+    PragmaPack {
+        action: PackAction,
     },
 }
 

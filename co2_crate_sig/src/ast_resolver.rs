@@ -26,7 +26,8 @@ fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
         Expression::Field(base, _)
         | Expression::Arrow(base, _)
         | Expression::UnaryOp(_, base)
-        | Expression::Sizeof(base) => expr_contains_label_address(&base.0),
+        | Expression::Sizeof(base)
+        | Expression::Alignof(base) => expr_contains_label_address(&base.0),
         Expression::Subscript(base, index) | Expression::BinOp(base, _, index) => {
             expr_contains_label_address(&base.0) || expr_contains_label_address(&index.0)
         }
@@ -73,6 +74,7 @@ fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
         | Expression::Empty
         | Expression::Constant(_)
         | Expression::SizeofType(_)
+        | Expression::AlignofType(_)
         | Expression::Offsetof { .. }
         | Expression::GnuStatementExpr { .. } => false,
     }
@@ -598,6 +600,10 @@ impl co2_ast::TypeResolver for LocalResolver {
         match decl {
             Declaration::FunctionDefinition { .. } => next,
             Declaration::RustTypeAlias { .. } => next,
+            Declaration::PragmaPack { action } => {
+                next.base.borrow_mut().apply_pack_action(action);
+                next
+            }
             Declaration::Declaration {
                 declaration_specifiers,
                 declarators,

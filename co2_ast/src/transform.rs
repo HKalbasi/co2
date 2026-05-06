@@ -423,6 +423,8 @@ impl<A: TypeResolver> DoTransform for Expression<A> {
             },
             Expression::SizeofType(t) => Expression::SizeofType(t.transform(b)),
             Expression::Sizeof(e) => Expression::Sizeof(e.transform(b)),
+            Expression::AlignofType(t) => Expression::AlignofType(t.transform(b)),
+            Expression::Alignof(e) => Expression::Alignof(e.transform(b)),
             Expression::Offsetof { ty, field } => Expression::Offsetof {
                 ty: ty.transform(b),
                 field: field.clone(),
@@ -564,6 +566,9 @@ impl<A: TypeResolver> DoTransform for Declaration<A> {
                 ident: (B::transform_decl_ident(&ident.0), ident.1),
                 ty: ty.transform(b),
                 is_pub: *is_pub,
+            },
+            Declaration::PragmaPack { action } => Declaration::PragmaPack {
+                action: action.clone(),
             },
         }
     }

@@ -2556,12 +2556,21 @@ fn generated_item_attrs(kind: DefinedItemKind) -> Option<Vec<hir::Attribute>> {
             no_mangle: true, ..
         } => hir::attrs::AttributeKind::NoMangle(DUMMY_SP),
         DefinedItemKind::Struct(_, repr) | DefinedItemKind::Union(_, repr) => {
-            let repr = match repr {
-                AdtRepr::Rust => hir::attrs::ReprAttr::ReprRust,
-                AdtRepr::C => hir::attrs::ReprAttr::ReprC,
+            let reprs = match repr {
+                AdtRepr::Rust => ThinVec::from_iter([(hir::attrs::ReprAttr::ReprRust, DUMMY_SP)]),
+                AdtRepr::C => ThinVec::from_iter([(hir::attrs::ReprAttr::ReprC, DUMMY_SP)]),
+                AdtRepr::CPacked(n) => ThinVec::from_iter([
+                    (hir::attrs::ReprAttr::ReprC, DUMMY_SP),
+                    (
+                        hir::attrs::ReprAttr::ReprPacked(
+                            rustc_abi::Align::from_bytes(n as u64).expect("invalid pack alignment"),
+                        ),
+                        DUMMY_SP,
+                    ),
+                ]),
             };
             hir::attrs::AttributeKind::Repr {
-                reprs: ThinVec::from_iter([(repr, DUMMY_SP)]),
+                reprs,
                 first_span: DUMMY_SP,
             }
         }

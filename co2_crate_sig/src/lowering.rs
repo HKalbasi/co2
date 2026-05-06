@@ -125,6 +125,7 @@ fn deduplicate_tu_items(
                     tu_item_id += 1;
                 }
             }
+            Declaration::PragmaPack { .. } => {}
         }
     }
 
@@ -153,6 +154,7 @@ fn deduplicate_tu_items(
             });
             true
         }
+        Declaration::PragmaPack { .. } => true,
     });
 
     tu
@@ -715,6 +717,9 @@ fn lower_translation_unit_items(
                     }
                 }
             }
+            Declaration::PragmaPack { action } => {
+                resolver.base.borrow_mut().apply_pack_action(&action);
+            }
         }
     }
 
@@ -1014,6 +1019,7 @@ pub fn lower_crate_sig(
         emitted_fields: fields,
         logical_fields: _,
         span,
+        pack_align,
     } in structs
     {
         let Some(fields) = fields else {
@@ -1036,13 +1042,17 @@ pub fn lower_crate_sig(
             StructOrUnionKind::Struct => HirAdtKind::Struct { fields },
             StructOrUnionKind::Union => HirAdtKind::Union { fields },
         };
+        let repr = match pack_align {
+            Some(n) => AdtRepr::CPacked(n),
+            None => AdtRepr::C,
+        };
 
         ctx.hir_items.push(HirModuleItem::Adt {
             name,
             id: AdtDef(def),
             kind,
             span,
-            repr: AdtRepr::C,
+            repr,
         });
 
         let self_ty_hir = HirTy::adt(def, vec![], span);

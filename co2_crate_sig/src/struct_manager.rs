@@ -20,6 +20,9 @@ pub(crate) struct StructData {
     pub(crate) span: Span,
     pub(crate) emitted_fields: Option<Vec<StructField>>,
     pub(crate) logical_fields: Option<Vec<LogicalAdtFieldInfo>>,
+    /// Effective `#pragma pack` alignment in bytes at the point this struct was defined,
+    /// `None` means default (no packing).
+    pub(crate) pack_align: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +58,10 @@ pub(crate) struct StructManager {
     pub(crate) definitions: HashMap<DefId, StructData>,
     pub(crate) enum_defs: HashSet<DefId>,
     pub(crate) pending_enum_consts: Vec<PendingEnum>,
+    /// Stack of pushed pack alignments (`None` = default).
+    pub(crate) pack_stack: Vec<Option<u32>>,
+    /// Current effective pack alignment (`None` = default).
+    pub(crate) current_pack: Option<u32>,
 }
 
 const ANON_FIELD_PREFIX: &str = "__anon_field_";
@@ -246,6 +253,7 @@ impl LocalResolverBase {
                 span,
             }]),
             logical_fields: None,
+            pack_align: None,
         };
         self.struct_manager.definitions.insert(def_id, data);
         self.struct_manager.enum_defs.insert(def_id);
@@ -268,6 +276,7 @@ impl LocalResolverBase {
             span,
             emitted_fields: None,
             logical_fields: None,
+            pack_align: None,
         };
         self.struct_manager.definitions.insert(def_id, data);
         def_id
@@ -275,6 +284,30 @@ impl LocalResolverBase {
 
     pub(crate) fn is_enum_def(&self, def_id: DefId) -> bool {
         self.struct_manager.enum_defs.contains(&def_id)
+    }
+
+    pub(crate) fn apply_pack_action(&mut self, action: &co2_ast::PackAction) {
+        use co2_ast::PackAction;
+        match action {
+            PackAction::PushSet(n) => {
+                let prev = self.struct_manager.current_pack;
+                self.struct_manager.pack_stack.push(prev);
+                self.struct_manager.current_pack = Some(*n);
+            }
+            PackAction::PushOnly => {
+                let prev = self.struct_manager.current_pack;
+                self.struct_manager.pack_stack.push(prev);
+            }
+            PackAction::Pop => {
+                self.struct_manager.current_pack = self.struct_manager.pack_stack.pop().flatten();
+            }
+            PackAction::Set(n) => {
+                self.struct_manager.current_pack = Some(*n);
+            }
+            PackAction::Reset => {
+                self.struct_manager.current_pack = None;
+            }
+        }
     }
 
     pub(crate) fn emit_structs(&mut self) -> impl Iterator<Item = StructData> + use<> {
@@ -490,6 +523,7 @@ impl LocalResolverBase {
         }
         data.emitted_fields = Some(emitted_fields);
         data.logical_fields = Some(logical_fields);
+        data.pack_align = self.struct_manager.current_pack;
     }
 
     fn resolve_logical_field_ty(&self, def: DefId, field_name: &str) -> Option<HirTy> {

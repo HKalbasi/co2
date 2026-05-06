@@ -759,6 +759,14 @@ where
                     .map(|ty| Expression::SizeofType(Box::new(ty)))
                     .map_with(|r, e| (r, e.span()));
 
+                let alignof_type_expression = just(Token::Alignof)
+                    .ignore_then(
+                        type_name(resolver.clone(), rec.clone())
+                            .delimited_by(just(Token::LParen), just(Token::RParen)),
+                    )
+                    .map(|ty| Expression::AlignofType(Box::new(ty)))
+                    .map_with(|r, e| (r, e.span()));
+
                 let offsetof_expression = just(Token::Offsetof)
                     .ignore_then(just(Token::LParen))
                     .ignore_then(type_name(resolver.clone(), rec.clone()))
@@ -795,17 +803,24 @@ where
                     .map_with(|r, e| (r, e.span()));
 
                 let sizeof_unary_expression = just(Token::Sizeof)
-                    .ignore_then(unary)
+                    .ignore_then(unary.clone())
                     .map(|expr| Expression::Sizeof(Box::new(expr)))
+                    .map_with(|r, e| (r, e.span()));
+
+                let alignof_unary_expression = just(Token::Alignof)
+                    .ignore_then(unary)
+                    .map(|expr| Expression::Alignof(Box::new(expr)))
                     .map_with(|r, e| (r, e.span()));
 
                 choice((
                     sizeof_type_expression,
+                    alignof_type_expression,
                     offsetof_expression,
                     prefix_inc_expression,
                     prefix_dec_expression,
                     unary_operator_expression,
                     sizeof_unary_expression,
+                    alignof_unary_expression,
                     postfix_expression.clone(),
                 ))
             });
@@ -2287,6 +2302,53 @@ where
         .map_with(|r, e| (r, e.span()))
 }
 
+fn pragma_pack_action(ident: &str) -> Option<co2_ast::PackAction> {
+    use co2_ast::PackAction;
+    if ident == "__ccc_pack_pop" {
+        return Some(PackAction::Pop);
+    }
+    if ident == "__ccc_pack_reset" {
+        return Some(PackAction::Reset);
+    }
+    if ident == "__ccc_pack_push_only" {
+        return Some(PackAction::PushOnly);
+    }
+    if let Some(n_str) = ident.strip_prefix("__ccc_pack_push_") {
+        if let Ok(n) = n_str.parse::<u32>() {
+            return Some(PackAction::PushSet(n));
+        }
+    }
+    if let Some(n_str) = ident.strip_prefix("__ccc_pack_set_") {
+        if let Ok(n) = n_str.parse::<u32>() {
+            return Some(PackAction::Set(n));
+        }
+    }
+    None
+}
+
+fn pragma_pack_item<'src, I, R: TypeResolver>(
+    resolver: R,
+) -> impl Parser<'src, I, (Spanned<Declaration<R>>, R), extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>
+        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
+{
+    select! {
+        Token::Ident(s) if pragma_pack_action(&s).is_some() => pragma_pack_action(&s).unwrap(),
+    }
+    .then_ignore(just(Token::Semicolon))
+    .map_with(move |action, e| {
+        let decl = (
+            Declaration::PragmaPack {
+                action: action.clone(),
+            },
+            e.span(),
+        );
+        let next_resolver = resolver.register_decl(&decl.0);
+        (decl, next_resolver)
+    })
+}
+
 pub fn translation_unit<'src, I, R: TypeResolver>(
     resolver: R,
 ) -> impl Parser<'src, I, Spanned<TranslationUnit<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
@@ -2321,6 +2383,11 @@ where
                 TranslationUnitItem::Empty
             } else if let Ok(item) = inp.parse(mod_item()) {
                 TranslationUnitItem::Mod(item)
+            } else if let Ok((decl, next_resolver)) =
+                inp.parse(pragma_pack_item(current_resolver.clone()))
+            {
+                current_resolver = next_resolver;
+                TranslationUnitItem::Declaration(decl)
             } else if let Ok((decl, next_resolver)) = inp.parse(declaration(
                 current_resolver.clone(),
                 statement(current_resolver.clone()),

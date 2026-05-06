@@ -1334,6 +1334,33 @@ impl HirCtx<'_> {
                     span,
                 })
             }
+            Expression::AlignofType(type_name) => {
+                let ty = self.lower_type_name(*type_name, parser_span)?;
+                let align = ty
+                    .layout()
+                    .map_err(|e| format!("failed to compute layout for alignof(type): {e}"))?
+                    .shape()
+                    .abi_align;
+                Ok(HirExpr {
+                    kind: HirExprKind::ConstInt(align as i128),
+                    ty: Ty::signed_ty(IntTy::I32),
+                    span,
+                })
+            }
+            Expression::Alignof(expr) => {
+                let inner = self.lower_expr(*expr, locals, local_map)?;
+                let align = inner
+                    .ty
+                    .layout()
+                    .map_err(|e| format!("failed to compute layout for alignof: {e}"))?
+                    .shape()
+                    .abi_align;
+                Ok(HirExpr {
+                    kind: HirExprKind::ConstInt(align as i128),
+                    ty: Ty::signed_ty(IntTy::I32),
+                    span,
+                })
+            }
             Expression::Offsetof {
                 ty: type_name,
                 field,

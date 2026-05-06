@@ -912,6 +912,14 @@ impl LocalResolverBase {
                 let ty = self.type_of_expr_for_sizeof(expr)?;
                 Ok(self.sizeof_hir_ty(&ty)?.0 as i128)
             }
+            Expression::AlignofType(type_name) => {
+                let ty = self.lower_type_name_for_const(*type_name.clone(), *span)?;
+                Ok(self.sizeof_hir_ty(&ty)?.1 as i128)
+            }
+            Expression::Alignof(expr) => {
+                let ty = self.type_of_expr_for_sizeof(expr)?;
+                Ok(self.sizeof_hir_ty(&ty)?.1 as i128)
+            }
             Expression::Offsetof {
                 ty: type_name,
                 field: _,

@@ -506,6 +506,7 @@ impl HirCtx<'_> {
                     }));
                 }
             }
+            Declaration::PragmaPack { .. } => {}
         }
         Ok(())
     }
