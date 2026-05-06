@@ -19,6 +19,8 @@ pub fn main_with_args(args: Vec<String>) -> i32 {
         println!("    run, r      Run a binary or example of the local package");
         println!("    test, t     Run the tests");
         println!("    add         Add dependencies to a manifest file");
+        println!("    miri        Run the project under miri via cargo-miri.");
+        println!("                Requires cargo-miri to be installed.");
         println!();
         println!("All other cargo commands are supported and forwarded to cargo.");
         return 0;
@@ -46,6 +48,8 @@ pub fn main_with_args(args: Vec<String>) -> i32 {
                     1
                 }
             };
+        } else if subcommand == "miri" {
+            return run_miri(subcommand_args);
         } else {
             return run_cargo(&args[1..]);
         }
@@ -62,9 +66,66 @@ pub fn main_with_args(args: Vec<String>) -> i32 {
                 1
             }
         }
+    } else if subcommand == "miri" {
+        run_miri(subcommand_args)
     } else {
         run_cargo(&args[..])
     }
+}
+
+fn run_miri(args: &[String]) -> i32 {
+    // Find co2miri: prefer a sibling to this binary (installed bundle), fall back to PATH.
+    let self_path = std::env::current_exe().ok();
+    let bin_dir = self_path.as_deref().and_then(|p| p.parent());
+
+    let co2miri_path = bin_dir
+        .map(|d| d.join("co2miri"))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "co2miri".to_owned());
+
+    let mut cmd = Command::new("cargo-miri");
+    // cargo-miri is invoked by cargo as `cargo-miri miri <subcommand> [args...]`.
+    // When we call it directly we must prepend `miri` ourselves.
+    cmd.arg("miri");
+    cmd.args(args);
+    // cargo-miri looks for the miri binary via the MIRI env var.
+    cmd.env("MIRI", &co2miri_path);
+    // Forward RUSTC so cargo-miri's rustc queries also go through co2rustc.
+    cmd.env("RUSTC", "co2rustc");
+    cmd.env("CARGO_INCREMENTAL", "0");
+
+    // The co2 bundle wrapper sets RUSTFLAGS="--sysroot=<cache> ..." so that
+    // co2rustc/co2miri can find the stdlib. cargo-miri also passes --sysroot
+    // explicitly on every compiler invocation, producing "Option 'sysroot'
+    // given more than once". Strip our injected --sysroot so cargo-miri's
+    // explicit value takes precedence.
+    let rustflags_clean = rustflags_without_sysroot();
+    if rustflags_clean.is_empty() {
+        cmd.env_remove("RUSTFLAGS");
+    } else {
+        cmd.env("RUSTFLAGS", rustflags_clean);
+    }
+
+    let status = cmd.status().expect("failed to execute cargo-miri");
+    status.code().unwrap_or(1)
+}
+
+/// Remove `--sysroot <value>` / `--sysroot=<value>` tokens from RUSTFLAGS.
+fn rustflags_without_sysroot() -> String {
+    let flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    let mut out: Vec<&str> = Vec::new();
+    let mut iter = flags.split_whitespace().peekable();
+    while let Some(tok) = iter.next() {
+        if tok == "--sysroot" {
+            iter.next(); // skip the following path argument
+        } else if tok.starts_with("--sysroot=") {
+            // inline form — skip entirely
+        } else {
+            out.push(tok);
+        }
+    }
+    out.join(" ")
 }
 
 fn run_cargo(args: &[String]) -> i32 {

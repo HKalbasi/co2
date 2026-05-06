@@ -1,0 +1,13 @@
+[package]
+name = "co2miri"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+co2rustc = { path = "../co2rustc" }
+co2_driver_lib = { path = "../co2_driver_lib" }
+co2_ast = { path = "../co2_ast" }
+miri = { git = "https://github.com/rust-lang/miri/", rev = "0bbff3d7" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true

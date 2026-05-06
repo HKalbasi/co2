@@ -1,5 +1,8 @@
 #![feature(rustc_private)]
 
+extern crate rustc_driver;
+extern crate rustc_middle;
+
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -565,6 +568,29 @@ fn build_clone_method_body(
 pub fn compile_co2_file(mode: CompileMode, co2_file: &Path, rustc_args: Vec<String>) {
     let preprocessed = Arc::new(co2_preprocessor::preprocess(co2_file, &Vec::new()));
     compile_co2_source(mode, co2_file.to_path_buf(), preprocessed, rustc_args);
+}
+
+pub fn compile_co2_file_for_miri(
+    co2_file: &Path,
+    rustc_args: Vec<String>,
+    after_analysis: Box<
+        dyn for<'tcx> FnOnce(rustc_middle::ty::TyCtxt<'tcx>) -> rustc_driver::Compilation + Send,
+    >,
+) {
+    let preprocessed = Arc::new(co2_preprocessor::preprocess(co2_file, &Vec::new()));
+    co2_ast::reset_diagnostic_state();
+    *pending_compile_cell().try_lock().unwrap() = Some(PendingCompile {
+        mode: CompileMode::RUST,
+        source_path: co2_file.to_path_buf(),
+        preprocessed,
+    });
+    rustc_gen::generate_with_args_and_after_analysis::<Co2GeneratorState>(
+        rustc_args,
+        after_analysis,
+    );
+    if co2_ast::diagnostics_were_emitted() {
+        co2_ast::panic_with_diagnostic_abort();
+    }
 }
 
 pub fn compile_co2_source(

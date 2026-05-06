@@ -35,6 +35,12 @@ if [ -d "$SYSROOT/lib/rustlib/x86_64-unknown-linux-gnu/bin" ]; then
     cp -r "$SYSROOT"/lib/rustlib/x86_64-unknown-linux-gnu/bin/* "$PAYLOAD_DIR/lib/rustlib/x86_64-unknown-linux-gnu/bin/"
 fi
 
+# Include rust stdlib source for miri (enables `co2cargo miri run` without MIRI_LIB_SRC)
+if [ -d "$SYSROOT/lib/rustlib/src/rust/library" ]; then
+    mkdir -p "$PAYLOAD_DIR/lib/rustlib/src/rust"
+    cp -r "$SYSROOT/lib/rustlib/src/rust/library" "$PAYLOAD_DIR/lib/rustlib/src/rust/"
+fi
+
 # 4. Create tarball
 TARBALL=$(mktemp)
 tar -C "$PAYLOAD_DIR" -czf "$TARBALL" .
@@ -66,6 +72,10 @@ export CO2_RUN_SCRIPT="\$(readlink -f "\$0")"
 # Tell rustc where its sysroot is
 if [[ ! "\$RUSTFLAGS" =~ "--sysroot" ]]; then
     export RUSTFLAGS="--sysroot=\$CACHE_DIR \$RUSTFLAGS"
+fi
+# Provide stdlib sources for miri if not already set
+if [ -z "\${MIRI_LIB_SRC}" ] && [ -d "\$CACHE_DIR/lib/rustlib/src/rust/library" ]; then
+    export MIRI_LIB_SRC="\$CACHE_DIR/lib/rustlib/src/rust/library"
 fi
 
 # Forward all arguments with preserved arg0

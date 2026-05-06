@@ -107,12 +107,12 @@ impl Callbacks for DetectCallbacks {
     }
 }
 
-pub(crate) enum DetectResult {
+pub enum DetectResult {
     Continue(std::process::ExitCode),
     Co2(PathBuf),
 }
 
-pub(crate) fn detect_co2(args: &[String]) -> DetectResult {
+pub fn detect_co2(args: &[String]) -> DetectResult {
     let mut callbacks = DetectCallbacks::new();
 
     let exit_code =

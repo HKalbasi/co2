@@ -354,6 +354,13 @@ pub fn generate_with_args<S: CrateGeneratorState>(args: Vec<String>) {
     internal::generate_with_args::<S>(args);
 }
 
+pub fn generate_with_args_and_after_analysis<S: CrateGeneratorState>(
+    args: Vec<String>,
+    after_analysis: Box<dyn for<'tcx> FnOnce(TyCtxt<'tcx>) -> rustc_driver::Compilation + Send>,
+) {
+    internal::generate_with_args_and_after_analysis::<S>(args, after_analysis);
+}
+
 #[derive(Debug)]
 pub enum DefData {
     ForeignMod,

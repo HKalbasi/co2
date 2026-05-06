@@ -7,8 +7,9 @@ extern crate rustc_span;
 
 mod detect;
 
+pub use detect::{DetectResult, detect_co2};
+
 use co2_driver_lib::{CompileMode, compile_co2_file};
-use detect::{DetectResult, detect_co2};
 
 pub fn main() -> std::process::ExitCode {
     main_with_args(std::env::args().collect())

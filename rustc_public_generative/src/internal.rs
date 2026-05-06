@@ -1727,6 +1727,8 @@ struct GenerateCallbacks<S: CrateGeneratorState> {
     context: Context,
     gate: Arc<GenerateGate>,
     phantom: PhantomData<S>,
+    after_analysis_hook:
+        Option<Box<dyn for<'tcx> FnOnce(TyCtxt<'tcx>) -> rustc_driver::Compilation + Send>>,
 }
 
 #[derive(Debug, Default)]
@@ -1862,7 +1864,16 @@ impl<S: CrateGeneratorState> GenerateCallbacks<S> {
                 state: Mutex::new(GenerateState::default()),
             }),
             phantom: PhantomData,
+            after_analysis_hook: None,
         }
+    }
+
+    fn with_after_analysis(
+        mut self,
+        hook: Box<dyn for<'tcx> FnOnce(TyCtxt<'tcx>) -> rustc_driver::Compilation + Send>,
+    ) -> Self {
+        self.after_analysis_hook = Some(hook);
+        self
     }
 }
 
@@ -2007,6 +2018,31 @@ impl<S: CrateGeneratorState> rustc_driver::Callbacks for GenerateCallbacks<S> {
         });
         rustc_driver::Compilation::Continue
     }
+    fn after_analysis<'tcx>(
+        &mut self,
+        _compiler: &rustc_interface::interface::Compiler,
+        tcx: TyCtxt<'tcx>,
+    ) -> rustc_driver::Compilation {
+        if let Some(hook) = self.after_analysis_hook.take() {
+            hook(tcx)
+        } else {
+            rustc_driver::Compilation::Continue
+        }
+    }
+}
+
+pub fn generate_with_args_and_after_analysis<S: CrateGeneratorState>(
+    mut args: Vec<String>,
+    hook: Box<dyn for<'tcx> FnOnce(TyCtxt<'tcx>) -> rustc_driver::Compilation + Send>,
+) {
+    if args.len() == 1 {
+        args.push(String::from("--crate-name"));
+        args.push(String::from("synthetic"));
+        args.push(String::from("--crate-type=bin"));
+        args.push(String::from("/dev/null"));
+    }
+    let mut callbacks = GenerateCallbacks::<S>::new().with_after_analysis(hook);
+    rustc_driver::run_compiler(&args, &mut callbacks);
 }
 
 pub fn collect_dependency_info<'tcx>(tcx: rustc_middle::ty::TyCtxt<'tcx>) -> DependencyInfo {

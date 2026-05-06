@@ -11,3 +11,4 @@ path = "src/main.rs"
 co2rustc = { path = "../co2rustc" }
 co2cc = { path = "../co2cc" }
 co2cargo = { path = "../co2cargo" }
+co2miri = { path = "../co2miri" }
