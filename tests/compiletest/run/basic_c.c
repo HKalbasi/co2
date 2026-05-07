@@ -532,10 +532,19 @@ int main15()
 
 enum Color { RED, GREEN = 5, BLUE, WHITE = BLUE + 3 };
 
+static int COLOR_TO_RGB[] = {
+    [RED] = 255,
+    [GREEN] = 255 * 256,
+    [BLUE] = 255 * 256 * 256,
+    [WHITE] = 256 * 256 * 256 - 1,
+};
+
 int main16()
 {
 	enum Color c;
 	int x;
+
+	int ar[] = { [WHITE] = 2 };
 
 	c = BLUE;
 	if (c - 6)
@@ -550,6 +559,32 @@ int main16()
 	x = RED + GREEN + BLUE + WHITE;
 	if (x - 20)
 		return 1;
+
+	ar[RED] = 4;
+
+	if (ar[WHITE] != 2 || ar[RED] != 4) {
+		return 1;
+	}
+
+	c = RED;
+	if (ar[c] != 4) {
+		return 1;
+	}
+
+	if (COLOR_TO_RGB[RED] + COLOR_TO_RGB[GREEN] + COLOR_TO_RGB[BLUE] != COLOR_TO_RGB[WHITE]) {
+		return 1;
+	}
+
+	COLOR_TO_RGB[RED] = WHITE;
+	if (ar[COLOR_TO_RGB[RED]] != 2) {
+		return 1;
+	}
+	if (ar[COLOR_TO_RGB[c]] != 2) {
+		return 1;
+	}
+	if (ar[COLOR_TO_RGB[(int)c]] != 2) {
+		return 1;
+	}
 
 	return 0;
 }
@@ -1805,6 +1840,22 @@ int main82() {
 	return 0;
 }
 
+int main83() {
+	typedef struct {
+		int atom;
+		int flags;
+	} JSShapeProperty;
+
+	static const JSShapeProperty props1[] = {
+        {.atom = 1, .flags = 2},
+    };
+	static const JSShapeProperty props2[] = {
+        {.atom = 1, .flags = 2},
+        {.atom = 3, .flags = 4},
+    };
+    return props1[0].atom + props1[0].flags + props2[0].atom + props2[1].flags != 8;
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -1826,7 +1877,7 @@ int main() {
 		main66, main67, main68, main69, main70,
 		main71, main72, main73, main74, main75,
 		main76, main77, main78, main79, main80,
-		main81, main82,
+		main81, main82, main83,
 	};
 	
 	int i;

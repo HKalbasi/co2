@@ -328,6 +328,13 @@ impl HirCtx<'_> {
                 Ok(InitializerTree::Leaf(coerced))
             }
             Initializer::List(items) => {
+                // Redundant outer braces are allowed for aggregates: `S s = { {a,b} }` == `S s = {a,b}`.
+                // For arrays this only holds when the inner items do NOT contain field designators.
+                // Field designators mean the inner `{}` initializes a struct *element*, not the array
+                // itself.  E.g. `T arr[] = { {.field=v} }` — inner `{}` initializes arr[0], so we
+                // must NOT strip the outer brace.
+                // Subscript/range designators (or no designators) mean the inner `{}` IS the array
+                // initializer wrapped in a redundant extra brace pair — strip it.
                 if let [
                     (
                         InitializerItem {
@@ -338,12 +345,21 @@ impl HirCtx<'_> {
                     ),
                 ] = items.as_slice()
                 {
-                    return self.try_lower_to_initializer_tree(
-                        expected_ty,
-                        (Initializer::List(nested.clone()), *nested_span),
-                        locals,
-                        local_map,
-                    );
+                    let inner_has_field_desig = nested.iter().any(|(item, _)| {
+                        item.designators.as_ref().is_some_and(|desigs| {
+                            desigs
+                                .iter()
+                                .any(|(d, _)| matches!(d, Designator::Field(_)))
+                        })
+                    });
+                    if !is_array_ty(expected_ty) || !inner_has_field_desig {
+                        return self.try_lower_to_initializer_tree(
+                            expected_ty,
+                            (Initializer::List(nested.clone()), *nested_span),
+                            locals,
+                            local_map,
+                        );
+                    }
                 }
                 if self.adt_logical_field_tys(expected_ty).is_none() && !is_array_ty(expected_ty) {
                     let first = items

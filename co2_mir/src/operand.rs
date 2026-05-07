@@ -419,15 +419,9 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
         span: RustSpan,
     ) -> MirOperand {
         let isize_ty = Ty::signed_ty(IntTy::Isize);
-        let idx_local = self.new_temp(isize_ty, Mutability::Mut, span);
+        let idx_ty = index.ty;
         let idx_op = self.lower_expr_to_operand(index);
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(idx_local),
-                Rvalue::Cast(CastKind::IntToInt, idx_op, isize_ty),
-            ),
-            span,
-        });
+        let idx_op = self.lower_cast(idx_op, idx_ty, isize_ty, span);
 
         let offset = find_ptr_offset_fn(&self.wellknown_defs, ptr_mutability);
         let generic_args = match offset.ty().kind() {
@@ -447,7 +441,7 @@ impl<'ctx, 'tcx> Builder<'ctx, 'tcx> {
         let ret_local = self.new_temp(out_ty, Mutability::Mut, span);
         self.emit_call_block(
             fn_const_operand(offset, generic_args, span),
-            vec![base_op, MirOperand::Copy(place(idx_local))],
+            vec![base_op, idx_op],
             place(ret_local),
             span,
         );
