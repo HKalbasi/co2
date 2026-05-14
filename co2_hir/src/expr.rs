@@ -1321,6 +1321,16 @@ impl HirCtx<'_> {
                 let init_expr = self.initializer_tree_to_expr(&tree, target_ty, parser_span);
                 Ok(init_expr)
             }
+            Expression::BuiltinTypesCompatibleP { ty1, ty2 } => {
+                let t1 = self.lower_type_name(*ty1, parser_span)?;
+                let t2 = self.lower_type_name(*ty2, parser_span)?;
+                let compatible = if ty_matches_expected(t1, t2) { 1i128 } else { 0i128 };
+                Ok(HirExpr {
+                    kind: HirExprKind::ConstInt(compatible),
+                    ty: Ty::signed_ty(IntTy::I32),
+                    span,
+                })
+            }
             Expression::SizeofType(type_name) => {
                 let ty = self.lower_type_name(*type_name, parser_span)?;
                 let size = ty

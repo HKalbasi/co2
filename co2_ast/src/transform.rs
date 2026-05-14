@@ -463,6 +463,12 @@ impl<A: TypeResolver> DoTransform for Expression<A> {
             | Expression::VaStart { .. }
             | Expression::VaEnd { .. }
             | Expression::GnuStatementExpr { .. } => todo!(),
+            Expression::BuiltinTypesCompatibleP { ty1, ty2 } => {
+                Expression::BuiltinTypesCompatibleP {
+                    ty1: ty1.transform(b),
+                    ty2: ty2.transform(b),
+                }
+            }
         }
     }
 }

@@ -792,6 +792,19 @@ where
                     })
                     .map_with(|r, e| (r, e.span()));
 
+                let types_compatible_p_expression =
+                    just(Token::BuiltinTypesCompatibleP)
+                        .ignore_then(just(Token::LParen))
+                        .ignore_then(type_name(resolver.clone(), rec.clone()))
+                        .then_ignore(just(Token::Comma))
+                        .then(type_name(resolver.clone(), rec.clone()))
+                        .then_ignore(just(Token::RParen))
+                        .map(|(ty1, ty2)| Expression::BuiltinTypesCompatibleP {
+                            ty1: Box::new(ty1),
+                            ty2: Box::new(ty2),
+                        })
+                        .map_with(|r, e| (r, e.span()));
+
                 let prefix_inc_expression = just(Token::Inc)
                     .ignore_then(unary.clone())
                     .map(|expr| Expression::Update {
@@ -829,6 +842,7 @@ where
                     sizeof_type_expression,
                     alignof_type_expression,
                     offsetof_expression,
+                    types_compatible_p_expression,
                     prefix_inc_expression,
                     prefix_dec_expression,
                     unary_operator_expression,

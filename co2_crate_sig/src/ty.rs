@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use co2_ast::{
-    BinOp, Constant, DeclarationSpecifier, Declarator, Expression, Initializer, Span, Spanned,
-    StorageClassSpecifier, StructOrUnionKind, TypeName, TypeQualifier, TypeResolver, TypeSpecifier,
-    UnaryOp,
+    BinOp, Constant, DeclarationSpecifier, Declarator, Expression, GenericAssociation, Initializer,
+    IntegerSuffix, Span, Spanned, StorageClassSpecifier, StructOrUnionKind, TypeName,
+    TypeQualifier, TypeResolver, TypeSpecifier, UnaryOp,
 };
 use rustc_public_generative::{FunctionAbi, FunctionSignature, HirTy, HirTyConst, HirTyKind};
 use rustc_public_generative::{
@@ -928,6 +928,39 @@ impl LocalResolverBase {
                 let ty = self.lower_type_name_for_const(*type_name.clone(), *span)?;
                 Ok(self.sizeof_hir_ty(&ty)?.0 as i128)
             }
+            Expression::BuiltinTypesCompatibleP { ty1, ty2 } => {
+                let t1 = self.lower_type_name_for_const(*ty1.clone(), *span)?;
+                let t2 = self.lower_type_name_for_const(*ty2.clone(), *span)?;
+                Ok(hir_tys_compatible(&t1, &t2) as i128)
+            }
+            Expression::GenericSelection {
+                controlling,
+                associations,
+            } => {
+                let controlling_ty = self.type_of_expr_for_sizeof(controlling)?;
+                let mut default_expr = None;
+                for (assoc, _assoc_span) in associations {
+                    match assoc {
+                        GenericAssociation::Default { expr } => {
+                            if default_expr.is_none() {
+                                default_expr = Some(expr);
+                            }
+                        }
+                        GenericAssociation::Type { type_name, expr } => {
+                            let assoc_ty =
+                                self.lower_type_name_for_const(type_name.clone(), *span)?;
+                            if hir_tys_compatible(&assoc_ty, &controlling_ty) {
+                                return self.eval_const_expr(expr);
+                            }
+                        }
+                    }
+                }
+                if let Some(expr) = default_expr {
+                    self.eval_const_expr(expr)
+                } else {
+                    Err("no matching association in _Generic and no default provided".to_owned())
+                }
+            }
             _ => Err("unsupported constant expression in array size".to_owned()),
         }
     }
@@ -1108,6 +1141,20 @@ impl LocalResolverBase {
                 HirTyConst::Literal(s.chars().count() + 1),
                 rust_span,
             )),
+            Expression::Constant(Constant::Int(_, suffix)) => {
+                let kind = match suffix {
+                    IntegerSuffix::None => HirTyKind::Int(IntTy::I32),
+                    IntegerSuffix::Long => HirTyKind::Int(IntTy::I64),
+                    IntegerSuffix::LongLong => HirTyKind::Int(IntTy::I128),
+                    IntegerSuffix::Unsigned => HirTyKind::Uint(UintTy::U32),
+                    IntegerSuffix::UnsignedLong => HirTyKind::Uint(UintTy::U64),
+                    IntegerSuffix::UnsignedLongLong => HirTyKind::Uint(UintTy::U128),
+                };
+                Ok(HirTy { kind, span: rust_span })
+            }
+            Expression::Constant(Constant::Char(_)) => {
+                Ok(HirTy::signed_ty(IntTy::I8, rust_span))
+            }
             Expression::Identifier((resolved, _)) => match resolved {
                 crate::DefOrLocal::Local(local) => self
                     .local_tys
@@ -1669,5 +1716,26 @@ impl PrimitiveTy {
             "_Float128" => Some(PrimitiveTy::FloatTy(FloatTy::F128)),
             _ => None,
         }
+    }
+}
+
+/// Structural type compatibility check for `__builtin_types_compatible_p` and `_Generic`
+/// in constant-expression contexts. Ignores the span field of `HirTy`.
+fn hir_tys_compatible(a: &HirTy, b: &HirTy) -> bool {
+    match (&a.kind, &b.kind) {
+        (HirTyKind::Bool, HirTyKind::Bool)
+        | (HirTyKind::Char, HirTyKind::Char)
+        | (HirTyKind::Never, HirTyKind::Never) => true,
+        (HirTyKind::Int(ia), HirTyKind::Int(ib)) => ia == ib,
+        (HirTyKind::Uint(ua), HirTyKind::Uint(ub)) => ua == ub,
+        (HirTyKind::Float(fa), HirTyKind::Float(fb)) => fa == fb,
+        (HirTyKind::Adt(da, _), HirTyKind::Adt(db, _)) => da == db,
+        (HirTyKind::RawPtr(ma, ia), HirTyKind::RawPtr(mb, ib)) => {
+            ma == mb && hir_tys_compatible(ia, ib)
+        }
+        (HirTyKind::Tuple(va), HirTyKind::Tuple(vb)) => {
+            va.len() == vb.len() && va.iter().zip(vb.iter()).all(|(a, b)| hir_tys_compatible(a, b))
+        }
+        _ => false,
     }
 }

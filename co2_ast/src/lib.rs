@@ -161,6 +161,10 @@ pub enum Expression<R: TypeResolver> {
         controlling: Box<Spanned<Expression<R>>>,
         associations: Vec<Spanned<GenericAssociation<R>>>,
     },
+    BuiltinTypesCompatibleP {
+        ty1: Box<TypeName<R>>,
+        ty2: Box<TypeName<R>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +596,9 @@ pub enum Token {
     BuiltinInf,
     BuiltinNan,
 
+    // GCC type-compatibility builtin
+    BuiltinTypesCompatibleP,
+
     // Special
     Ellipsis, // ...
     Hash,     // #
@@ -654,6 +661,7 @@ impl Display for Token {
             Token::VaEnd => write!(f, "va_end"),
             Token::BuiltinInf => write!(f, "__builtin_inf"),
             Token::BuiltinNan => write!(f, "__builtin_nan"),
+            Token::BuiltinTypesCompatibleP => write!(f, "__builtin_types_compatible_p"),
 
             Token::Ident(s) => write!(f, "{}", s),
 

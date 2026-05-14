@@ -76,7 +76,8 @@ fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
         | Expression::SizeofType(_)
         | Expression::AlignofType(_)
         | Expression::Offsetof { .. }
-        | Expression::GnuStatementExpr { .. } => false,
+        | Expression::GnuStatementExpr { .. }
+        | Expression::BuiltinTypesCompatibleP { .. } => false,
     }
 }
 
