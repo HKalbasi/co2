@@ -2536,7 +2536,16 @@ fn int_suffix_ty(suffix: IntegerSuffix, value: i128) -> Ty {
             }
         }
         IntegerSuffix::Long | IntegerSuffix::LongLong => Ty::signed_ty(IntTy::I64),
-        IntegerSuffix::Unsigned => Ty::unsigned_ty(UintTy::U32),
+        IntegerSuffix::Unsigned => {
+            let value_u = value as u128;
+            if value_u <= (u32::MAX as u128) {
+                Ty::unsigned_ty(UintTy::U32)
+            } else if value_u <= (u64::MAX as u128) {
+                Ty::unsigned_ty(UintTy::U64)
+            } else {
+                Ty::unsigned_ty(UintTy::U128)
+            }
+        }
         IntegerSuffix::UnsignedLong | IntegerSuffix::UnsignedLongLong => {
             Ty::unsigned_ty(UintTy::U64)
         }
