@@ -823,7 +823,7 @@ impl Builder<'_, '_> {
                 let TyKind::RigidTy(RigidTy::Float(_)) = expr.ty.kind() else {
                     panic!("float const must have float type, got {:?}", expr.ty);
                 };
-                let c = MirConst::try_from_float(*v, FloatTy::F64)
+                let c = MirConst::try_from_float(v.to_bits() as u128, FloatTy::F64)
                     .expect("failed to build float const");
                 let const_op = MirOperand::Constant(ConstOperand {
                     span,
@@ -1587,7 +1587,7 @@ impl Builder<'_, '_> {
             let zero = MirOperand::Constant(ConstOperand {
                 span,
                 user_ty: None,
-                const_: MirConst::try_from_float(0.0, float_ty)
+                const_: MirConst::try_from_float(0, float_ty)
                     .expect("failed to build float zero"),
             });
             let bool_local = self.new_temp(Ty::bool_ty(), Mutability::Mut, span);
@@ -2068,7 +2068,7 @@ impl Builder<'_, '_> {
     }
 
     fn make_float_const(&mut self, v: f64, target_ty: Ty, span: RustSpan) -> MirOperand {
-        let c = MirConst::try_from_float(v, FloatTy::F64).expect("float const");
+        let c = MirConst::try_from_float(v.to_bits() as u128, FloatTy::F64).expect("float const");
         let const_op = MirOperand::Constant(ConstOperand {
             span,
             user_ty: None,

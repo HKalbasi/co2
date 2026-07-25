@@ -2134,7 +2134,8 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
                             }]
                             .into(),
                         },
-                        args: rustc_ast::AttrItemKind::Unparsed(rustc_ast::AttrArgs::Empty),
+                        args: rustc_ast::AttrArgs::Empty,
+                        span: DUMMY_SP,
                     },
                     tokens: None,
                 })),
@@ -2144,7 +2145,7 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
             });
         }
 
-        for (idx, feature) in ["c_variadic", "extern_types", "linkage"]
+        for (idx, feature) in ["extern_types", "linkage"]
             .into_iter()
             .enumerate()
         {
@@ -2161,7 +2162,7 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
                             }]
                             .into(),
                         },
-                        args: rustc_ast::AttrItemKind::Unparsed(rustc_ast::AttrArgs::Delimited(
+                        args: rustc_ast::AttrArgs::Delimited(
                             rustc_ast::DelimArgs {
                                 dspan: DelimSpan::dummy(),
                                 delim: rustc_ast::token::Delimiter::Parenthesis,
@@ -2176,7 +2177,8 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
                                     rustc_ast::tokenstream::Spacing::Alone,
                                 )]),
                             },
-                        )),
+                        ),
+                        span: DUMMY_SP,
                     },
                     tokens: None,
                 })),

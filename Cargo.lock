@@ -1423,7 +1423,7 @@ dependencies = [
 [[package]]
 name = "rustdoc"
 version = "0.0.0"
-source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#b285818a4411f0fa61e9f566e4ebe27240449e5d"
+source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#8c103917334914958043d063c55e2d49606e35e7"
 dependencies = [
  "arrayvec",
  "askama",
@@ -1451,7 +1451,7 @@ dependencies = [
 [[package]]
 name = "rustdoc-json-types"
 version = "0.1.0"
-source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#b285818a4411f0fa61e9f566e4ebe27240449e5d"
+source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#8c103917334914958043d063c55e2d49606e35e7"
 dependencies = [
  "rustc-hash 2.1.2",
  "serde",
