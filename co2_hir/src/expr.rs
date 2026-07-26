@@ -1975,7 +1975,7 @@ impl HirCtx<'_> {
                 };
                 Ok(HirExpr {
                     kind: HirExprKind::ConstInt(i128::from(size)),
-                    ty: Ty::signed_ty(IntTy::I32),
+                    ty: Ty::usize_ty(),
                     span,
                 })
             }
@@ -2111,7 +2111,7 @@ impl HirCtx<'_> {
                     .bytes();
                 Ok(HirExpr {
                     kind: HirExprKind::ConstInt(size as i128),
-                    ty: Ty::signed_ty(IntTy::I32),
+                    ty: Ty::usize_ty(),
                     span,
                 })
             }
@@ -2130,7 +2130,7 @@ impl HirCtx<'_> {
                     .abi_align;
                 Ok(HirExpr {
                     kind: HirExprKind::ConstInt(i128::from(align)),
-                    ty: Ty::signed_ty(IntTy::I32),
+                    ty: Ty::usize_ty(),
                     span,
                 })
             }
@@ -2149,7 +2149,7 @@ impl HirCtx<'_> {
                     .abi_align;
                 Ok(HirExpr {
                     kind: HirExprKind::ConstInt(i128::from(align)),
-                    ty: Ty::signed_ty(IntTy::I32),
+                    ty: Ty::usize_ty(),
                     span,
                 })
             }

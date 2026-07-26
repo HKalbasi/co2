@@ -689,6 +689,16 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
                     .zip(act_sig.inputs_and_output.iter())
                     .all(|(et, at)| ty_matches_expected(*et, *at))
         }
+        // For C proposes, usize and u64 are the same type (in our currently supported targets)
+        (
+            TyKind::RigidTy(RigidTy::Uint(UintTy::U64 | UintTy::Usize)),
+            TyKind::RigidTy(RigidTy::Uint(UintTy::U64 | UintTy::Usize)),
+        ) => true,
+        (
+            TyKind::RigidTy(RigidTy::Int(IntTy::I64 | IntTy::Isize)),
+            TyKind::RigidTy(RigidTy::Int(IntTy::I64 | IntTy::Isize)),
+        ) => true,
+
         _ => false,
     }
 }

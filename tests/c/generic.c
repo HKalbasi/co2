@@ -1,7 +1,8 @@
 //@ mode: c
 //@ run-status: 0
-//@ run-stdout: 20\n10\n20\n123\n2\n0\n5\n1\n2\n3\n4\nlong\n1\n3\n3\n2\n1\n2\n2\n
+//@ run-stdout: 20\n10\n20\n123\n2\n0\n5\n1\n2\n3\n4\nlong\n3\n1\n3\n3\n2\n1\n2\n2\n
 
+#include <stddef.h>
 #include <stdio.h>
 
 const int a = 0;
@@ -74,6 +75,10 @@ int main()
 	printf("%d\n", i);
 	printf("%s\n", _Generic(i + 2L, long: "long", int: "int",
 				long long: "long long"));
+	i = _Generic(sizeof("foo"), size_t: 1, default: 2);
+	i += _Generic(sizeof(int), size_t: 1, default: 2);
+	i += _Generic(alignof(int), size_t: 1, default: 2);
+	printf("%d\n", i);
 	i = _Generic(l, long: 1, int: 2);
 	printf("%d\n", i);
 	i = _Generic(foo, fptr: 3, int: 4);
