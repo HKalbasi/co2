@@ -81,10 +81,14 @@ fn run_co2_miri_test(_root: &Path, bin_dir: Option<&Path>, test: &TestCase) -> R
     fs::copy(&test.path, src_dir.join("main.co2")).context("failed to copy co2 test source")?;
 
     let run_args = directive_args(test, "run-args")?;
+    let miri_flags = directive_args(test, "miri-flags")?;
 
     let mut cmd = Command::new(binary_path(bin_dir, "co2cargo"));
     cmd.current_dir(&project).args(["miri", "run", "-q"]);
     cmd.env("CO2_UNDER_MIRI", "1");
+    if !miri_flags.is_empty() {
+        cmd.env("MIRIFLAGS", miri_flags.join(" "));
+    }
     if !run_args.is_empty() {
         cmd.arg("--").args(run_args);
     }

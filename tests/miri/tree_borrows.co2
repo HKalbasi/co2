@@ -1,0 +1,15 @@
+//@ mode: co2
+//@ run-status: 0
+//@ run-miri
+//@ miri-flags: -Zmiri-tree-borrows
+
+fn main() {
+    i32 x = 0;
+    i32* p = &x;
+    i32* q = &x;
+    *p = 1;
+    *q = 2;
+    if (*p + *q != 4) {
+        std::process::exit(1);
+    }
+}
