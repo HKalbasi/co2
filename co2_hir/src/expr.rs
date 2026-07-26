@@ -2850,7 +2850,10 @@ fn ty_passed_to_variadic(ty: Ty) -> Ty {
                     IntTy::Isize => IntTy::Isize,
                     IntTy::I128 => IntTy::I128,
                 }),
-                RigidTy::Uint(uint_ty) => RigidTy::Uint(uint_ty),
+                RigidTy::Uint(uint_ty) => RigidTy::Int(match uint_ty {
+                    UintTy::U8 | UintTy::U16 => IntTy::I32,
+                    _ => return Ty::from_rigid_kind(RigidTy::Uint(uint_ty)),
+                }),
                 RigidTy::Float(float_ty) => RigidTy::Float(match float_ty {
                     FloatTy::F16 | FloatTy::F32 | FloatTy::F64 => FloatTy::F64,
                     FloatTy::F128 => FloatTy::F128,

@@ -1,0 +1,83 @@
+//@ mode: co2
+//@ run-status: 0
+//@ run-miri
+
+#include <stdarg.h>
+
+void example(int count, ...)
+{
+    va_list args;
+
+    va_start(args, count);
+
+    // 1. Retrieve arguments using the exact type passed
+    int a = va_arg(args, int);
+    int b = va_arg(args, int);
+
+    va_end(args);
+}
+
+void example_with_promotions(int count, ...)
+{
+    va_list args;
+
+    va_start(args, count);
+
+    // Default argument promotions:
+    // float -> double
+    // char/short -> int
+
+    double f = va_arg(args, double);  // correct: float is promoted to double
+    int c = va_arg(args, int);        // correct: char is promoted to int
+    int s = va_arg(args, int);        // correct: short is promoted to int
+
+    va_end(args);
+}
+
+void example_with_pointers(int count, ...)
+{
+    va_list args;
+
+    va_start(args, count);
+
+    int *ptr = va_arg(args, int *);
+
+    va_end(args);
+}
+
+void example_using_copy(int count, ...)
+{
+    va_list args;
+
+    va_start(args, count);
+
+    va_list copy;
+    va_copy(copy, args);
+
+    int first = va_arg(args, int);
+    int first_again = va_arg(copy, int);
+
+    va_end(copy);
+    va_end(args);
+}
+
+fn main()
+{
+    // Exact matching types
+    example(2, 10, 20);
+
+    // Default argument promotions
+    float f = 3.14f;
+    char c = 'A';
+    short s = 100;
+
+    example_with_promotions(3, f, c, s);
+    example_with_promotions(3, f, (unsigned char)c, (unsigned short)s);
+
+    // Pointer arguments
+    int value = 42;
+    example_with_pointers(1, &value);
+
+    // va_copy usage
+    example_using_copy(1, 99);
+}
