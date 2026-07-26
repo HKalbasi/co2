@@ -17,7 +17,7 @@ use rustc_public_generative::rustc_public::{
     },
 };
 
-use crate::item::{HirLocal, LocalId};
+use crate::{item::{HirLocal, LocalId}, ty::ty_matches_expected_for_c_generic};
 use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
@@ -2490,7 +2490,7 @@ impl HirCtx<'_> {
                             let assoc_ty = self.lower_type_name_in_scope(
                                 type_name, assoc_span, locals, local_map,
                             )?;
-                            if ty_matches_expected(assoc_ty, controlling_ty) {
+                            if ty_matches_expected_for_c_generic(assoc_ty, controlling_ty) {
                                 return self.lower_expr(expr, locals, local_map);
                             }
                         }

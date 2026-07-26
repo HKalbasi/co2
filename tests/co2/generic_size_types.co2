@@ -1,0 +1,36 @@
+//@ mode: co2
+//@ run-status: 0
+
+#include <stddef.h>
+#include <assert.h>
+
+typedef unsigned long my_size_t;
+
+struct test_struct {
+    int a;
+};
+
+fn main()
+{
+    // sizeof returns usize (= size_t = unsigned long on LP64),
+    // should match size_t association
+    assert(_Generic(sizeof(int), size_t: 1, default: 2) == 1);
+
+    // should match unsigned long (the underlying type of size_t)
+    assert(_Generic(sizeof(int), unsigned long: 1, default: 2) == 1);
+
+    // should match the typedef
+    assert(_Generic(sizeof(int), my_size_t: 1, default: 2) == 1);
+
+    // should match usize directly (co2 type)
+    assert(_Generic(sizeof(int), usize: 1, default: 2) == 1);
+
+    // offsetof returns size_t, same as sizeof
+    assert(_Generic(offsetof(struct test_struct, a), size_t: 1, default: 2) == 1);
+
+    // alignof returns size_t, same as sizeof
+    assert(_Generic(alignof(int), usize: 1, default: 2) == 1);
+
+    // should NOT match unsigned int (different type)
+    assert(_Generic(sizeof(int), unsigned int: 1, default: 2) == 2);
+}
