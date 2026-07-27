@@ -45,9 +45,12 @@ def --env prepare-payload [--version: string] {
 
     checkpoint "Collected libs"
 
+    let strip = ($sysroot | path join "lib" "rustlib" "x86_64-unknown-linux-gnu" "bin" "llvm-strip")
+    let llvm_ar = ($sysroot | path join "lib" "rustlib" "x86_64-unknown-linux-gnu" "bin" "llvm-ar")
+
     let so_files = (glob $"($payload_dir)/lib/*.so*")
     for lib in $so_files {
-        try { strip --strip-debug $lib e> /dev/null }
+        try { ^$strip --strip-debug $lib e> /dev/null }
     }
 
     checkpoint "Stripped libs"
@@ -81,17 +84,17 @@ def --env prepare-payload [--version: string] {
         cp $rlib ($dir | path join "archive.rlib")
         let orig_dir = $env.PWD
         cd $dir
-        ar x archive.rlib
+        ^$llvm_ar x archive.rlib
 
         let o_files = (glob "*.o")
         if ($o_files | length) > 0 {
             for o in $o_files {
-                try { strip --strip-debug $o }
+                try { ^$strip --strip-debug $o }
             }
         }
         let all_o = (glob "*.o")
         if ($all_o | length) > 0 {
-            ar crs archive.rlib ...$all_o
+            ^$llvm_ar crs archive.rlib ...$all_o
         }
         cp archive.rlib $rlib
         cd $orig_dir

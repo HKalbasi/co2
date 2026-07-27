@@ -27,7 +27,8 @@ if ($version.stderr | str trim) != "" {
     print "FAIL: co2rustc --version expected empty stderr"
     exit 1
 }
-assert-snapshot "version" $version.stdout ($expected_dir | path join "version.stdout.snapshot")
+let version_normalized = ($version.stdout | str replace --regex 'rustc .*' 'rustc VERSION')
+assert-snapshot "version" $version_normalized ($expected_dir | path join "version.stdout.snapshot")
 
 # ---- -h and --help ----
 let help_h = (do { ^$co2rustc -h } | complete)

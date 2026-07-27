@@ -1714,6 +1714,9 @@ impl DefinedCrateState {
         let DefinedCrateState::Stage2(items, _) = self else {
             return None;
         };
+        if !self.contains_key(tcx, &key) {
+            return None;
+        }
         let key = rustc_def_to_my_def(tcx, key.to_def_id());
         let kind = items.items.iter().find(|item| item.def_id() == key)?.kind;
         Some(match kind {
@@ -1743,6 +1746,9 @@ impl DefinedCrateState {
         let DefinedCrateState::Stage2(items, _) = self else {
             return None;
         };
+        if !self.contains_key(tcx, &key) {
+            return None;
+        }
         let key = rustc_def_to_my_def(tcx, key.to_def_id());
         Some(items.items.iter().find(|item| item.def_id() == key)?.span)
     }
@@ -1751,6 +1757,9 @@ impl DefinedCrateState {
         let DefinedCrateState::Stage2(items, _) = self else {
             return None;
         };
+        if !self.contains_key(tcx, &key) {
+            return None;
+        }
         let key = rustc_def_to_my_def(tcx, key.to_def_id());
         items
             .items
@@ -4351,7 +4360,11 @@ fn clone_resolver_global_ctxt(
         all_macro_rules: original.all_macro_rules.clone(),
         stripped_cfg_items: original.stripped_cfg_items.clone(),
         macro_reachable_adts: original.macro_reachable_adts.clone(),
-        delegation_infos: original.delegation_infos.clone(),
+        delegation_infos: original
+            .delegation_infos
+            .iter()
+            .map(|(k, v)| (*k, rustc_middle::ty::DelegationInfo { resolution_id: v.resolution_id }))
+            .collect(),
     }
 }
 

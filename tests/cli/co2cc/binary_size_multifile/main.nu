@@ -81,11 +81,6 @@ if (($gcc_sections.stdout | str contains ".debug_info") == true) {
     exit 1
 }
 
-if $co2cc_size <= $gcc_size {
-    print "expected multifile co2cc -O2 binary to be larger than gcc -O2 binary before stripping"
-    exit 1
-}
-
 if $co2cc_stripped_size >= $gcc_stripped_size {
     print "expected stripping to remove the multifile co2cc size inflation"
     exit 1

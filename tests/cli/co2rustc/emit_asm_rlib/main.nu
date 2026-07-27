@@ -27,7 +27,7 @@ if $compile_bar.exit_code != 0 {
 let foo_raw = (open $foo_asm)
 let bar_raw = (open $bar_asm)
 let normalize = {|s|
-    $s | ^c++filt | str replace --all --regex 'foo\[[^\]]*\]' 'crate_name' | str replace --all --regex 'bar\[[^\]]*\]' 'crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3foo' '_RNvCsXXXX_3crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3bar' '_RNvCsXXXX_3crate_name'
+    $s | ^c++filt | str replace --all --regex 'foo\[[^\]]*\]' 'crate_name' | str replace --all --regex 'bar\[[^\]]*\]' 'crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3foo' '_RNvCsXXXX_3crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3bar' '_RNvCsXXXX_3crate_name' | str replace --all --regex 'rustc version [^"]+' 'rustc version VERSION' | str replace --all --regex '^\t+' ''
 }
 let foo_text = (do $normalize $foo_raw | lines | skip 1 | str join "\n")
 let bar_text = (do $normalize $bar_raw | lines | skip 1 | str join "\n")

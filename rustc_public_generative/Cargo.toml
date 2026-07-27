@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 rand = "0.10.0"
+rustc_public = { git = "https://github.com/hkalbasi/co2-rustc-public-fork.git", features = ["rustc_internal"] }
 
 [package.metadata.rust-analyzer]
 rustc_private=true

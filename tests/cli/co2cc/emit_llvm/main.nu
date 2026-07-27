@@ -55,10 +55,16 @@ assert-snapshot "emit-llvm linking error" $linking_err.stderr ($expected_dir | p
 # snapshot check: compare normalized LLVM IR (skip source_filename line with temp path)
 let ll_text = (open $ll_file)
 let normalize = {|s|
-    $s | lines | where {|line|
+    $s
+    | lines
+    | where {|line|
         let t = ($line | str trim)
         ($t | str starts-with "source_filename") == false
-    } | str join "\n"
+    }
+    | each {|line|
+        $line | str replace --regex 'rustc version [^"]+' 'rustc version VERSION' | str replace --regex "[a-f0-9]{16}" "CGU_HASH"
+    }
+    | str join "\n"
 }
 let actual = (do $normalize $ll_text)
 assert-snapshot "emit-llvm IR" $actual ($expected_dir | path join "trivial.snapshot")

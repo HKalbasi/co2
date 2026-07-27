@@ -15,6 +15,7 @@ let actual_co2cc = (
     | str replace -a $test_dir "[TEMP]"
     | str replace -a -r '/tmp/\.co2cc-\d+-\d+' "[TEMP]"
     | str replace -a -r 'rustc[A-Za-z0-9]{6}' "[RUSTC_TEMP]"
+    | str replace -a -r '[a-f0-9]{16}' 'CGU_HASH'
     | str trim
 )
 assert-snapshot "co2cc stderr" $actual_co2cc ($expected_dir | path join "co2cc.stderr.snapshot")
@@ -26,6 +27,7 @@ let actual_co2rustc = (
     | str replace -a -r '\x1b\[[0-9;]*[a-zA-Z]' ''
     | str replace -a $test_dir "[TEMP]"
     | str replace -a -r 'rustc[A-Za-z0-9]{6}' "[RUSTC_TEMP]"
+    | str replace -a -r '[a-f0-9]{16}' 'CGU_HASH'
     | str trim
 )
 assert-snapshot "co2rustc stderr" $actual_co2rustc ($expected_dir | path join "co2rustc.stderr.snapshot")
@@ -60,6 +62,7 @@ let actual_shared = (
     | str replace -a $test_dir "[TEMP]"
     | str replace -a -r '/tmp/\.co2cc-\d+-\d+' "[TEMP]"
     | str replace -a -r 'rustc[A-Za-z0-9]{6}' "[RUSTC_TEMP]"
+    | str replace -a -r '[a-f0-9]{16}' 'CGU_HASH'
     | str trim
 )
 assert-snapshot "co2cc shared lib stderr" $actual_shared ($expected_dir | path join "co2cc_shared.stderr.snapshot")

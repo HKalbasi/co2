@@ -33,92 +33,13 @@ jobs:
           sudo cp $(which nu) /usr/bin/
       
 
-      - name: Get co2-changes commit SHA
-        id: rustc-sha
-        run: |
-          SHA=$(git ls-remote https://github.com/HKalbasi/rust refs/heads/co2-changes | cut -f1)
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "Rust fork SHA: $SHA"
-
-      - name: Restore custom rustc toolchain cache
-        id: cache-rustc
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/co2-toolchain
-          key: co2-toolchain-v2-ubuntu22-${{ steps.rustc-sha.outputs.sha }}
-
-      - name: Install rustc build dependencies
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            python3 cmake ninja-build \
-            libssl-dev pkg-config \
-            gcc g++ \
-            curl
-
       - name: Install test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap gcc build-essential gdb
 
-      - name: Install bootstrap Rust (for building the fork)
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Clone rustc fork (co2-changes)
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        run: |
-          git clone -b co2-changes \
-            https://github.com/HKalbasi/rust /tmp/rust-fork
-
-      - name: Configure rustc build
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        run: |
-          cat > /tmp/rust-fork/bootstrap.toml << 'EOF'
-          profile = "compiler"
-
-          [llvm]
-          ninja = true
-          download-ci-llvm = false
-
-          [build]
-          profiler = true
-
-          [install]
-          prefix = "/tmp/rust-install"
-          sysconfdir = "/tmp/rust-install"
-          EOF
-
-      - name: Seed rust bootstrap doc directories
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p \
-            /tmp/rust-fork/build/x86_64-unknown-linux-gnu/doc \
-            /tmp/rust-fork/build/x86_64-unknown-linux-gnu/json-doc
-
-      - name: Build and install custom rustc toolchain
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        working-directory: /tmp/rust-fork
-        run: python3 x.py install --stage 2 compiler library rustc-dev cargo miri src
-
-      - name: Copy toolchain to cache location
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        run: cp -a /tmp/rust-install ~/co2-toolchain
-
-      - name: Save custom rustc toolchain cache
-        if: steps.cache-rustc.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/co2-toolchain
-          key: co2-toolchain-v2-ubuntu22-${{ steps.rustc-sha.outputs.sha }}
-
-      - name: Install rustup
-        uses: dtolnay/rust-toolchain@stable
-      - name: Link custom toolchain via rustup
-        run: |
-          rustup toolchain link co2 ~/co2-toolchain
-          rustup override set co2
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
 
       - run: df -h
       - name: Run test harness
@@ -137,7 +58,7 @@ jobs:
           VER="${{ inputs.version }}"
           if [ -z "$VER" ]; then VER="ci-test"; fi
           source "$HOME/.cargo/env"
-          cargo +co2 build -p co2-multicall --release
+          cargo build -p co2-multicall --release
           nu ./bundler/build-bundle.nu --version "$VER"
 
       - name: Upload bundle artifact
