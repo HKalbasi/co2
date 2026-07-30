@@ -43,6 +43,11 @@ jobs:
         with:
           name: co2-ce-linux-x86_64
 
+      - name: Download rustup bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: co2-multicall-rustup-linux-x86_64
+
       - name: Upload to trunk release
         uses: ncipollo/release-action@v1
         with:
@@ -52,5 +57,5 @@ jobs:
           omitBodyDuringUpdate: true
           omitPrereleaseDuringUpdate: true
           replacesArtifacts: true
-          artifacts: "co2-multicall.run,co2-ce.tar.zstd"
+          artifacts: "co2-multicall.run,co2-ce.tar.zstd,co2-multicall-rustup.run"
           token: ${{ secrets.GITHUB_TOKEN }}

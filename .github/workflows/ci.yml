@@ -95,3 +95,27 @@ jobs:
           path: target/co2-ce.tar.zstd
           if-no-files-found: error
 
+      - name: Build rustup bundle
+        if: github.event_name != 'pull_request'
+        run: |
+          VER="${{ inputs.version }}"
+          if [ -z "$VER" ]; then VER="ci-test"; fi
+          source "$HOME/.cargo/env"
+          nu ./bundler/build-rustup-bundle.nu --version "$VER"
+
+      - name: Test rustup bundle
+        if: github.event_name != 'pull_request'
+        run: |
+          VER="${{ inputs.version }}"
+          if [ -z "$VER" ]; then VER="ci-test"; fi
+          source "$HOME/.cargo/env"
+          nu ./bundler/test-rustup-bundle.nu --version "$VER"
+
+      - name: Upload rustup bundle artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: co2-multicall-rustup-linux-x86_64
+          path: target/co2-multicall-rustup.run
+          if-no-files-found: error
+

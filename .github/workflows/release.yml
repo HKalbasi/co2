@@ -21,17 +21,24 @@ jobs:
       contents: write
 
     steps:
-      - name: Download artifact
+      - name: Download full bundle artifact
         uses: actions/download-artifact@v4
         with:
           name: co2-multicall-linux-x86_64
+
+      - name: Download rustup bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: co2-multicall-rustup-linux-x86_64
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}
           name: Release ${{ inputs.version }}
-          files: co2-multicall.run
+          files: |
+            co2-multicall.run
+            co2-multicall-rustup.run
           draft: false
           prerelease: false
         env:
