@@ -371,6 +371,7 @@ impl Co2GeneratorState {
         resolver: LocalResolver,
         initializer: co2_ast::Spanned<Initializer<LocalResolver>>,
     ) -> Body {
+        let resolver = resolver.with_owner(def);
         let span_converter = |span: co2_ast::Span| self.map_co2_span(ctx, span);
         let chumsky_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
             self.map_rust_to_co2_span(ctx, span)
@@ -424,6 +425,7 @@ impl Co2GeneratorState {
         initializer: co2_ast::Spanned<Initializer<LocalResolver>>,
         array_len: co2_ast::Spanned<Initializer<LocalResolver>>,
     ) -> Body {
+        let resolver = resolver.with_owner(def);
         let mut target_ty = CrateItem(def).ty();
         if let TyKind::RigidTy(RigidTy::Array(elem_ty, len)) = target_ty.kind()
             && len.eval_target_usize().is_err()
