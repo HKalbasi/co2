@@ -636,9 +636,6 @@ int main17()
     a = 010;
     if (a - 8)
         return 1;
-    a = NULL;
-    if (a)
-        return 1;
     y = -1l;
     if (y + 1l)
         return 1;
@@ -1243,9 +1240,15 @@ int main37()
     return (*(*p)(0, 2))(2, 2);
 }
 
+typedef int foo38;
 
 int main38()
 {
+    foo38 x = 5;
+    if (x != 3) {
+        goto foo38;
+    }
+    foo38:
     return 0; // Had UB, moved to ub_should_compile.c.
 }
 

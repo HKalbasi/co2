@@ -448,14 +448,22 @@ where
             ) => true,
             Some(Token::Ident(_)) => {
                 inp.rewind(checkpoint.clone());
-                let prefer = inp
-                    .parse(rust_path())
-                    .ok()
-                    .as_ref()
-                    .and_then(|path| resolver.classify_path(&path.0).ok())
-                    .is_some_and(|(result, _)| {
-                        matches!(result, TypeQueryResult::Unsure | TypeQueryResult::Type)
-                    });
+                // Check if this is a C label (ident: ) — if so, prefer statement
+                let is_label = inp
+                    .parse(rust_path().then_ignore(look_ahead(Token::Colon)))
+                    .is_ok();
+                inp.rewind(checkpoint.clone());
+                let prefer = if is_label {
+                    false
+                } else {
+                    inp.parse(rust_path())
+                        .ok()
+                        .as_ref()
+                        .and_then(|path| resolver.classify_path(&path.0).ok())
+                        .is_some_and(|(result, _)| {
+                            matches!(result, TypeQueryResult::Unsure | TypeQueryResult::Type)
+                        })
+                };
                 inp.rewind(checkpoint.clone());
                 prefer
             }

@@ -6,6 +6,8 @@
 // While we can't assert that the return code is always 0,
 // I'm interested in detecting the change in the behavior when I update the rustc version.
 
+#include <stddef.h>
+
 int main0() {
     return 0;
 }
@@ -104,12 +106,21 @@ int main5() {
     return 0;
 }
 
+int main6() {
+    int a;
+    a = NULL; // Not UB, but gcc doesn't like it.
+    if (a)
+        return 1;
+    return a;
+}
+
 typedef int (*main_ty)();
 
 int main() {
     main_ty mains[] = {
         main0,
         main1, main2, main3, main4, main5,
+        main6,
     };
     
     int i;
