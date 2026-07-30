@@ -121,7 +121,15 @@ main() {
         interactive_install co2_version install_dir
     fi
 
-    local _url="${CO2_UPDATE_ROOT}/releases/download/${co2_version}/co2-multicall.run"
+    # Choose bundle: rustup-aware (small) when rustup is available,
+    # otherwise the full self-contained bundle.
+    local _bundle
+    if [ "${CO2_BUNDLE_KIND:-auto}" = "rustup" ] || { [ "${CO2_BUNDLE_KIND:-auto}" = "auto" ] && command -v rustup > /dev/null 2>&1; }; then
+        _bundle="co2-multicall-rustup.run"
+    else
+        _bundle="co2-multicall.run"
+    fi
+    local _url="${CO2_UPDATE_ROOT}/releases/download/${co2_version}/${_bundle}"
     say "installing co2 version ${co2_version}"
 
     if [ "${DRY_RUN-}" = "1" ]; then

@@ -109,7 +109,6 @@ def main [--version: string, --zstd] {
 
     let script_header = ([
         '#!/bin/bash'
-        'set -e'
         ''
         ($"HASH=\"($hash)\"")
         'CACHE_DIR="$HOME/.cache/co2/$HASH"'
@@ -122,15 +121,9 @@ def main [--version: string, --zstd] {
         ('    tail -n +$PAYLOAD_START "$0" | tar -x ' + $compress_flag + ' -C "$CACHE_DIR"')
         'fi'
         ''
-        '# Check that rustc is available'
-        'if ! command -v rustc &> /dev/null; then'
-        '    echo "Error: co2 rustup bundle requires rustc (install via rustup)" >&2'
-        '    exit 1'
-        'fi'
-        ''
         '# Set up environment via the extracted env.sh'
         'export CO2_CACHE_DIR="$CACHE_DIR"'
-        'source "$CACHE_DIR/env.sh"'
+        'source "$CACHE_DIR/env.sh" || exit 1'
         ''
         '# Multicall dispatch'
         'ARG0="$0"'

@@ -30,7 +30,7 @@ if $arch.exit_code != 0 or $arch_ok == false {
 }
 
 # --- dry-run default (trunk) ---
-let dry = (do { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } | complete)
+let dry = (do { with-env { CO2_BUNDLE_KIND: "full" } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
 assert-snapshot "dry-run default" $dry.stdout ($snap_dir | path join "dry_run_default.txt")
 if $dry.exit_code != 0 {
     print $"dry-run exit code: ($dry.exit_code)"
@@ -38,15 +38,45 @@ if $dry.exit_code != 0 {
 }
 
 # --- dry-run custom version ---
-let ver = (do { with-env { CO2_VERSION: "2.3.4" } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
+let ver = (do { with-env { CO2_VERSION: "2.3.4" CO2_BUNDLE_KIND: "full" } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
 assert-snapshot "dry-run custom version" $ver.stdout ($snap_dir | path join "dry_run_custom_version.txt")
 if $ver.exit_code != 0 {
     print $"CO2_VERSION exit code: ($ver.exit_code)"
     exit 1
 }
 
+# --- dry-run with rustup bundle explicitly ---
+let rustup = (do { with-env { CO2_BUNDLE_KIND: "rustup" } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
+assert-snapshot "dry-run rustup" $rustup.stdout ($snap_dir | path join "dry_run_rustup.txt")
+if $rustup.exit_code != 0 {
+    print $"dry-run rustup exit code: ($rustup.exit_code)"
+    exit 1
+}
+
+# --- dry-run auto-detect (no CO2_BUNDLE_KIND) ---
+let auto = (do { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } | complete)
+if $auto.exit_code != 0 {
+    print $"dry-run auto exit code: ($auto.exit_code)"
+    exit 1
+}
+let has_rustup = (which rustup | length) > 0
+if $has_rustup {
+    if ($auto.stdout | str contains "co2-multicall-rustup.run") == false {
+        print $"FAIL: auto-detect should pick rustup bundle when rustup is available"
+        print $"got: ($auto.stdout)"
+        exit 1
+    }
+} else {
+    if ($auto.stdout | str contains "co2-multicall.run") == false {
+        print $"FAIL: auto-detect should pick full bundle when rustup is unavailable"
+        print $"got: ($auto.stdout)"
+        exit 1
+    }
+}
+print "auto-detect rustup bundle OK"
+
 # --- dry-run quiet mode ---
-let quiet = (do { ^bash $install_sh -y -q --install-dir /tmp/co2-test --dry-run } | complete)
+let quiet = (do { with-env { CO2_BUNDLE_KIND: "full" } { ^bash $install_sh -y -q --install-dir /tmp/co2-test --dry-run } } | complete)
 assert-snapshot "dry-run quiet" $quiet.stdout ($snap_dir | path join "dry_run_quiet.txt")
 if $quiet.exit_code != 0 {
     print $"-q exit code: ($quiet.exit_code)"
@@ -67,7 +97,7 @@ let mock_releases = '[
   {"tag_name": "1.0.0"},
   {"tag_name": "0.9.0"}
 ]'
-let mock = (do { with-env { MOCK_RELEASES: $mock_releases } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
+let mock = (do { with-env { MOCK_RELEASES: $mock_releases CO2_BUNDLE_KIND: "full" } { ^bash $install_sh -y --install-dir /tmp/co2-test --dry-run } } | complete)
 if $mock.exit_code != 0 {
     print $"MOCK_RELEASES caused failure: ($mock | to json -r)"
     exit 1
@@ -79,6 +109,7 @@ let interactive = (
         with-env {
             MOCK_RELEASES: $mock_releases
             CO2_STDIN_FALLBACK: "1"
+            CO2_BUNDLE_KIND: "full"
         } {
             $input | ^bash $install_sh --install-dir /tmp/co2-interactive-test --dry-run
         }
@@ -91,7 +122,7 @@ if $interactive.exit_code != 0 {
 }
 
 # --- unsupported architecture ---
-let unsupported = (do { with-env { CO2_MOCK_ARCH: "powerpc64le-unknown-linux-gnu" } { ^bash $install_sh --dry-run --install-dir /tmp/co2-test } } | complete)
+let unsupported = (do { with-env { CO2_MOCK_ARCH: "powerpc64le-unknown-linux-gnu" CO2_BUNDLE_KIND: "full" } { ^bash $install_sh --dry-run --install-dir /tmp/co2-test } } | complete)
 assert-snapshot "unsupported arch" $unsupported.stderr ($snap_dir | path join "unsupported_arch.txt")
 if $unsupported.exit_code != 1 {
     print $"unsupported arch expected exit code 1, got ($unsupported.exit_code)"
