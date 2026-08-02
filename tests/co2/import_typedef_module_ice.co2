@@ -1,0 +1,26 @@
+//@ mode: co2
+//@ run-status: 0
+
+// Minimal reproduction of an ICE: importing a typedef by name from a sibling
+// module crashes co2rustc with `def_kind(...) is not supported for this key`
+// instead of emitting a clean error.
+
+mod inside_co2 {
+    typedef struct list_head {
+        struct list_head *prev;
+        struct list_head *next;
+    } list_head;
+}
+
+mod consumer {
+    use inside_co2::list_head;
+
+    fn run() {
+        list_head *head;
+        head = 0;
+    }
+}
+
+fn main() {
+    consumer::run();
+}

@@ -2582,6 +2582,13 @@ pub fn dependency_incoherent_impls_for_name(
 
 pub fn dependency_is_trait(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let rustc_def_id = my_def_id_to_rustc_def_id(tcx, def_id);
+    // If the def belongs to the local (current) crate, it can never be a trait
+    // from a dependency. Querying `def_kind` on a local synthetic def (e.g. a
+    // typedef allocated during crate-sig lowering) is not supported at resolver
+    // time, so bail out instead of panicking (ICE).
+    if rustc_def_id.is_local() {
+        return false;
+    }
     matches!(tcx.def_kind(rustc_def_id), DefKind::Trait)
 }
 
