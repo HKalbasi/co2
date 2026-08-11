@@ -1003,11 +1003,12 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        // C-style suffixes
+        // C-style suffixes: u/U and l/L may appear in any case and in any
+        // order (C11 §6.4.4.1), e.g. uLL, Ul, lLu.
         if start + 3 <= self.len {
             let quad = std::str::from_utf8(&self.bytes[start..start + 3]).unwrap_or("");
-            match quad {
-                "ull" | "ULL" | "llu" | "LLU" => {
+            match quad.to_ascii_lowercase().as_str() {
+                "ull" | "llu" => {
                     self.pos += 3;
                     return IntegerSuffix::UnsignedLongLong;
                 }
@@ -1016,12 +1017,12 @@ impl<'a> Tokenizer<'a> {
         }
         if start + 2 <= self.len {
             let pair = std::str::from_utf8(&self.bytes[start..start + 2]).unwrap_or("");
-            match pair {
-                "ul" | "UL" | "lu" | "LU" => {
+            match pair.to_ascii_lowercase().as_str() {
+                "ul" | "lu" => {
                     self.pos += 2;
                     return IntegerSuffix::UnsignedLong;
                 }
-                "ll" | "LL" => {
+                "ll" => {
                     self.pos += 2;
                     return IntegerSuffix::LongLong;
                 }

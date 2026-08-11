@@ -1982,6 +1982,85 @@ int main91() {
     return 0;
 }
 
+#define main92_type_of(x) _Generic((x),                \
+    int: 1,                                     \
+    unsigned int: 2,                            \
+    long: 3,                                    \
+    long long: 3,                               \
+    unsigned long: 4,                           \
+    unsigned long long: 4,                      \
+    default: 0)
+
+int main92() {
+    /* int */
+    if (main92_type_of(1) != 1)
+        return 1;
+    /* unsigned int */
+    if (main92_type_of(1u) != 2)
+        return 2;
+    if (main92_type_of(1U) != 2)
+        return 3;
+    if (main92_type_of(0xffffffffu) != 2)
+        return 4;
+    /* long */
+    if (main92_type_of(1l) != 3)
+        return 5;
+    if (main92_type_of(1L) != 3)
+        return 6;
+    /* long long (only ll/LL are valid per §6.4.4.1) */
+    if (main92_type_of(1ll) != 3)
+        return 7;
+    if (main92_type_of(1LL) != 3)
+        return 8;
+    /* unsigned long */
+    if (main92_type_of(1ul) != 4)
+        return 9;
+    if (main92_type_of(1uL) != 4)
+        return 10;
+    if (main92_type_of(1Ul) != 4)
+        return 11;
+    if (main92_type_of(1UL) != 4)
+        return 12;
+    if (main92_type_of(1lu) != 4)
+        return 13;
+    if (main92_type_of(1lU) != 4)
+        return 14;
+    if (main92_type_of(1Lu) != 4)
+        return 15;
+    if (main92_type_of(1LU) != 4)
+        return 16;
+    /* a u-suffixed hex value that no longer fits in unsigned int must
+     * widen into unsigned long rather than stay unsigned int */
+    if (main92_type_of(0x100000000u) != 4)
+        return 17;
+    /* unsigned long long (all case combinations of u/U with ll/LL) */
+    if (main92_type_of(1ull) != 4)
+        return 18;
+    if (main92_type_of(1uLL) != 4)
+        return 19;
+    if (main92_type_of(1Ull) != 4)
+        return 20;
+    if (main92_type_of(1ULL) != 4)
+        return 21;
+    if (main92_type_of(1llu) != 4)
+        return 22;
+    if (main92_type_of(1llU) != 4)
+        return 23;
+    if (main92_type_of(1LLu) != 4)
+        return 24;
+    if (main92_type_of(1LLU) != 4)
+        return 25;
+
+    /* the size of a uLL literal must be 64-bit, not 32-bit */
+    if (sizeof(1uLL) != sizeof(unsigned long long))
+        return 26;
+    /* the full 64-bit value must be preserved (not truncated to u32) */
+    if (0xffffffffffffffffuLL != 0xffffffffffffffffULL)
+        return 27;
+
+    return 0;
+}
+
 typedef int (*main_ty)();
 
 int main() {
@@ -2005,6 +2084,7 @@ int main() {
         main76, main77, main78, main79, main80,
         main81, main82, main83, main84, main85,
         main86, main87, main88, main89, main90,
+        main91, main92,
     };
     
     int i;
