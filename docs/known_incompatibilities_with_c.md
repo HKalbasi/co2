@@ -16,6 +16,11 @@ static int value = (int)"foo"; // Valid in C, compile error in CO2!
 
 int array_decl[(intptr_t)some_pointer]; // Valid (although not useful) in C, compile error in CO2
 ``` 
+* In C, primitives are `int`, `long int`, `long long int`, ... and `intN_t` is a type alias to those.
+  In CO2, like Rust, `iN` is the primitive type and `core::ffi::{c_int, c_long, c_longlong}` are type aliases.
+  So in C in x86_64, `long` and `long long` are distinct 64 bit integer types, but in CO2 both are the same type.
+  This generally does not cause problems, since in C and CO2 there are permissive casts between primitive types,
+  but it is observable with `_Generic`, `__builtin_types_compatible_p` and similar things.
 
 ## Incompatibilities which seems doesn't worth the effort to fix
 
@@ -28,6 +33,8 @@ int array_decl[(intptr_t)some_pointer]; // Valid (although not useful) in C, com
   but all major optimizing C compilers have some assumptions similar to it. It is not known if this makes any difference
   for C codes in practice, please open an issue if you found an example impacted by this.
 * Reading uninitialized memory in C gives you indeterminate value, but in CO2 it is UB.
+* Writing uninitialized memory using bitfields is UB. This is unacceptable and I want to lift this restriction
+  when Rust support is added.
 
 ## Incompatibilities due lack of interest / missing implementation
 
