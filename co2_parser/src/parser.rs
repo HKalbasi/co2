@@ -1055,6 +1055,23 @@ where
                                 "Invalid character constant",
                             )]);
                             Expression::Constant(Constant::Char(0))
+                        } else if s.len() > 1 {
+                            // Multi-character character constant (gcc extension).
+                            // gcc packs up to sizeof(int) characters into an int,
+                            // first character in the most significant byte:
+                            //   'ab'   == 0x6162
+                            //   'abcd' == 0x61626364
+                            //   'abcde' == 0x62636465  (leading chars dropped)
+                            // The result has type int.
+                            let used = if s.len() > 4 { &s[s.len() - 4..] } else { &s[..] };
+                            let mut value: u32 = 0;
+                            for &b in used {
+                                value = (value << 8) | u32::from(b);
+                            }
+                            Expression::Constant(Constant::Int(
+                                i128::from(value as i32),
+                                IntegerSuffix::None,
+                            ))
                         } else {
                             Expression::Constant(Constant::Char(u32::from(s[0])))
                         }
