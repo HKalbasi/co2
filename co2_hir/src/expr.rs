@@ -3483,6 +3483,20 @@ fn int_suffix_ty(suffix: &IntegerSuffix, value: i128) -> Ty {
                 Ty::signed_ty(IntTy::I128)
             }
         }
+        // Unsuffixed decimal constant (C11 §6.4.4.1p5): only the signed
+        // types int, long, long long are candidates, so values above
+        // INT_MAX become long, never unsigned int. Values too large for a
+        // signed 64-bit long long get gcc's fallback to unsigned long long.
+        IntegerSuffix::NoneDecimal => {
+            let value = value.abs();
+            if value <= i128::from(i32::MAX) {
+                Ty::signed_ty(IntTy::I32)
+            } else if value <= i128::from(i64::MAX) {
+                Ty::signed_ty(IntTy::I64)
+            } else {
+                Ty::unsigned_ty(UintTy::U64)
+            }
+        }
         IntegerSuffix::Long | IntegerSuffix::LongLong => Ty::signed_ty(IntTy::I64),
         IntegerSuffix::Unsigned => {
             let value_u = value as u128;

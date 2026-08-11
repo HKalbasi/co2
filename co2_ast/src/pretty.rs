@@ -196,7 +196,7 @@ impl PrettyPrint for Constant {
         match self {
             Constant::Int(v, suffix) => {
                 let s = match suffix {
-                    IntegerSuffix::None => format!("{v}"),
+                    IntegerSuffix::None | IntegerSuffix::NoneDecimal => format!("{v}"),
                     IntegerSuffix::Unsigned => format!("{v}u"),
                     IntegerSuffix::Long => format!("{v}l"),
                     IntegerSuffix::LongLong => format!("{v}ll"),

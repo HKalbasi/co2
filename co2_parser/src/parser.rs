@@ -1021,7 +1021,21 @@ where
                 let span = e.span();
                 match lit {
                     LiteralToken::Int(i, suffix) => match parse_unsigned_integer_constant(&i) {
-                        Some(v) => Expression::Constant(Constant::Int(v as i128, suffix)),
+                        Some(v) => {
+                            // C11 §6.4.4.1: an unsuffixed decimal constant
+                            // only considers signed types (int, long, long
+                            // long); hex/octal may also pick unsigned types.
+                            let suffix = if suffix == IntegerSuffix::None
+                                && !i.starts_with("0x")
+                                && !i.starts_with("0X")
+                                && !(i.len() > 1 && i.starts_with('0'))
+                            {
+                                IntegerSuffix::NoneDecimal
+                            } else {
+                                suffix
+                            };
+                            Expression::Constant(Constant::Int(v as i128, suffix))
+                        }
                         None => {
                             let msg = if i.starts_with("0x") || i.starts_with("0X") {
                                 "Invalid hexadecimal int literal"

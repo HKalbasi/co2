@@ -7,7 +7,11 @@
  * unsigned long (64-bit on LP64), NOT unsigned int.
  *
  * Repro for the co2cc bug where IntegerSuffix::Unsigned always produced
- * UintTy::U32 regardless of the value. */
+ * UintTy::U32 regardless of the value.
+ *
+ * The widening must not be unconditional: a hex literal that still fits in
+ * unsigned int keeps type unsigned int. 0xfffffffb (== 2^32 - 5) fits, so
+ * sizeof is 4 (not 8); 0x100000000 (== 2^32) does not fit, so it widens. */
 
 #include <stdint.h>
 
@@ -23,6 +27,17 @@ int main(void) {
     uint64_t high = UINT64_C(0xffffffff00000000);
     if (trim64(high) != UINT64_C(0xffffffff00000000))
         return 2;
+
+    /* 2^32 - 5 fits in unsigned int: type is unsigned int (sizeof 4),
+     * NOT widened to 64-bit because the value happens to be large. */
+    if (sizeof(0xfffffffb) != sizeof(unsigned int))
+        return 3;
+    if (0xfffffffb != 4294967291u)
+        return 4;
+
+    /* 2^32 does not fit in unsigned int: it must widen to unsigned long. */
+    if (sizeof(0x100000000u) <= sizeof(unsigned int))
+        return 5;
 
     return 0;
 }

@@ -1389,7 +1389,7 @@ impl LocalResolverBase {
             }
             Expression::Constant(Constant::Int(_, suffix)) => {
                 let kind = match suffix {
-                    IntegerSuffix::None => HirTyKind::Int(IntTy::I32),
+                    IntegerSuffix::None | IntegerSuffix::NoneDecimal => HirTyKind::Int(IntTy::I32),
                     IntegerSuffix::Long => HirTyKind::Int(IntTy::I64),
                     IntegerSuffix::LongLong => HirTyKind::Int(IntTy::I128),
                     IntegerSuffix::Unsigned => HirTyKind::Uint(UintTy::U32),

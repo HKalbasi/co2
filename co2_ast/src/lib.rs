@@ -237,6 +237,11 @@ pub struct CompoundStatement<R: TypeResolver> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IntegerSuffix {
     None,
+    /// Unsuffixed decimal integer constant: per C11 §6.4.4.1 only the
+    /// signed types { int, long, long long } are considered. Unlike
+    /// `None` (hex/octal, which may also pick unsigned types), the type
+    /// of a decimal constant never silently becomes unsigned.
+    NoneDecimal,
     Unsigned,
     Long,
     LongLong,
@@ -837,7 +842,7 @@ impl Display for Token {
             Token::Integer(num, suffix) => {
                 write!(f, "{num}")?;
                 match suffix {
-                    IntegerSuffix::None => Ok(()),
+                    IntegerSuffix::None | IntegerSuffix::NoneDecimal => Ok(()),
                     IntegerSuffix::Unsigned => write!(f, "u"),
                     IntegerSuffix::Long => write!(f, "l"),
                     IntegerSuffix::LongLong => write!(f, "ll"),
