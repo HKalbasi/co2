@@ -1070,7 +1070,7 @@ where
                             )]);
                             Expression::Constant(Constant::Char(0))
                         } else if s.len() > 1 {
-                            // Multi-character character constant (gcc extension).
+                            // Multi-character character constant (implementation defined).
                             // gcc packs up to sizeof(int) characters into an int,
                             // first character in the most significant byte:
                             //   'ab'   == 0x6162

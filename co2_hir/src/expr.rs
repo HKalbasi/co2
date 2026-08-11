@@ -22,8 +22,8 @@ use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
     adt_field_tys, array_elem_ty, callable_sig, common_numeric_ty, enum_payload_ty, is_array_ty,
-    is_maybe_uninit_fn_ptr_ty, is_numeric_ty, needs_implicit_cast, resolve_field_path_in_adt,
-    ty_matches_expected, variant_idx,
+    is_maybe_uninit_fn_ptr_ty, is_numeric_ty, integer_promote_ty, needs_implicit_cast,
+    resolve_field_path_in_adt, ty_matches_expected, variant_idx,
 };
 use crate::{decl::CTy, decl::hir_ty_to_ty, ty::is_condition_ty};
 use crate::{initializer_tree::InitializerTree, ty::common_ternary_ty};
@@ -2272,7 +2272,7 @@ impl HirCtx<'_> {
                             span,
                         })
                     }
-                    ParsedUnaryOp::Plus => Ok(inner),
+                    ParsedUnaryOp::Plus => Ok(self.promote_integer_operand(inner)),
                     ParsedUnaryOp::Not => {
                         let inner = self.condition_to_bool(inner, parser_span);
                         Ok(HirExpr {
@@ -2282,6 +2282,7 @@ impl HirCtx<'_> {
                         })
                     }
                     ParsedUnaryOp::Com => {
+                        let inner = self.promote_integer_operand(inner);
                         if !is_numeric_ty(inner.ty) {
                             return Err(spanned_error(
                                 parser_span,
@@ -2295,6 +2296,7 @@ impl HirCtx<'_> {
                         })
                     }
                     ParsedUnaryOp::Minus => {
+                        let inner = self.promote_integer_operand(inner);
                         if !is_numeric_ty(inner.ty) {
                             return Err(spanned_error(
                                 parser_span,
@@ -2867,6 +2869,25 @@ fn ty_passed_to_variadic(ty: Ty) -> Ty {
 }
 
 impl HirCtx<'_> {
+    /// Applies C integer promotion (C11 6.3.1.1p2) to a single operand before
+    /// it is used in an arithmetic, shift, bitwise or comparison operation.
+    fn promote_integer_operand(&self, expr: HirExpr) -> HirExpr {
+        let target = integer_promote_ty(expr.ty);
+        if target == expr.ty {
+            expr
+        } else {
+            let span = expr.span;
+            let kind = match &expr.kind {
+                HirExprKind::ConstInt(_) => match expr.kind {
+                    HirExprKind::ConstInt(v) => HirExprKind::ConstInt(v),
+                    _ => unreachable!(),
+                },
+                _ => HirExprKind::Cast(Box::new(expr)),
+            };
+            HirExpr { kind, ty: target, span }
+        }
+    }
+
     pub(crate) fn lower_binop_from_lowered(
         &self,
         mut lhs: HirExpr,
@@ -2925,20 +2946,7 @@ impl HirCtx<'_> {
             let common_ty = if let Some(inner) = enum_payload_ty(lhs.ty) {
                 inner
             } else {
-                match lhs.ty.kind() {
-                    TyKind::RigidTy(rigid_ty) => match rigid_ty {
-                        RigidTy::Int(int_ty) => Ty::signed_ty(match int_ty {
-                            IntTy::I8 | IntTy::I16 => IntTy::I32,
-                            _ => int_ty,
-                        }),
-                        RigidTy::Uint(uint_ty) => Ty::unsigned_ty(match uint_ty {
-                            UintTy::U8 | UintTy::U16 => UintTy::U32,
-                            _ => uint_ty,
-                        }),
-                        _ => return Err(spanned_error(parser_span, "Invalid type for shift")),
-                    },
-                    _ => unreachable!(),
-                }
+                integer_promote_ty(lhs.ty)
             };
             if !is_assignment {
                 lhs = HirExpr {
@@ -3035,10 +3043,6 @@ impl HirCtx<'_> {
         if is_numeric_ty(lhs.ty)
             && is_numeric_ty(rhs.ty)
             && !matches!(op, HirBinOp::Shl | HirBinOp::Shr)
-            && (lhs.ty != rhs.ty
-                || lhs.ty.kind().is_bool()
-                || enum_payload_ty(lhs.ty).is_some()
-                || enum_payload_ty(rhs.ty).is_some())
         {
             let Some(mut common_ty) = common_numeric_ty(lhs.ty, rhs.ty) else {
                 return Err(spanned_error(
@@ -3046,21 +3050,21 @@ impl HirCtx<'_> {
                     "failed to find common ty in binop",
                 ));
             };
-            if common_ty.kind().is_bool() {
-                common_ty = Ty::signed_ty(IntTy::I32);
-            }
-            if !is_assignment {
+            common_ty = integer_promote_ty(common_ty);
+            if !is_assignment && lhs.ty != common_ty {
                 lhs = HirExpr {
                     kind: HirExprKind::Cast(Box::new(lhs.clone())),
                     ty: common_ty,
                     span: lhs.span,
                 };
             }
-            rhs = HirExpr {
-                kind: HirExprKind::Cast(Box::new(rhs.clone())),
-                ty: common_ty,
-                span: rhs.span,
-            };
+            if rhs.ty != common_ty {
+                rhs = HirExpr {
+                    kind: HirExprKind::Cast(Box::new(rhs.clone())),
+                    ty: common_ty,
+                    span: rhs.span,
+                };
+            }
         }
 
         if op.is_comparison() && lhs.ty != rhs.ty {

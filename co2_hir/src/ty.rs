@@ -341,6 +341,25 @@ pub(crate) fn common_numeric_ty(lhs: Ty, rhs: Ty) -> Option<Ty> {
     Some(ty)
 }
 
+/// C11 6.3.1.1p2: integer promotion.
+///
+/// If `int` can represent all values of the original type, the value is
+/// converted to `int`; otherwise, to `unsigned int`. Since co2's `int` is
+/// always 32-bit, this promotes `_Bool`, `char`, `signed char`,
+/// `unsigned char`, `short` and `unsigned short` to `int` and leaves every
+/// other type unchanged.
+pub(crate) fn integer_promote_ty(ty: Ty) -> Ty {
+    match ty.kind() {
+        TyKind::RigidTy(
+            RigidTy::Bool
+                | RigidTy::Char
+                | RigidTy::Int(IntTy::I8 | IntTy::I16)
+                | RigidTy::Uint(UintTy::U8 | UintTy::U16),
+        ) => Ty::signed_ty(IntTy::I32),
+        _ => ty,
+    }
+}
+
 pub(crate) fn array_elem_ty(ty: Ty) -> Option<Ty> {
     let TyKind::RigidTy(RigidTy::Array(elem, _)) = ty.kind() else {
         return None;
