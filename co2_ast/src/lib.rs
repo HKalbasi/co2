@@ -465,12 +465,15 @@ pub struct Enumerator<R: TypeResolver> {
 pub enum EnumSpecifier<R: TypeResolver> {
     Defined {
         ident: Spanned<String>,
+        underlying_type: Option<TypeName<R>>,
         enumerators: Vec<Spanned<R::EnumeratorIdentifier>>,
     },
     Declared {
         ident: Spanned<String>,
+        underlying_type: Option<TypeName<R>>,
     },
     Anonymous {
+        underlying_type: Option<TypeName<R>>,
         enumerators: Vec<Spanned<R::EnumeratorIdentifier>>,
     },
 }

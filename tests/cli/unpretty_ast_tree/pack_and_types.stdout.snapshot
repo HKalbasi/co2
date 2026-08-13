@@ -101,11 +101,11 @@ TranslationUnit
   Declaration@src/pack_and_types.co2:329..346
     TypeSpecifier@src/pack_and_types.co2:329..345
       Enum@src/pack_and_types.co2:329..345
-        Specifier@src/pack_and_types.co2:334..345 Declared { ident: ("ForwardMode", 334..345) }
+        Specifier@src/pack_and_types.co2:334..345 Declared { ident: ("ForwardMode", 334..345), underlying_type: None }
   Declaration@src/pack_and_types.co2:347..384
     TypeSpecifier@src/pack_and_types.co2:347..383
       Enum@src/pack_and_types.co2:347..383
-        Specifier@src/pack_and_types.co2:352..383 Defined { ident: ("Mode", 352..356), enumerators: [(Enumerator { ident: ("MODE_A", 359..365), value: Some((Constant(Int(3, NoneDecimal)), 368..369)) }, 359..369), (Enumerator { ident: ("MODE_B", 371..377), value: Some((Constant(Int(4, NoneDecimal)), 380..381)) }, 371..381)] }
+        Specifier@src/pack_and_types.co2:352..383 Defined { ident: ("Mode", 352..356), underlying_type: None, enumerators: [(Enumerator { ident: ("MODE_A", 359..365), value: Some((Constant(Int(3, NoneDecimal)), 368..369)) }, 359..369), (Enumerator { ident: ("MODE_B", 371..377), value: Some((Constant(Int(4, NoneDecimal)), 380..381)) }, 371..381)] }
   Declaration@src/pack_and_types.co2:385..454
     TypeSpecifier@src/pack_and_types.co2:385..453
       Struct@src/pack_and_types.co2:385..453
@@ -134,7 +134,7 @@ TranslationUnit
   Declaration@src/pack_and_types.co2:455..517
     TypeSpecifier@src/pack_and_types.co2:455..490
       Enum@src/pack_and_types.co2:455..490
-        Specifier@src/pack_and_types.co2:460..490 Anonymous { enumerators: [(Enumerator { ident: ("ANON_ONE", 462..470), value: Some((Constant(Int(1, NoneDecimal)), 473..474)) }, 462..474), (Enumerator { ident: ("ANON_TWO", 476..484), value: Some((Constant(Int(2, NoneDecimal)), 487..488)) }, 476..488)] }
+        Specifier@src/pack_and_types.co2:460..490 Anonymous { underlying_type: None, enumerators: [(Enumerator { ident: ("ANON_ONE", 462..470), value: Some((Constant(Int(1, NoneDecimal)), 473..474)) }, 462..474), (Enumerator { ident: ("ANON_TWO", 476..484), value: Some((Constant(Int(2, NoneDecimal)), 487..488)) }, 476..488)] }
     InitDeclarator@src/pack_and_types.co2:491..516
       Identifier@src/pack_and_types.co2:491..505 "anonymous_mode"
       Expr@src/pack_and_types.co2:508..516

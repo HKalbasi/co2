@@ -9,7 +9,9 @@ use std::env;
 use std::num::NonZero;
 use std::path::PathBuf;
 
-use co2_driver_lib::{CompileMode, compile_co2_file, compile_co2_file_for_miri, force_extern_crates};
+use co2_driver_lib::{
+    CompileMode, compile_co2_file, compile_co2_file_for_miri, force_extern_crates,
+};
 use co2rustc::{DetectResult, detect_co2};
 use miri::{
     AlignmentCheck, AllocId, BacktraceStyle, BorTag, BorrowTrackerMethod, FloatRoundingErrorMode,
@@ -165,18 +167,21 @@ fn parse_miri_config(
         } else if arg == "-Zmiri-disable-stacked-borrows" {
             miri_config.borrow_tracker = None;
         } else if arg == "-Zmiri-tree-borrows" {
-            miri_config.borrow_tracker = Some(BorrowTrackerMethod::TreeBorrows(TreeBorrowsParams {
-                precise_interior_mut: true,
-                implicit_writes: false,
-                box_custom_allocator_unique: true,
-            }));
+            miri_config.borrow_tracker =
+                Some(BorrowTrackerMethod::TreeBorrows(TreeBorrowsParams {
+                    precise_interior_mut: true,
+                    implicit_writes: false,
+                    box_custom_allocator_unique: true,
+                }));
         } else if arg == "-Zmiri-tree-borrows-no-precise-interior-mut" {
             match &mut miri_config.borrow_tracker {
                 Some(BorrowTrackerMethod::TreeBorrows(params)) => {
                     params.precise_interior_mut = false;
                 }
                 _ => {
-                    eprintln!("`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-no-precise-interior-mut`");
+                    eprintln!(
+                        "`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-no-precise-interior-mut`"
+                    );
                     std::process::exit(1);
                 }
             };
@@ -186,7 +191,9 @@ fn parse_miri_config(
                     params.implicit_writes = true;
                 }
                 _ => {
-                    eprintln!("`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-implicit-writes`");
+                    eprintln!(
+                        "`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-implicit-writes`"
+                    );
                     std::process::exit(1);
                 }
             };
@@ -196,7 +203,9 @@ fn parse_miri_config(
                     params.box_custom_allocator_unique = false;
                 }
                 _ => {
-                    eprintln!("`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-relax-custom-allocator-uniqueness`");
+                    eprintln!(
+                        "`-Zmiri-tree-borrows` is required before `-Zmiri-tree-borrows-relax-custom-allocator-uniqueness`"
+                    );
                     std::process::exit(1);
                 }
             };
@@ -222,7 +231,9 @@ fn parse_miri_config(
                 "warn" => IsolatedOp::Reject(RejectOpWith::Warning),
                 "warn-nobacktrace" => IsolatedOp::Reject(RejectOpWith::WarningWithoutBacktrace),
                 _ => {
-                    eprintln!("-Zmiri-isolation-error must be `abort`, `hide`, `warn`, or `warn-nobacktrace`");
+                    eprintln!(
+                        "-Zmiri-isolation-error must be `abort`, `hide`, `warn`, or `warn-nobacktrace`"
+                    );
                     std::process::exit(1);
                 }
             };
@@ -263,17 +274,27 @@ fn parse_miri_config(
                 eprintln!("-Zmiri-env-set requires an argument of the form <name>=<value>");
                 std::process::exit(1);
             };
-            miri_config.set_env_vars.insert(name.to_owned(), value.to_owned());
+            miri_config
+                .set_env_vars
+                .insert(name.to_owned(), value.to_owned());
         } else if let Some(param) = arg.strip_prefix("-Zmiri-track-pointer-tag=") {
-            let ids: Vec<u64> = param.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let ids: Vec<u64> = param
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
             for id in ids {
                 if let Some(tag) = BorTag::new(id) {
                     miri_config.tracked_pointer_tags.insert(tag);
                 }
             }
         } else if let Some(param) = arg.strip_prefix("-Zmiri-track-alloc-id=") {
-            let ids: Vec<NonZero<u64>> = param.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-            miri_config.tracked_alloc_ids.extend(ids.into_iter().map(AllocId));
+            let ids: Vec<NonZero<u64>> = param
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            miri_config
+                .tracked_alloc_ids
+                .extend(ids.into_iter().map(AllocId));
         } else if arg == "-Zmiri-track-alloc-accesses" {
             miri_config.track_alloc_accesses = true;
         } else if let Some(param) = arg.strip_prefix("-Zmiri-provenance-gc=") {
@@ -299,7 +320,10 @@ fn parse_miri_config(
             });
             miri_config.num_cpus = num_cpus;
         } else if arg.starts_with("-Zmiri-") {
-            eprintln!("error: unknown unstable option: `{}`", arg.strip_prefix("-Z").unwrap_or(&arg));
+            eprintln!(
+                "error: unknown unstable option: `{}`",
+                arg.strip_prefix("-Z").unwrap_or(&arg)
+            );
             std::process::exit(1);
         } else {
             rustc_args.push(arg);

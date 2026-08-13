@@ -1287,6 +1287,16 @@ impl LocalResolverBase {
         def_id: DefId,
         span: rustc_public_generative::rustc_public::ty::Span,
     ) -> Option<HirTy> {
+        if let Some(enum_def) = self.enum_const_defs.get(&def_id) {
+            if self.is_fixed_underlying_enum(*enum_def) {
+                return Some(HirTy::adt(*enum_def, vec![], span));
+            }
+            // Plain enums: the enumerator constant has the underlying type, which
+            // is computed from the value range (GCC behaviour).
+            if let Some(underlying) = self.enum_payload_field_ty(*enum_def) {
+                return Some(underlying);
+            }
+        }
         self.has_local_enum_const(def_id)
             .then(|| HirTy::signed_ty(IntTy::I32, span))
     }
@@ -1322,7 +1332,10 @@ impl LocalResolverBase {
         if let HirTyKind::Adt(def, _) = target_ty.kind
             && self.is_enum_def(def)
         {
-            return self.cast_const_int(value, &HirTy::signed_ty(IntTy::I32, target_ty.span), span);
+            let underlying = self
+                .enum_payload_field_ty(def)
+                .unwrap_or_else(|| HirTy::signed_ty(IntTy::I32, target_ty.span));
+            return self.cast_const_int(value, &underlying, span);
         }
         match target_ty.kind {
             HirTyKind::Bool => Ok(i128::from(value != 0)),
@@ -1680,7 +1693,7 @@ impl LocalResolverBase {
         Ok(offset)
     }
 
-    fn lower_type_name_for_const(
+    pub(crate) fn lower_type_name_for_const(
         &mut self,
         type_name: TypeName<LocalResolver>,
         span: Span,

@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use co2_ast::{
     DeclarationSpecifier, Declarator, EnumSpecifier, Enumerator, Expression, Spanned,
-    StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, TypeQualifier, TypeQueryResult,
+    StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, TypeName, TypeQualifier,
+    TypeQueryResult,
 };
 use rustc_public_generative::rustc_public::ty::{IntTy, UintTy};
 use rustc_public_generative::{
@@ -25,6 +26,9 @@ pub(crate) struct StructData {
     /// `None` means default (no packing).
     pub(crate) pack_align: Option<u32>,
     pub(crate) skip_emit: bool,
+    /// True for enums declared with an explicit C23 fixed underlying type
+    /// (`enum E : type { ... }`).
+    pub(crate) fixed_underlying: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,12 +117,21 @@ impl LocalResolver {
         def_id
     }
 
-    fn def_id_of_enum(&self, name: &str, span: Span, _redefine: bool) -> DefId {
+    fn def_id_of_enum(
+        &self,
+        name: &str,
+        span: Span,
+        _redefine: bool,
+        underlying_ty: Option<HirTy>,
+    ) -> DefId {
         if let Some(def) = self.struct_tags.borrow().struct_tags.get(name) {
             return *def;
         }
 
-        let def_id = self.base.borrow_mut().allocate_enum(span, name);
+        let def_id = self
+            .base
+            .borrow_mut()
+            .allocate_enum(span, name, underlying_ty);
         self.struct_tags
             .borrow_mut()
             .struct_tags
@@ -172,13 +185,27 @@ impl LocalResolver {
         span: co2_ast::Span,
     ) -> DefId {
         let rust_span = self.base.borrow().co2_span_to_rustc(span);
+        let underlying_ty = |underlying_type: Option<TypeName<LocalResolver>>| {
+            underlying_type.map(|ty| self.base.borrow_mut().lower_type_name_for_const(ty, span))
+        };
         match specifier {
-            EnumSpecifier::Declared { ident } => self.def_id_of_enum(&ident.0, rust_span, false),
-            EnumSpecifier::Defined { ident, enumerators } => {
-                let def = self.def_id_of_enum(&ident.0, rust_span, true);
+            EnumSpecifier::Declared {
+                ident,
+                underlying_type,
+            } => self.def_id_of_enum(&ident.0, rust_span, false, underlying_ty(underlying_type)),
+            EnumSpecifier::Defined {
+                ident,
+                underlying_type,
+                enumerators,
+            } => {
+                let has_fixed_underlying = underlying_type.is_some();
+                let def =
+                    self.def_id_of_enum(&ident.0, rust_span, true, underlying_ty(underlying_type));
                 let mut prev = None;
+                let mut const_defs = Vec::new();
                 for ((def_id, fake_name, value), _) in enumerators {
                     let mut base = self.base.borrow_mut();
+                    base.enum_const_defs.insert(def_id, def);
                     let mir_info = match value {
                         Some((initializer, span)) => {
                             let initializer = (initializer, span);
@@ -197,15 +224,33 @@ impl LocalResolver {
                         def_id,
                         mir_info,
                     });
+                    const_defs.push(def_id);
                     prev = Some(def_id);
+                }
+                if !has_fixed_underlying {
+                    self.base.borrow_mut().set_plain_enum_payload_ty_from_range(
+                        def,
+                        &const_defs,
+                        span,
+                    );
                 }
                 def
             }
-            EnumSpecifier::Anonymous { enumerators } => {
-                let def = self.base.borrow_mut().allocate_enum(rust_span, "");
+            EnumSpecifier::Anonymous {
+                underlying_type,
+                enumerators,
+            } => {
+                let underlying_ty = underlying_ty(underlying_type);
+                let has_fixed_underlying = underlying_ty.is_some();
+                let def = self
+                    .base
+                    .borrow_mut()
+                    .allocate_enum(rust_span, "", underlying_ty);
                 let mut prev = None;
+                let mut const_defs = Vec::new();
                 for ((def_id, fake_name, value), _) in enumerators {
                     let mut base = self.base.borrow_mut();
+                    base.enum_const_defs.insert(def_id, def);
                     let mir_info = match value {
                         Some((initializer, span)) => {
                             let initializer = (initializer, span);
@@ -224,7 +269,15 @@ impl LocalResolver {
                         def_id,
                         mir_info,
                     });
+                    const_defs.push(def_id);
                     prev = Some(def_id);
+                }
+                if !has_fixed_underlying {
+                    self.base.borrow_mut().set_plain_enum_payload_ty_from_range(
+                        def,
+                        &const_defs,
+                        span,
+                    );
                 }
                 def
             }
@@ -237,7 +290,7 @@ impl LocalResolver {
 }
 
 impl LocalResolverBase {
-    fn allocate_enum(&mut self, span: Span, hint: &str) -> DefId {
+    fn allocate_enum(&mut self, span: Span, hint: &str, underlying_ty: Option<HirTy>) -> DefId {
         let name = format!(
             "__co2_c_enum_{hint}_{}",
             self.struct_manager.definitions.len()
@@ -249,7 +302,8 @@ impl LocalResolverBase {
         let field_id = self
             .hir_ctx
             .allocate_def_id(def_id, &DefData::ValueNs(ENUM_FIELD_NAME.to_owned()));
-        let field_ty = HirTy::signed_ty(IntTy::I32, span);
+        let fixed_underlying = underlying_ty.is_some();
+        let field_ty = underlying_ty.unwrap_or_else(|| HirTy::signed_ty(IntTy::I32, span));
         let data = StructData {
             def_id,
             name,
@@ -266,6 +320,7 @@ impl LocalResolverBase {
             logical_fields: None,
             pack_align: None,
             skip_emit: false,
+            fixed_underlying,
         };
         self.struct_manager.definitions.insert(def_id, data);
         self.struct_manager.enum_defs.insert(def_id);
@@ -291,6 +346,7 @@ impl LocalResolverBase {
             logical_fields: None,
             pack_align: None,
             skip_emit: false,
+            fixed_underlying: false,
         };
         self.struct_manager.definitions.insert(def_id, data);
         def_id
@@ -298,6 +354,86 @@ impl LocalResolverBase {
 
     pub(crate) fn is_enum_def(&self, def_id: DefId) -> bool {
         self.struct_manager.enum_defs.contains(&def_id)
+    }
+
+    pub(crate) fn enum_payload_field_ty(&self, def_id: DefId) -> Option<HirTy> {
+        let field = self
+            .struct_manager
+            .definitions
+            .get(&def_id)?
+            .emitted_fields
+            .as_ref()?
+            .first()?;
+        Some(field.ty.clone())
+    }
+
+    fn set_enum_payload_field_ty(&mut self, def_id: DefId, ty: HirTy) {
+        if let Some(data) = self.struct_manager.definitions.get_mut(&def_id)
+            && let Some(fields) = data.emitted_fields.as_mut()
+            && let Some(field) = fields.first_mut()
+        {
+            field.ty = ty;
+        }
+    }
+
+    /// For plain enums (no fixed underlying type) the payload type must be able
+    /// to represent all enumerator values. GCC picks the smallest of
+    /// {int, unsigned int, long, unsigned long} that fits; we mirror that so
+    /// large enumerator values are not truncated/sign-extended as i32.
+    fn set_plain_enum_payload_ty_from_range(
+        &mut self,
+        enum_def: DefId,
+        const_defs: &[DefId],
+        span: co2_ast::Span,
+    ) {
+        let mut min = i128::MAX;
+        let mut max = i128::MIN;
+        for &const_def in const_defs {
+            let Ok(value) = self.eval_local_const(const_def, span) else {
+                return;
+            };
+            min = min.min(value);
+            max = max.max(value);
+        }
+        let rust_span = self.co2_span_to_rustc(span);
+        self.set_enum_payload_field_ty(
+            enum_def,
+            Self::plain_enum_payload_ty_from_range(min, max, rust_span),
+        );
+    }
+
+    fn plain_enum_payload_ty_from_range(min: i128, max: i128, span: Span) -> HirTy {
+        const INT_MIN: i128 = i32::MIN as i128;
+        const INT_MAX: i128 = i32::MAX as i128;
+        const UINT_MAX: i128 = u32::MAX as i128;
+        const LONG_MIN: i128 = i64::MIN as i128;
+        const LONG_MAX: i128 = i64::MAX as i128;
+        const ULONG_MAX: i128 = u64::MAX as i128;
+        // TODO: this function looks very wrong, but I didn't fix it since we don't have tests for it.
+        if min >= 0 {
+            if max <= INT_MAX {
+                HirTy::signed_ty(IntTy::I32, span)
+            } else if max <= UINT_MAX {
+                HirTy::unsigned_ty(UintTy::U32, span)
+            } else if max <= ULONG_MAX {
+                HirTy::unsigned_ty(UintTy::U64, span)
+            } else {
+                HirTy::signed_ty(IntTy::I64, span)
+            }
+        } else if min >= INT_MIN && max <= INT_MAX {
+            HirTy::signed_ty(IntTy::I32, span)
+        } else if min >= LONG_MIN && max <= LONG_MAX {
+            HirTy::signed_ty(IntTy::I64, span)
+        } else {
+            HirTy::unsigned_ty(UintTy::U64, span)
+        }
+    }
+
+    pub(crate) fn is_fixed_underlying_enum(&self, def_id: DefId) -> bool {
+        self.struct_manager
+            .definitions
+            .get(&def_id)
+            .map_or(false, |data| data.fixed_underlying)
     }
 
     pub(crate) fn c_adt_display_info(&self, def_id: DefId) -> Option<CAdtDisplayInfo> {

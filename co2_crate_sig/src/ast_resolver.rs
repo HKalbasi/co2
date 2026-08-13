@@ -153,6 +153,7 @@ pub struct LocalResolverBase {
     pub(crate) global_struct_tags: Rc<RefCell<StructAndEnumData>>,
     pub(crate) global_locals: Rc<RefCell<im::HashMap<String, (DefOrLocal, TypeQueryResult)>>>,
     pub(crate) enum_const_values: HashMap<DefId, i128>,
+    pub(crate) enum_const_defs: HashMap<DefId, DefId>,
     pub(crate) constexpr_def_exprs: HashMap<DefId, co2_ast::Spanned<Expression<LocalResolver>>>,
     pub(crate) constexpr_local_exprs: HashMap<u32, co2_ast::Spanned<Expression<LocalResolver>>>,
 }
@@ -360,6 +361,15 @@ impl LocalResolver {
 
     pub fn is_enum_def(&self, def_id: DefId) -> bool {
         self.base.borrow().is_enum_def(def_id)
+    }
+
+    pub fn is_fixed_underlying_enum(&self, def_id: DefId) -> bool {
+        self.base.borrow().is_fixed_underlying_enum(def_id)
+    }
+
+    /// Returns the enum's `DefId` for a local enum constant `def_id`, if any.
+    pub fn enum_const_def(&self, def_id: DefId) -> Option<DefId> {
+        self.base.borrow().enum_const_defs.get(&def_id).copied()
     }
 
     pub fn is_transparent_union_def(&self, def_id: DefId) -> bool {

@@ -1077,7 +1077,11 @@ where
                             //   'abcd' == 0x61626364
                             //   'abcde' == 0x62636465  (leading chars dropped)
                             // The result has type int.
-                            let used = if s.len() > 4 { &s[s.len() - 4..] } else { &s[..] };
+                            let used = if s.len() > 4 {
+                                &s[s.len() - 4..]
+                            } else {
+                                &s[..]
+                            };
                             let mut value: u32 = 0;
                             for &b in used {
                                 value = (value << 8) | u32::from(b);
@@ -1973,8 +1977,12 @@ where
                         assign_expression_rec.clone(),
                     ))
                     .map(|(ident, fields)| StructOrUnionSpecifier::Defined { ident, fields }),
-                struct_or_union_fields(rec.clone(), declarator_rec, assign_expression_rec.clone())
-                    .map(|fields| StructOrUnionSpecifier::Anonymous { fields }),
+                struct_or_union_fields(
+                    rec.clone(),
+                    declarator_rec.clone(),
+                    assign_expression_rec.clone(),
+                )
+                .map(|fields| StructOrUnionSpecifier::Anonymous { fields }),
                 identifier().map(|ident| StructOrUnionSpecifier::Declared { ident }),
             ))
             .map_with(|r, e| (r, e.span())),
@@ -2010,16 +2018,48 @@ where
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::LBrace), just(Token::RBrace));
+        let underlying_type = just(Token::Colon)
+            .ignore_then(
+                choice((
+                    rec.clone().map(SpecifierQualifier::TypeSpecifier),
+                    type_qualifier().map(SpecifierQualifier::TypeQualifier),
+                ))
+                .map_with(|r, e| (r, e.span()))
+                .repeated()
+                .at_least(1)
+                .collect::<Vec<_>>(),
+            )
+            .map(|specifier_qualifier_list| TypeName {
+                specifier_qualifier_list,
+                abstract_declarator: None,
+            });
         let enum_specifier = just(Token::Enum)
             .ignore_then(
                 choice((
                     identifier()
+                        .then(underlying_type.clone().or_not())
                         .then(enum_body.clone())
-                        .map(|(ident, enumerators)| EnumSpecifier::Defined { ident, enumerators }),
-                    enum_body
+                        .map(
+                            |((ident, underlying_type), enumerators)| EnumSpecifier::Defined {
+                                ident,
+                                underlying_type,
+                                enumerators,
+                            },
+                        ),
+                    underlying_type
                         .clone()
-                        .map(|enumerators| EnumSpecifier::Anonymous { enumerators }),
-                    identifier().map(|ident| EnumSpecifier::Declared { ident }),
+                        .or_not()
+                        .then(enum_body.clone())
+                        .map(|(underlying_type, enumerators)| EnumSpecifier::Anonymous {
+                            underlying_type,
+                            enumerators,
+                        }),
+                    identifier()
+                        .then(underlying_type.or_not())
+                        .map(|(ident, underlying_type)| EnumSpecifier::Declared {
+                            ident,
+                            underlying_type,
+                        }),
                 ))
                 .map_with(|r, e| (r, e.span())),
             )

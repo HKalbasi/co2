@@ -15,6 +15,34 @@ impl HirCtx<'_> {
     pub(crate) fn format_ty(&self, ty: Ty) -> String {
         format_ty(Some(&self.decl_resolver), ty)
     }
+
+    /// C `_Generic` type matching (C23 6.5.1.1): a fixed-underlying enum type is
+    /// compatible with its underlying type in addition to matching itself.
+    pub(crate) fn c_generic_ty_matches(&self, assoc_ty: Ty, controlling_ty: Ty) -> bool {
+        if ty_matches_expected_for_c_generic(assoc_ty, controlling_ty) {
+            return true;
+        }
+        let fixed_enum_underlying = |ty: Ty| -> Option<Ty> {
+            let TyKind::RigidTy(RigidTy::Adt(adt, _)) = ty.kind() else {
+                return None;
+            };
+            if !self.decl_resolver.is_fixed_underlying_enum(adt.0) {
+                return None;
+            }
+            enum_payload_ty(ty)
+        };
+        match (
+            fixed_enum_underlying(assoc_ty),
+            fixed_enum_underlying(controlling_ty),
+        ) {
+            // Two distinct fixed enums are never compatible with each other, even
+            // when they share the same underlying type.
+            (Some(_), Some(_)) => false,
+            (Some(exp), None) => exp == controlling_ty,
+            (None, Some(act)) => act == assoc_ty,
+            (None, None) => false,
+        }
+    }
 }
 
 pub fn format_ty(resolver: Option<&LocalResolver>, ty: Ty) -> String {
@@ -352,9 +380,9 @@ pub(crate) fn integer_promote_ty(ty: Ty) -> Ty {
     match ty.kind() {
         TyKind::RigidTy(
             RigidTy::Bool
-                | RigidTy::Char
-                | RigidTy::Int(IntTy::I8 | IntTy::I16)
-                | RigidTy::Uint(UintTy::U8 | UintTy::U16),
+            | RigidTy::Char
+            | RigidTy::Int(IntTy::I8 | IntTy::I16)
+            | RigidTy::Uint(UintTy::U8 | UintTy::U16),
         ) => Ty::signed_ty(IntTy::I32),
         _ => ty,
     }

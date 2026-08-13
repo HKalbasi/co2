@@ -1100,6 +1100,7 @@ fn lower_translation_unit_items(
                     logical_fields: None,
                     pack_align: None,
                     skip_emit: false,
+                    fixed_underlying: false,
                 },
             );
             base.define_def(type_def, &transformed_fields, span);
@@ -1854,6 +1855,7 @@ pub fn lower_crate_sig(
             global_struct_tags: Rc::new(RefCell::new(StructAndEnumData::default())),
             global_locals: Rc::new(RefCell::new(im::HashMap::new())),
             enum_const_values: HashMap::new(),
+            enum_const_defs: HashMap::new(),
             constexpr_def_exprs: HashMap::new(),
             constexpr_local_exprs: HashMap::new(),
         })),
@@ -2053,6 +2055,7 @@ pub fn lower_crate_sig(
         span,
         pack_align,
         skip_emit,
+        fixed_underlying: _,
     } in structs
     {
         if skip_emit {

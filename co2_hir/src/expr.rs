@@ -12,17 +12,17 @@ use rustc_public_generative::rustc_public::{
     abi::FieldsShape,
     mir::Mutability,
     ty::{
-        FloatTy, GenericArgKind, GenericArgs, IntTy, ParamTy, Region, RegionKind, RigidTy,
+        AdtDef, FloatTy, GenericArgKind, GenericArgs, IntTy, ParamTy, Region, RegionKind, RigidTy,
         Span as RustSpan, Ty, TyConst, TyKind, UintTy,
     },
 };
 
-use crate::{item::{HirLocal, LocalId}, ty::ty_matches_expected_for_c_generic};
+use crate::item::{HirLocal, LocalId};
 use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
-    adt_field_tys, array_elem_ty, callable_sig, common_numeric_ty, enum_payload_ty, is_array_ty,
-    is_maybe_uninit_fn_ptr_ty, is_numeric_ty, integer_promote_ty, needs_implicit_cast,
+    adt_field_tys, array_elem_ty, callable_sig, common_numeric_ty, enum_payload_ty,
+    integer_promote_ty, is_array_ty, is_maybe_uninit_fn_ptr_ty, is_numeric_ty, needs_implicit_cast,
     resolve_field_path_in_adt, ty_matches_expected, variant_idx,
 };
 use crate::{decl::CTy, decl::hir_ty_to_ty, ty::is_condition_ty};
@@ -1382,6 +1382,32 @@ impl HirCtx<'_> {
                                     format!("missing scalar constant value for def {def_id:?}"),
                                 )
                             })?;
+                        if let Some(enum_def) = resolver.enum_const_def(def_id) {
+                            let adt_ty = Ty::from_rigid_kind(RigidTy::Adt(
+                                AdtDef(enum_def),
+                                GenericArgs(vec![]),
+                            ));
+                            let payload_ty = enum_payload_ty(adt_ty)
+                                .unwrap_or_else(|| Ty::signed_ty(IntTy::I32));
+                            if resolver.is_fixed_underlying_enum(enum_def) {
+                                return Ok(HirExpr {
+                                    kind: HirExprKind::Cast(Box::new(HirExpr {
+                                        kind: HirExprKind::ConstInt(value),
+                                        ty: payload_ty,
+                                        span,
+                                    })),
+                                    ty: adt_ty,
+                                    span,
+                                });
+                            }
+                            // Plain enums: the constant has the underlying type, so
+                            // large values are not truncated to i32.
+                            return Ok(HirExpr {
+                                kind: HirExprKind::ConstInt(value),
+                                ty: payload_ty,
+                                span,
+                            });
+                        }
                         Ok(HirExpr {
                             kind: HirExprKind::ConstInt(value),
                             ty: Ty::signed_ty(IntTy::I32),
@@ -2303,6 +2329,15 @@ impl HirCtx<'_> {
                                 "unary `-` expects integer expression",
                             ));
                         }
+                        let inner = if let Some(fold_ty) = enum_payload_ty(inner.ty) {
+                            HirExpr {
+                                kind: HirExprKind::Cast(Box::new(inner.clone())),
+                                ty: fold_ty,
+                                span: inner.span,
+                            }
+                        } else {
+                            inner
+                        };
                         match &inner.kind {
                             HirExprKind::ConstInt(v) => {
                                 // TODO: usize handling is wrong for cross compilation.
@@ -2492,7 +2527,7 @@ impl HirCtx<'_> {
                             let assoc_ty = self.lower_type_name_in_scope(
                                 type_name, assoc_span, locals, local_map,
                             )?;
-                            if ty_matches_expected_for_c_generic(assoc_ty, controlling_ty) {
+                            if self.c_generic_ty_matches(assoc_ty, controlling_ty) {
                                 return self.lower_expr(expr, locals, local_map);
                             }
                         }
@@ -2531,7 +2566,7 @@ impl HirCtx<'_> {
                     else_expr.ty
                 } else if else_expr.is_null_like() {
                     then_expr.ty
-                } else if let Some(common_ty) = common_ternary_ty(then_expr.ty, else_expr.ty) {
+                } else if let Some(common_ty) = self.ternary_common_ty(then_expr.ty, else_expr.ty) {
                     common_ty
                 } else {
                     self.terminate_with_error(
@@ -2869,10 +2904,37 @@ fn ty_passed_to_variadic(ty: Ty) -> Ty {
 }
 
 impl HirCtx<'_> {
+    /// C11 6.3.1.1p2 integer promotion, applying only to enums that have an
+    /// explicit C23 fixed underlying type. Plain C enums keep their enum type
+    /// through unary/shift/ternary operations, matching GCC's behaviour.
+    fn promote_integer_ty(&self, ty: Ty) -> Ty {
+        if let Some(inner) = enum_payload_ty(ty) {
+            if let TyKind::RigidTy(RigidTy::Adt(adt, _)) = ty.kind()
+                && self.decl_resolver.is_fixed_underlying_enum(adt.0)
+            {
+                return integer_promote_ty(inner);
+            }
+            return ty;
+        }
+        integer_promote_ty(ty)
+    }
+
+    fn ternary_common_ty(&self, lhs_ty: Ty, rhs_ty: Ty) -> Option<Ty> {
+        if is_numeric_ty(lhs_ty) && is_numeric_ty(rhs_ty) {
+            if lhs_ty == rhs_ty && enum_payload_ty(lhs_ty).is_some() {
+                return Some(self.promote_integer_ty(lhs_ty));
+            }
+            if let Some(r) = common_numeric_ty(lhs_ty, rhs_ty) {
+                return Some(self.promote_integer_ty(r));
+            }
+        }
+        common_ternary_ty(lhs_ty, rhs_ty)
+    }
+
     /// Applies C integer promotion (C11 6.3.1.1p2) to a single operand before
     /// it is used in an arithmetic, shift, bitwise or comparison operation.
     fn promote_integer_operand(&self, expr: HirExpr) -> HirExpr {
-        let target = integer_promote_ty(expr.ty);
+        let target = self.promote_integer_ty(expr.ty);
         if target == expr.ty {
             expr
         } else {
@@ -2884,7 +2946,11 @@ impl HirCtx<'_> {
                 },
                 _ => HirExprKind::Cast(Box::new(expr)),
             };
-            HirExpr { kind, ty: target, span }
+            HirExpr {
+                kind,
+                ty: target,
+                span,
+            }
         }
     }
 
@@ -2943,11 +3009,8 @@ impl HirCtx<'_> {
         self.array_to_pointer_decay_if_array(&mut rhs);
 
         if matches!(op, HirBinOp::Shl | HirBinOp::Shr) {
-            let common_ty = if let Some(inner) = enum_payload_ty(lhs.ty) {
-                inner
-            } else {
-                integer_promote_ty(lhs.ty)
-            };
+            let promoted = self.promote_integer_ty(lhs.ty);
+            let common_ty = enum_payload_ty(promoted.clone()).unwrap_or(promoted);
             if !is_assignment {
                 lhs = HirExpr {
                     kind: HirExprKind::Cast(Box::new(lhs.clone())),

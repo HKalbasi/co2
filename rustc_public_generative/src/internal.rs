@@ -2154,10 +2154,7 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
             });
         }
 
-        for (idx, feature) in ["extern_types", "linkage"]
-            .into_iter()
-            .enumerate()
-        {
+        for (idx, feature) in ["extern_types", "linkage"].into_iter().enumerate() {
             krate.attrs.push(Attribute {
                 kind: rustc_ast::AttrKind::Normal(Box::new(rustc_ast::NormalAttr {
                     item: rustc_ast::AttrItem {
@@ -2171,22 +2168,20 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
                             }]
                             .into(),
                         },
-                        args: rustc_ast::AttrArgs::Delimited(
-                            rustc_ast::DelimArgs {
-                                dspan: DelimSpan::dummy(),
-                                delim: rustc_ast::token::Delimiter::Parenthesis,
-                                tokens: TokenStream::new(vec![TokenTree::Token(
-                                    Token {
-                                        kind: rustc_ast::token::TokenKind::Ident(
-                                            Symbol::intern(feature),
-                                            rustc_ast::token::IdentIsRaw::No,
-                                        ),
-                                        span: DUMMY_SP,
-                                    },
-                                    rustc_ast::tokenstream::Spacing::Alone,
-                                )]),
-                            },
-                        ),
+                        args: rustc_ast::AttrArgs::Delimited(rustc_ast::DelimArgs {
+                            dspan: DelimSpan::dummy(),
+                            delim: rustc_ast::token::Delimiter::Parenthesis,
+                            tokens: TokenStream::new(vec![TokenTree::Token(
+                                Token {
+                                    kind: rustc_ast::token::TokenKind::Ident(
+                                        Symbol::intern(feature),
+                                        rustc_ast::token::IdentIsRaw::No,
+                                    ),
+                                    span: DUMMY_SP,
+                                },
+                                rustc_ast::tokenstream::Spacing::Alone,
+                            )]),
+                        }),
                         span: DUMMY_SP,
                     },
                     tokens: None,
@@ -4370,7 +4365,14 @@ fn clone_resolver_global_ctxt(
         delegation_infos: original
             .delegation_infos
             .iter()
-            .map(|(k, v)| (*k, rustc_middle::ty::DelegationInfo { resolution_id: v.resolution_id }))
+            .map(|(k, v)| {
+                (
+                    *k,
+                    rustc_middle::ty::DelegationInfo {
+                        resolution_id: v.resolution_id,
+                    },
+                )
+            })
             .collect(),
     }
 }

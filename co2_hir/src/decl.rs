@@ -20,7 +20,7 @@ use rustc_public_generative::{
     },
 };
 
-use crate::{expr::HirExpr, ty::ty_matches_expected_for_c_generic};
+use crate::expr::HirExpr;
 use crate::resolver::HirCtx;
 use crate::stmt::HirStmt;
 use crate::ty::{
@@ -1214,7 +1214,7 @@ impl HirCtx<'_> {
                                 locals,
                                 local_map,
                             )?;
-                            if ty_matches_expected_for_c_generic(assoc_ty, controlling_ty) {
+                            if self.c_generic_ty_matches(assoc_ty, controlling_ty) {
                                 return self.eval_const_expr_in_scope(expr, locals, local_map);
                             }
                         }

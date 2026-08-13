@@ -1324,22 +1324,41 @@ impl<R: TypeResolver> PrettyPrint for Spanned<EnumSpecifier<R>> {
     fn pretty_print(&self, pp: &mut PrettyPrinter) {
         let sp = fmt_span(&self.1, pp.config);
         match &self.0 {
-            EnumSpecifier::Defined { ident, enumerators } => {
+            EnumSpecifier::Defined {
+                ident,
+                underlying_type,
+                enumerators,
+            } => {
                 pp.node("Defined", &sp, |pp| {
                     pp.leaf_data("Ident", &fmt_span(&ident.1, pp.config), &ident.0);
+                    if let Some(t) = underlying_type {
+                        t.pretty_print(pp);
+                    }
                     for e in enumerators {
                         let sp = fmt_span(&e.1, pp.config);
                         pp.leaf_data("Enumerator", &sp, format_args!("{:?}", &e.0));
                     }
                 });
             }
-            EnumSpecifier::Declared { ident } => {
+            EnumSpecifier::Declared {
+                ident,
+                underlying_type,
+            } => {
                 pp.node("Declared", &sp, |pp| {
                     pp.leaf_data("Ident", &fmt_span(&ident.1, pp.config), &ident.0);
+                    if let Some(t) = underlying_type {
+                        t.pretty_print(pp);
+                    }
                 });
             }
-            EnumSpecifier::Anonymous { enumerators } => {
+            EnumSpecifier::Anonymous {
+                underlying_type,
+                enumerators,
+            } => {
                 pp.node("Anonymous", &sp, |pp| {
+                    if let Some(t) = underlying_type {
+                        t.pretty_print(pp);
+                    }
                     for e in enumerators {
                         let sp = fmt_span(&e.1, pp.config);
                         pp.leaf_data("Enumerator", &sp, format_args!("{:?}", &e.0));

@@ -306,17 +306,30 @@ impl<A: TypeResolver> DoTransform for EnumSpecifier<A> {
 
     fn transform<B: Transformable<A>>(&self, b: &B) -> EnumSpecifier<B> {
         match self {
-            EnumSpecifier::Defined { ident, enumerators } => EnumSpecifier::Defined {
+            EnumSpecifier::Defined {
+                ident,
+                underlying_type,
+                enumerators,
+            } => EnumSpecifier::Defined {
                 ident: ident.clone(),
+                underlying_type: underlying_type.clone().map(|t| t.transform(b)),
                 enumerators: enumerators
                     .iter()
                     .map(|i| b.transform_enumerator(i))
                     .collect(),
             },
-            EnumSpecifier::Declared { ident } => EnumSpecifier::Declared {
+            EnumSpecifier::Declared {
+                ident,
+                underlying_type,
+            } => EnumSpecifier::Declared {
                 ident: ident.clone(),
+                underlying_type: underlying_type.clone().map(|t| t.transform(b)),
             },
-            EnumSpecifier::Anonymous { enumerators } => EnumSpecifier::Anonymous {
+            EnumSpecifier::Anonymous {
+                underlying_type,
+                enumerators,
+            } => EnumSpecifier::Anonymous {
+                underlying_type: underlying_type.clone().map(|t| t.transform(b)),
                 enumerators: enumerators
                     .iter()
                     .map(|i| b.transform_enumerator(i))
