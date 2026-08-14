@@ -54,7 +54,7 @@ def main [--version: string, --zstd] {
 
     if not ($musl_tarball | path exists) {
         print $"Downloading musl ($musl_version)..."
-        http get --raw $"https://musl.libc.org/releases/musl-($musl_version).tar.gz" | save -f $musl_tarball
+        retry-download $"https://musl.libc.org/releases/musl-($musl_version).tar.gz" $musl_tarball
         let actual_sha = (open --raw $musl_tarball | hash sha256)
         if $actual_sha != $musl_sha256 {
             error make { msg: $"musl tarball SHA mismatch after download: expected ($musl_sha256), got ($actual_sha)" }
