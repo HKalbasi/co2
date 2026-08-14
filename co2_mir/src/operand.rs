@@ -189,16 +189,19 @@ impl Builder<'_, '_> {
     fn bitfield_mask_expr(&self, width: usize, storage_ty: Ty, span: RustSpan) -> HirExpr {
         if width >= 128 {
             Self::emit_cast_expr(
-                Self::const_int_expr(-1, Ty::signed_ty(IntTy::I32), span),
+                Self::const_int_expr(-1, Ty::signed_ty(IntTy::I128), span),
                 storage_ty,
             )
         } else {
+            let mask_ty = if width >= 64 {
+                Ty::signed_ty(IntTy::I128)
+            } else if width >= 32 {
+                Ty::signed_ty(IntTy::I64)
+            } else {
+                Ty::signed_ty(IntTy::I32)
+            };
             Self::emit_cast_expr(
-                Self::const_int_expr(
-                    ((1u128 << width) - 1) as i128,
-                    Ty::signed_ty(IntTy::I32),
-                    span,
-                ),
+                Self::const_int_expr(((1u128 << width) - 1) as i128, mask_ty, span),
                 storage_ty,
             )
         }

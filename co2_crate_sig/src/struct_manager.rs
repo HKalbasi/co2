@@ -5,9 +5,9 @@ use co2_ast::{
     StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, TypeName, TypeQualifier,
     TypeQueryResult,
 };
-use rustc_public_generative::rustc_public::ty::{IntTy, UintTy};
+use rustc_public_generative::rustc_public::ty::{FloatTy, IntTy, UintTy};
 use rustc_public_generative::{
-    DefData, HirTy, HirTyKind, StructField, Visibility,
+    DefData, HirTy, HirTyConst, HirTyKind, StructField, Visibility,
     rustc_public::{DefId, ty::Span},
 };
 
@@ -526,8 +526,9 @@ impl LocalResolverBase {
         assert!(data.emitted_fields.is_none(), "Redefinition happened");
         let mut anon_field_count = 0;
         let mut emitted_fields = Vec::new();
-        let mut logical_fields = Vec::new();
-        let mut open_bitfield_storage: Option<OpenBitfieldStorage> = None;
+let mut logical_fields = Vec::new();
+                let mut open_bitfield_storage: Option<OpenBitfieldStorage> = None;
+                let mut abs_bit = 0usize;
         let total_declarators = fields
             .iter()
             .map(|(field, _)| field.declarators.len())
@@ -622,7 +623,13 @@ impl LocalResolverBase {
                                 "named zero-width bitfields are invalid",
                             );
                         }
-                        open_bitfield_storage = None;
+                        if matches!(struct_kind, StructOrUnionKind::Union) {
+                            abs_bit = 0;
+                        } else {
+                            // The zero-width field forces the next field to a
+                            // fresh boundary aligned to this field's type.
+                            abs_bit = round_up_bit(abs_bit, storage_bits);
+                        }
                         continue;
                     }
 
@@ -631,6 +638,7 @@ impl LocalResolverBase {
                             // In a union all fields overlap at byte 0, so every bitfield starts
                             // at bit offset 0 and gets its own physical storage field (distinct
                             // field index in the Rust union, same underlying memory).
+                            abs_bit = 0;
                             let storage_name =
                                 format!("__co2_bitfield_storage_{}", emitted_fields.len());
                             let id = self
@@ -646,7 +654,17 @@ impl LocalResolverBase {
                             });
                             (index, 0usize)
                         } else {
-                            let storage_index = ensure_bitfield_storage(
+                            // GCC SysV: a bit-field may not span more units of
+                            // alignment of its type than the type itself; if it
+                            // would, advance to the next type boundary.
+                            let candidate =
+                                if abs_bit / storage_bits != (abs_bit + bit_width - 1) / storage_bits
+                                {
+                                    round_up_bit(abs_bit, storage_bits)
+                                } else {
+                                    abs_bit
+                                };
+                            let (storage_index, bit_offset) = ensure_bitfield_storage(
                                 &mut emitted_fields,
                                 &mut open_bitfield_storage,
                                 &storage_ty,
@@ -655,22 +673,24 @@ impl LocalResolverBase {
                                 rust_span,
                                 storage_bits,
                                 bit_width,
+                                candidate,
+                                &mut logical_fields,
                             );
-                            let bit_offset = open_bitfield_storage
-                                .as_ref()
-                                .expect("bitfield storage must be open")
-                                .bits_used
-                                - bit_width;
+                            abs_bit = candidate + bit_width;
                             (storage_index, bit_offset)
                         };
 
                     if !name.is_empty() {
+                        let actual_storage_ty = match &open_bitfield_storage {
+                            Some(open) => open.storage_ty.clone(),
+                            None => storage_ty.clone(),
+                        };
                         logical_fields.push(LogicalAdtFieldInfo {
                             name,
                             ty,
                             kind: LogicalAdtFieldKind::Bitfield {
                                 storage_index,
-                                storage_ty,
+                                storage_ty: actual_storage_ty,
                                 bit_offset,
                                 bit_width,
                                 is_signed,
@@ -680,7 +700,11 @@ impl LocalResolverBase {
                     continue;
                 }
 
-                open_bitfield_storage = None;
+                if let Some(open) = open_bitfield_storage.take() {
+                    // The storage unit's physical footprint is fully occupied
+                    // as far as Rust is concerned.
+                    abs_bit = open.storage_start_bit + open.storage_bits;
+                }
                 if is_unsized {
                     let is_last = seen_declarators == total_declarators;
                     if !is_last || matches!(struct_kind, StructOrUnionKind::Union) {
@@ -702,6 +726,11 @@ impl LocalResolverBase {
                     span: rust_span,
                     visibility: Visibility::Public,
                 });
+                if matches!(struct_kind, StructOrUnionKind::Union) {
+                    abs_bit = 0;
+                } else if let Some((member_size, member_align)) = self.bit_layout_of_ty(&ty) {
+                    abs_bit = round_up_bit(abs_bit, member_align) + member_size;
+                }
                 logical_fields.push(LogicalAdtFieldInfo {
                     name,
                     ty,
@@ -717,6 +746,56 @@ impl LocalResolverBase {
         data.emitted_fields = Some(emitted_fields);
         data.logical_fields = Some(logical_fields);
         data.pack_align = self.struct_manager.current_pack;
+    }
+
+    /// Returns `(size_bits, align_bits)` for a non-bitfield member type, when
+    /// it can be determined statically. Used to advance the absolute bit
+    /// position past a normal member so that following bit-fields are placed
+    /// at GCC-compatible positions.
+    fn bit_layout_of_ty(&self, ty: &HirTy) -> Option<(usize, usize)> {
+        let (size_bits, align_bits) = match &ty.kind {
+            HirTyKind::Bool | HirTyKind::Char => (8, 8),
+            HirTyKind::Int(IntTy::I8) | HirTyKind::Uint(UintTy::U8) => (8, 8),
+            HirTyKind::Int(IntTy::I16) | HirTyKind::Uint(UintTy::U16) => (16, 16),
+            HirTyKind::Int(IntTy::I32) | HirTyKind::Uint(UintTy::U32) => (32, 32),
+            HirTyKind::Int(IntTy::I64)
+            | HirTyKind::Uint(UintTy::U64)
+            | HirTyKind::Int(IntTy::Isize)
+            | HirTyKind::Uint(UintTy::Usize) => (64, 64),
+            HirTyKind::Int(IntTy::I128) | HirTyKind::Uint(UintTy::U128) => (128, 128),
+            HirTyKind::Float(FloatTy::F16) => (16, 16),
+            HirTyKind::Float(FloatTy::F32) => (32, 32),
+            HirTyKind::Float(FloatTy::F64) => (64, 64),
+            HirTyKind::Float(FloatTy::F128) => (128, 128),
+            HirTyKind::RawPtr(..) | HirTyKind::Ref(..) | HirTyKind::FnPtr(..) => (64, 64),
+            HirTyKind::Array(len, inner) => {
+                let HirTyConst::Literal(n) = len else {
+                    return None;
+                };
+                let (elem_size, elem_align) = self.bit_layout_of_ty(inner)?;
+                (elem_size * n, elem_align)
+            }
+            HirTyKind::Adt(def, _) => {
+                if self.is_enum_def(*def) {
+                    (32, 32)
+                } else if let Some(underlying) = self.typedef_tys.get(def) {
+                    return self.bit_layout_of_ty(underlying);
+                } else {
+                    let data = self.struct_manager.definitions.get(def)?;
+                    let fields = data.emitted_fields.as_ref()?;
+                    let mut size_bits = 0usize;
+                    let mut align_bits = 8usize;
+                    for f in fields {
+                        let (field_size, field_align) = self.bit_layout_of_ty(&f.ty)?;
+                        align_bits = align_bits.max(field_align);
+                        size_bits = round_up_bit(size_bits, field_align) + field_size;
+                    }
+                    (round_up_bit(size_bits, align_bits), align_bits)
+                }
+            }
+            _ => return None,
+        };
+        Some((size_bits, align_bits))
     }
 
     fn resolve_logical_field_ty(&self, def: DefId, field_name: &str) -> Option<HirTy> {
@@ -746,8 +825,44 @@ impl LocalResolverBase {
 struct OpenBitfieldStorage {
     index: usize,
     storage_ty: HirTy,
-    bits_used: usize,
     storage_bits: usize,
+    /// Absolute bit position (relative to the start of the record) where this
+    /// storage unit begins. Always byte-aligned.
+    storage_start_bit: usize,
+    /// Index into `logical_fields` of the first field that lives in this
+    /// storage, so we can fix up `storage_ty` if the storage is upgraded.
+    first_logical: usize,
+}
+
+fn round_up_bit(x: usize, align: usize) -> usize {
+    (x + align - 1) / align * align
+}
+
+fn smallest_uint_bits_covering(bits: usize) -> Option<usize> {
+    if bits <= 8 {
+        Some(8)
+    } else if bits <= 16 {
+        Some(16)
+    } else if bits <= 32 {
+        Some(32)
+    } else if bits <= 64 {
+        Some(64)
+    } else if bits <= 128 {
+        Some(128)
+    } else {
+        None
+    }
+}
+
+fn unsigned_ty_for_bits(bits: usize, span: Span) -> HirTy {
+    match bits {
+        8 => HirTy::unsigned_ty(UintTy::U8, span),
+        16 => HirTy::unsigned_ty(UintTy::U16, span),
+        32 => HirTy::unsigned_ty(UintTy::U32, span),
+        64 => HirTy::unsigned_ty(UintTy::U64, span),
+        128 => HirTy::unsigned_ty(UintTy::U128, span),
+        _ => unreachable!("unsupported storage width {bits}"),
+    }
 }
 
 fn bitfield_storage_ty(resolver: &LocalResolverBase, ty: &HirTy) -> Option<(HirTy, bool, usize)> {
@@ -785,6 +900,7 @@ fn bitfield_storage_ty(resolver: &LocalResolverBase, ty: &HirTy) -> Option<(HirT
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ensure_bitfield_storage(
     emitted_fields: &mut Vec<StructField>,
     open_storage: &mut Option<OpenBitfieldStorage>,
@@ -794,48 +910,75 @@ fn ensure_bitfield_storage(
     span: Span,
     storage_bits: usize,
     requested_bits: usize,
-) -> usize {
-    let compatible = open_storage.as_ref().is_some_and(|open| {
-        same_storage_kind(&open.storage_ty.kind, &storage_ty.kind)
-            && open.bits_used + requested_bits <= open.storage_bits
-    });
-    if !compatible {
-        let name = format!("__co2_bitfield_storage_{}", emitted_fields.len());
-        let id = base
-            .hir_ctx
-            .allocate_def_id(def, &DefData::ValueNs(name.clone()));
-        let index = emitted_fields.len();
-        emitted_fields.push(StructField {
-            id,
-            name,
-            ty: storage_ty.clone(),
-            span,
-            visibility: Visibility::Public,
-        });
-        *open_storage = Some(OpenBitfieldStorage {
-            index,
-            storage_ty: storage_ty.clone(),
-            bits_used: 0,
-            storage_bits,
-        });
-    }
-    let open = open_storage.as_mut().expect("bitfield storage must exist");
-    let index = open.index;
-    open.bits_used += requested_bits;
-    index
-}
+    candidate: usize,
+    logical_fields: &mut Vec<LogicalAdtFieldInfo>,
+) -> (usize, usize) {
+    if let Some(open) = open_storage.as_ref() {
+        let rel = candidate - open.storage_start_bit;
+        let span_bits = rel + requested_bits;
+        if span_bits <= open.storage_bits {
+            // The field fits in the current storage unit.
+            return (open.index, rel);
+        }
 
-fn same_storage_kind(lhs: &HirTyKind, rhs: &HirTyKind) -> bool {
-    matches!(
-        (lhs, rhs),
-        (HirTyKind::Uint(UintTy::U8), HirTyKind::Uint(UintTy::U8))
-            | (HirTyKind::Uint(UintTy::U16), HirTyKind::Uint(UintTy::U16))
-            | (HirTyKind::Uint(UintTy::U32), HirTyKind::Uint(UintTy::U32))
-            | (HirTyKind::Uint(UintTy::U64), HirTyKind::Uint(UintTy::U64))
-            | (HirTyKind::Uint(UintTy::U128), HirTyKind::Uint(UintTy::U128))
-            | (
-                HirTyKind::Uint(UintTy::Usize),
-                HirTyKind::Uint(UintTy::Usize)
-            )
-    )
+        // The field needs more room than the current unit provides.
+        if candidate % storage_bits == 0 {
+            // A fresh allocation unit of the field's own type starts exactly
+            // at the field's position; reproduce GCC by closing the previous
+            // unit and opening a new one of the field's type.
+            *open_storage = None;
+        } else {
+            // The field must stay inside the current storage unit; grow the
+            // unit in place if it can be upgraded to a wider type while still
+            // sitting at its original (byte-aligned) offset.
+            if let Some(needed) = smallest_uint_bits_covering(span_bits) {
+                if needed > open.storage_bits
+                    && (open.storage_start_bit / 8) % (needed / 8) == 0
+                {
+                    let new_ty = unsigned_ty_for_bits(needed, storage_ty.span);
+                    emitted_fields[open.index].ty = new_ty.clone();
+                    for lf in logical_fields.iter_mut().skip(open.first_logical) {
+                        if let LogicalAdtFieldKind::Bitfield {
+                            storage_index,
+                            storage_ty,
+                            ..
+                        } = &mut lf.kind
+                        {
+                            if *storage_index == open.index {
+                                *storage_ty = new_ty.clone();
+                            }
+                        }
+                    }
+                    let open = open_storage.as_mut().expect("storage must exist");
+                    open.storage_ty = new_ty;
+                    open.storage_bits = needed;
+                    return (open.index, rel);
+                }
+            }
+            // Cannot grow in place; close and start a new unit at the
+            // (byte-aligned) field position.
+            *open_storage = None;
+        }
+    }
+
+    let name = format!("__co2_bitfield_storage_{}", emitted_fields.len());
+    let id = base
+        .hir_ctx
+        .allocate_def_id(def, &DefData::ValueNs(name.clone()));
+    let index = emitted_fields.len();
+    emitted_fields.push(StructField {
+        id,
+        name,
+        ty: storage_ty.clone(),
+        span,
+        visibility: Visibility::Public,
+    });
+    *open_storage = Some(OpenBitfieldStorage {
+        index,
+        storage_ty: storage_ty.clone(),
+        storage_bits,
+        storage_start_bit: candidate,
+        first_logical: logical_fields.len(),
+    });
+    (index, 0usize)
 }
