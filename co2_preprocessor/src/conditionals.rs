@@ -333,7 +333,7 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
             continue;
         }
 
-        // Number (decimal, hex, octal)
+        // Number (decimal, hex, octal, binary)
         if b.is_ascii_digit() {
             let start = i;
             let (raw_val, is_hex_or_oct) =
@@ -345,6 +345,14 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
                     }
                     let hex_str = bytes_to_str(bytes, hex_start, i);
                     (u64::from_str_radix(hex_str, 16).unwrap_or(0), true)
+                } else if b == b'0' && i + 1 < len && (bytes[i + 1] == b'b' || bytes[i + 1] == b'B') {
+                    i += 2;
+                    let bin_start = i;
+                    while i < len && matches!(bytes[i], b'0' | b'1') {
+                        i += 1;
+                    }
+                    let bin_str = bytes_to_str(bytes, bin_start, i);
+                    (u64::from_str_radix(bin_str, 2).unwrap_or(0), true)
                 } else if b == b'0' && i + 1 < len && bytes[i + 1].is_ascii_digit() {
                     // Octal
                     i += 1;

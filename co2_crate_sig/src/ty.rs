@@ -596,6 +596,82 @@ fn round_up(value: usize, align: usize) -> usize {
     }
 }
 
+/// The integer type of a constant-expression operand, used to implement C's
+/// usual arithmetic conversions during constant evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ConstIntTy {
+    width: u8,
+    signed: bool,
+}
+
+/// Computes the common type after C's usual arithmetic conversions
+/// (C11 §6.3.1.8) for two integer operand types.
+fn common_const_int_ty(a: ConstIntTy, b: ConstIntTy) -> ConstIntTy {
+    match (a.signed, b.signed) {
+        (true, true) => ConstIntTy {
+            width: a.width.max(b.width),
+            signed: true,
+        },
+        (false, false) => ConstIntTy {
+            width: a.width.max(b.width),
+            signed: false,
+        },
+        (true, false) => {
+            // `a` is signed, `b` is unsigned.
+            if b.width >= a.width {
+                ConstIntTy {
+                    width: b.width,
+                    signed: false,
+                }
+            } else {
+                // The signed type is strictly wider and can represent all
+                // values of the unsigned type, so the unsigned operand
+                // converts to the signed type.
+                ConstIntTy {
+                    width: a.width,
+                    signed: true,
+                }
+            }
+        }
+        (false, true) => {
+            if a.width >= b.width {
+                ConstIntTy {
+                    width: a.width,
+                    signed: false,
+                }
+            } else {
+                ConstIntTy {
+                    width: b.width,
+                    signed: true,
+                }
+            }
+        }
+    }
+}
+
+/// Converts a value to the given integer type, wrapping as C would.
+fn convert_const_int_value(value: i128, ty: ConstIntTy) -> i128 {
+    if ty.signed {
+        match ty.width {
+            8 => i128::from(value as i8),
+            16 => i128::from(value as i16),
+            32 => i128::from(value as i32),
+            64 => i128::from(value as i64),
+            128 => value,
+            _ => i128::from(value as i64),
+        }
+    } else {
+        match ty.width {
+            8 => i128::from(value as u8),
+            16 => i128::from(value as u16),
+            32 => i128::from(value as u32),
+            64 => i128::from(value as u64),
+            128 => (value as u128) as i128,
+            _ => i128::from(value as u64),
+        }
+    }
+}
+
 enum ResolvedConstFieldAccess {
     Direct { path: Vec<usize> },
     Bitfield,
@@ -1025,9 +1101,9 @@ impl LocalResolverBase {
                     _ => Err(spanned_error(*span, "unsupported unary op in array size")),
                 }
             }
-            Expression::BinOp(lhs, op, rhs) => {
-                let lhs = self.eval_const_expr(lhs)?;
-                let rhs = self.eval_const_expr(rhs)?;
+            Expression::BinOp(lhs_expr, op, rhs_expr) => {
+                let lhs = self.eval_const_expr(lhs_expr)?;
+                let rhs = self.eval_const_expr(rhs_expr)?;
                 match op {
                     BinOp::Add => lhs
                         .checked_add(rhs)
@@ -1065,12 +1141,30 @@ impl LocalResolverBase {
                     BinOp::BitOr => Ok(lhs | rhs),
                     BinOp::BitXor => Ok(lhs ^ rhs),
                     BinOp::BitAnd => Ok(lhs & rhs),
-                    BinOp::Eq => Ok(i128::from(lhs == rhs)),
-                    BinOp::Lt => Ok(i128::from(lhs < rhs)),
-                    BinOp::Le => Ok(i128::from(lhs <= rhs)),
-                    BinOp::Ne => Ok(i128::from(lhs != rhs)),
-                    BinOp::Ge => Ok(i128::from(lhs >= rhs)),
-                    BinOp::Gt => Ok(i128::from(lhs > rhs)),
+                    BinOp::Eq => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l == r))
+                    }
+                    BinOp::Lt => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l < r))
+                    }
+                    BinOp::Le => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l <= r))
+                    }
+                    BinOp::Ne => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l != r))
+                    }
+                    BinOp::Ge => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l >= r))
+                    }
+                    BinOp::Gt => {
+                        let (l, r) = self.usual_arithmetic_converted(lhs_expr, rhs_expr, lhs, rhs);
+                        Ok(i128::from(l > r))
+                    }
                     BinOp::Shl => lhs
                         .checked_shl(rhs as u32)
                         .ok_or_else(|| spanned_error(*span, "shift out of bounds in const eval")),
@@ -1164,6 +1258,168 @@ impl LocalResolverBase {
             }
             Expression::Call { .. } => Err(spanned_error(*span, "cannot call non-const function")),
             _ => Err(spanned_error(*span, "unsupported constant expression")),
+        }
+    }
+
+    /// Applies C's usual arithmetic conversions (integer part, C11 §6.3.1.8)
+    /// to the two operand values, using the integer types of the operands.
+    /// Falls back to the raw values when either operand type is not known.
+    fn usual_arithmetic_converted(
+        &mut self,
+        lhs_expr: &Spanned<Expression<LocalResolver>>,
+        rhs_expr: &Spanned<Expression<LocalResolver>>,
+        lhs_val: i128,
+        rhs_val: i128,
+    ) -> (i128, i128) {
+        let Some(lhs_ty) = self.const_int_ty_of_expr(lhs_expr) else {
+            return (lhs_val, rhs_val);
+        };
+        let Some(rhs_ty) = self.const_int_ty_of_expr(rhs_expr) else {
+            return (lhs_val, rhs_val);
+        };
+        let common = common_const_int_ty(lhs_ty, rhs_ty);
+        (
+            convert_const_int_value(lhs_val, common),
+            convert_const_int_value(rhs_val, common),
+        )
+    }
+
+    /// Computes the integer type of a constant expression, when it can be
+    /// determined statically. Returns `None` for non-integer or unresolvable
+    /// expressions, in which case callers fall back to raw i128 semantics.
+    fn const_int_ty_of_expr(
+        &mut self,
+        (expr, span): &Spanned<Expression<LocalResolver>>,
+    ) -> Option<ConstIntTy> {
+        match expr {
+            Expression::Constant(Constant::Int(_, suffix)) => {
+                let kind = match suffix {
+                    IntegerSuffix::None | IntegerSuffix::NoneDecimal => HirTyKind::Int(IntTy::I32),
+                    IntegerSuffix::Long => HirTyKind::Int(IntTy::I64),
+                    IntegerSuffix::LongLong => HirTyKind::Int(IntTy::I128),
+                    IntegerSuffix::Unsigned => HirTyKind::Uint(UintTy::U32),
+                    IntegerSuffix::UnsignedLong => HirTyKind::Uint(UintTy::U64),
+                    IntegerSuffix::UnsignedLongLong => HirTyKind::Uint(UintTy::U128),
+                    IntegerSuffix::Usize => HirTyKind::Uint(UintTy::Usize),
+                    IntegerSuffix::Isize => HirTyKind::Int(IntTy::Isize),
+                    IntegerSuffix::U8 => HirTyKind::Uint(UintTy::U8),
+                    IntegerSuffix::U16 => HirTyKind::Uint(UintTy::U16),
+                    IntegerSuffix::U32 => HirTyKind::Uint(UintTy::U32),
+                    IntegerSuffix::U64 => HirTyKind::Uint(UintTy::U64),
+                    IntegerSuffix::U128 => HirTyKind::Uint(UintTy::U128),
+                    IntegerSuffix::I8 => HirTyKind::Int(IntTy::I8),
+                    IntegerSuffix::I16 => HirTyKind::Int(IntTy::I16),
+                    IntegerSuffix::I32 => HirTyKind::Int(IntTy::I32),
+                    IntegerSuffix::I64 => HirTyKind::Int(IntTy::I64),
+                    IntegerSuffix::I128 => HirTyKind::Int(IntTy::I128),
+                };
+                self.const_int_ty_of_hir_kind(kind)
+            }
+            Expression::Constant(Constant::Char(_)) => Some(ConstIntTy {
+                width: 8,
+                signed: true,
+            }),
+            Expression::UnaryOp(op, inner) => match op {
+                UnaryOp::Plus | UnaryOp::Minus | UnaryOp::Not | UnaryOp::Com => {
+                    self.const_int_ty_of_expr(inner)
+                }
+                _ => None,
+            },
+            Expression::BinOp(lhs_expr, op, rhs_expr) => match op {
+                BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::And
+                | BinOp::Or => Some(ConstIntTy {
+                    width: 32,
+                    signed: true,
+                }),
+                BinOp::Comma => self.const_int_ty_of_expr(rhs_expr),
+                _ => {
+                    let lhs_ty = self.const_int_ty_of_expr(lhs_expr)?;
+                    let rhs_ty = self.const_int_ty_of_expr(rhs_expr)?;
+                    Some(common_const_int_ty(lhs_ty, rhs_ty))
+                }
+            },
+            Expression::Conditional {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                let then_ty = self.const_int_ty_of_expr(then_expr)?;
+                let else_ty = self.const_int_ty_of_expr(else_expr)?;
+                Some(common_const_int_ty(then_ty, else_ty))
+            }
+            Expression::Cast { type_name, .. } => {
+                let ty = self.lower_type_name_for_const(*type_name.clone(), *span);
+                self.const_int_ty_of_hir_kind(ty.kind)
+            }
+            _ => None,
+        }
+    }
+
+    fn const_int_ty_of_hir_kind(&self, kind: HirTyKind) -> Option<ConstIntTy> {
+        match kind {
+            HirTyKind::Bool | HirTyKind::Char => Some(ConstIntTy {
+                width: 8,
+                signed: true,
+            }),
+            HirTyKind::Int(IntTy::I8) => Some(ConstIntTy {
+                width: 8,
+                signed: true,
+            }),
+            HirTyKind::Uint(UintTy::U8) => Some(ConstIntTy {
+                width: 8,
+                signed: false,
+            }),
+            HirTyKind::Int(IntTy::I16) => Some(ConstIntTy {
+                width: 16,
+                signed: true,
+            }),
+            HirTyKind::Uint(UintTy::U16) => Some(ConstIntTy {
+                width: 16,
+                signed: false,
+            }),
+            HirTyKind::Int(IntTy::I32) => Some(ConstIntTy {
+                width: 32,
+                signed: true,
+            }),
+            HirTyKind::Uint(UintTy::U32) => Some(ConstIntTy {
+                width: 32,
+                signed: false,
+            }),
+            HirTyKind::Int(IntTy::I64) | HirTyKind::Int(IntTy::Isize) => Some(ConstIntTy {
+                width: 64,
+                signed: true,
+            }),
+            HirTyKind::Uint(UintTy::U64) | HirTyKind::Uint(UintTy::Usize) => Some(ConstIntTy {
+                width: 64,
+                signed: false,
+            }),
+            HirTyKind::Int(IntTy::I128) => Some(ConstIntTy {
+                width: 128,
+                signed: true,
+            }),
+            HirTyKind::Uint(UintTy::U128) => Some(ConstIntTy {
+                width: 128,
+                signed: false,
+            }),
+            HirTyKind::Adt(def, _) => {
+                if self.is_enum_def(def) {
+                    Some(ConstIntTy {
+                        width: 32,
+                        signed: true,
+                    })
+                } else if let Some(underlying) = self.typedef_tys.get(&def) {
+                    self.const_int_ty_of_hir_kind(underlying.kind.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 

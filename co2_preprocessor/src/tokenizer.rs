@@ -39,6 +39,7 @@ enum State {
     HexInteger,
     HexFloatFraction,
     OctalInteger,
+    BinaryInteger,
     DecimalFloatFraction,
     DecimalFloatExponent,
     HexFloatExponent,
@@ -487,6 +488,12 @@ impl<'a> Tokenizer<'a> {
                         self.state = State::HexInteger;
                         continue;
                     }
+                    if b == b'b' || b == b'B' {
+                        self.buf.push(b);
+                        self.pos += 1;
+                        self.state = State::BinaryInteger;
+                        continue;
+                    }
                     if (b'0'..=b'7').contains(&b) {
                         self.buf.push(b);
                         self.pos += 1;
@@ -591,6 +598,21 @@ impl<'a> Tokenizer<'a> {
                         self.buf.push(b);
                         self.pos += 1;
                         self.state = State::DecimalFloatFraction;
+                        continue;
+                    }
+                    if b == b'_' {
+                        self.buf.push(b);
+                        self.pos += 1;
+                        continue;
+                    }
+                    self.finish_int_suffix(out);
+                    continue;
+                }
+
+                State::BinaryInteger => {
+                    if b == b'0' || b == b'1' {
+                        self.buf.push(b);
+                        self.pos += 1;
                         continue;
                     }
                     if b == b'_' {
@@ -902,7 +924,8 @@ impl<'a> Tokenizer<'a> {
                 State::DecimalInteger
                 | State::ZeroLeading
                 | State::HexInteger
-                | State::OctalInteger => {
+                | State::OctalInteger
+                | State::BinaryInteger => {
                     let text = std::str::from_utf8(&self.buf).unwrap_or("").to_string();
                     let suffix = self.parse_int_suffix();
                     out.push((Token::Integer(text, suffix), self.token_start, self.pos));

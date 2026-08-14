@@ -1030,6 +1030,8 @@ where
                             let suffix = if suffix == IntegerSuffix::None
                                 && !i.starts_with("0x")
                                 && !i.starts_with("0X")
+                                && !i.starts_with("0b")
+                                && !i.starts_with("0B")
                                 && !(i.len() > 1 && i.starts_with('0'))
                             {
                                 IntegerSuffix::NoneDecimal
@@ -1041,6 +1043,8 @@ where
                         None => {
                             let msg = if i.starts_with("0x") || i.starts_with("0X") {
                                 "Invalid hexadecimal int literal"
+                            } else if i.starts_with("0b") || i.starts_with("0B") {
+                                "Invalid binary int literal"
                             } else {
                                 "Invalid integer literal"
                             };
@@ -3020,24 +3024,34 @@ where
     let expr = assignment_expression(resolver.clone(), stmt_rec.clone());
     let static_assert = just(Token::StaticAssert)
         .ignore_then(just(Token::LParen))
-        .ignore_then(expr.clone().then_ignore(just(Token::Comma)))
+        .ignore_then(expr.clone())
         .then(
-            select! {
-                Token::StringLit(s) => s,
-            }
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>()
-            .map_with(|parts, e| {
-                let literal = merge_string_literals(parts);
-                let span = e.span();
-                let message = String::from_utf8_lossy(&literal.bytes).into_owned();
-                (message, span)
-            }),
+            just(Token::Comma)
+                .ignore_then(
+                    select! {
+                        Token::StringLit(s) => s,
+                    }
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .map_with(|parts, e| {
+                        let literal = merge_string_literals(parts);
+                        let span = e.span();
+                        let message = String::from_utf8_lossy(&literal.bytes).into_owned();
+                        (message, span)
+                    }),
+                )
+                .or_not(),
         )
         .then_ignore(just(Token::RParen))
         .then_ignore(just(Token::Semicolon))
-        .map(|(expr, message)| Declaration::StaticAssert { expr, message });
+        .map(|(expr, message)| Declaration::StaticAssert {
+            expr,
+            message: match message {
+                Some(m) => m,
+                None => (String::new(), Span::from_parts(FileId::INVALID, 0..0)),
+            },
+        });
     let declarator = declarator(resolver.clone(), expr.clone());
     let function = left_recursion(
         declarator

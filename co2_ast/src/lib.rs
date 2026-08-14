@@ -1417,6 +1417,10 @@ pub fn parse_unsigned_integer_constant(text: &str) -> Option<u128> {
         return u128::from_str_radix(hex, 16).ok();
     }
 
+    if let Some(binary) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        return u128::from_str_radix(binary, 2).ok();
+    }
+
     if text.len() > 1
         && let Some(octal) = text.strip_prefix('0')
     {
