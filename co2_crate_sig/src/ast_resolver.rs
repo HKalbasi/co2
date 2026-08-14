@@ -918,7 +918,8 @@ impl co2_ast::TypeResolver for LocalResolver {
             Declaration::FunctionDefinition { .. }
             | Declaration::RustTypeAlias { .. }
             | Declaration::RustStruct { .. }
-            | Declaration::BreakCo2 => next,
+            | Declaration::BreakCo2
+            | Declaration::StaticAssert { .. } => next,
             Declaration::PragmaPack { action } => {
                 next.base.borrow_mut().apply_pack_action(action);
                 next

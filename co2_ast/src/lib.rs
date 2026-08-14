@@ -576,6 +576,7 @@ pub enum Token {
     Volatile,
     While,
     Generic,
+    StaticAssert,
 
     // Identifiers
     Ident(String),
@@ -822,6 +823,7 @@ impl Display for Token {
             Token::Volatile => write!(f, "volatile"),
             Token::While => write!(f, "while"),
             Token::Generic => write!(f, "_Generic"),
+            Token::StaticAssert => write!(f, "static_assert"),
 
             Token::VaStart => write!(f, "va_start"),
             Token::VaArg => write!(f, "va_arg"),
@@ -994,8 +996,11 @@ pub enum Declaration<R: TypeResolver> {
         action: PackAction,
     },
     BreakCo2,
+    StaticAssert {
+        expr: Spanned<Expression<R>>,
+        message: Spanned<String>,
+    },
 }
-
 #[derive(Debug, Clone)]
 pub enum FunctionDefinitionSignature<R: TypeResolver> {
     C {

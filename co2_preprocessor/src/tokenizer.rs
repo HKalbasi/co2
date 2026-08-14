@@ -174,6 +174,7 @@ impl<'a> Tokenizer<'a> {
             "volatile" => Token::Volatile,
             "while" => Token::While,
             "_Generic" => Token::Generic,
+            "static_assert" | "_Static_assert" => Token::StaticAssert,
             "__builtin_va_start" | "__builtin_c23_va_start" => Token::VaStart,
             "__builtin_va_arg" | "__builtin_c23_va_arg" => Token::VaArg,
             "__builtin_va_copy" | "__builtin_c23_va_copy" => Token::VaCopy,

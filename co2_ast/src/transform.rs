@@ -692,6 +692,10 @@ impl<A: TypeResolver> DoTransform for Declaration<A> {
                 action: action.clone(),
             },
             Declaration::BreakCo2 => Declaration::BreakCo2,
+            Declaration::StaticAssert { expr, message } => Declaration::StaticAssert {
+                expr: expr.transform(b),
+                message: message.clone(),
+            },
         }
     }
 }

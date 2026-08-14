@@ -729,7 +729,9 @@ fn deduplicate_tu_items(
                     tu_item_id += 1;
                 }
             }
-            Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
+            Declaration::PragmaPack { .. }
+            | Declaration::BreakCo2
+            | Declaration::StaticAssert { .. } => {}
         }
     }
 
@@ -760,6 +762,7 @@ fn deduplicate_tu_items(
             true
         }
         Declaration::PragmaPack { .. } | Declaration::BreakCo2 => true,
+        Declaration::StaticAssert { .. } => true,
     });
 
     if !errors.is_empty() {
@@ -1704,6 +1707,21 @@ fn lower_translation_unit_items(
             }
             Declaration::PragmaPack { action } => {
                 resolver.base.borrow_mut().apply_pack_action(&action);
+            }
+            Declaration::StaticAssert { expr, message } => {
+                let value = resolver.eval_const_expr(&expr);
+                match value {
+                    Ok(0) => {
+                        co2_ast::emit_errors(vec![co2_ast::Rich::custom(
+                            expr.1,
+                            format!("Static assertion failed: {}", message.0),
+                        )]);
+                    }
+                    Ok(_) => {}
+                    Err((span, msg)) => {
+                        co2_ast::emit_errors_and_terminate(vec![co2_ast::Rich::custom(span, msg)]);
+                    }
+                }
             }
         }
     }

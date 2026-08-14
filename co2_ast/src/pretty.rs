@@ -1001,6 +1001,12 @@ impl<R: TypeResolver> PrettyPrint for Spanned<Declaration<R>> {
                 pp.node("PragmaPack", &sp, |pp| action.pretty_print(pp));
             }
             Declaration::BreakCo2 => pp.leaf("BreakCo2", &sp),
+            Declaration::StaticAssert { expr, message } => {
+                pp.node("StaticAssert", &sp, |pp| {
+                    expr.pretty_print(pp);
+                    pp.leaf_data("Message", &fmt_span(&message.1, pp.config), &message.0);
+                });
+            }
         }
     }
 }

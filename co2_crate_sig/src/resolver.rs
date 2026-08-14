@@ -369,7 +369,9 @@ impl ModuleData {
                         }
                     }
                 }
-                Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
+                Declaration::PragmaPack { .. }
+                | Declaration::BreakCo2
+                | Declaration::StaticAssert { .. } => {}
             }
         }
         ModuleData::Expanded(Box::new(this))

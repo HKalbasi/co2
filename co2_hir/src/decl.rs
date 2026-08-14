@@ -781,6 +781,17 @@ impl HirCtx<'_> {
                 Ok(())
             }
             Declaration::PragmaPack { .. } | Declaration::BreakCo2 => Ok(()),
+            Declaration::StaticAssert { expr, message } => {
+                let value = self.eval_const_expr_in_scope(&expr, locals, local_map)?;
+                if value == 0 {
+                    Err(spanned_error(
+                        expr.1,
+                        format!("Static assertion failed: {}", message.0),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 

@@ -104,6 +104,7 @@ impl TypeResolver for StatelessResolver {
                 rust_style_enabled &= ident.0.as_str() != "fn";
             }
             Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
+            Declaration::StaticAssert { .. } => {}
         }
         StatelessResolver::with_rust_style_enabled(rust_style_enabled)
     }

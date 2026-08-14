@@ -155,6 +155,7 @@ fn keyword_token_str(token: &Token) -> Option<&'static str> {
         Token::Volatile => "volatile",
         Token::While => "while",
         Token::Generic => "_Generic",
+        Token::StaticAssert => "static_assert",
         Token::VaStart => "va_start",
         Token::VaArg => "va_arg",
         Token::VaCopy => "va_copy",
@@ -444,7 +445,8 @@ where
                 | Token::Signed
                 | Token::Unsigned
                 | Token::Typeof
-                | Token::Alignas,
+                | Token::Alignas
+                | Token::StaticAssert,
             ) => true,
             Some(Token::Ident(_)) => {
                 inp.rewind(checkpoint.clone());
@@ -3016,6 +3018,26 @@ where
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
 {
     let expr = assignment_expression(resolver.clone(), stmt_rec.clone());
+    let static_assert = just(Token::StaticAssert)
+        .ignore_then(just(Token::LParen))
+        .ignore_then(expr.clone().then_ignore(just(Token::Comma)))
+        .then(
+            select! {
+                Token::StringLit(s) => s,
+            }
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map_with(|parts, e| {
+                let literal = merge_string_literals(parts);
+                let span = e.span();
+                let message = String::from_utf8_lossy(&literal.bytes).into_owned();
+                (message, span)
+            }),
+        )
+        .then_ignore(just(Token::RParen))
+        .then_ignore(just(Token::Semicolon))
+        .map(|(expr, message)| Declaration::StaticAssert { expr, message });
     let declarator = declarator(resolver.clone(), expr.clone());
     let function = left_recursion(
         declarator
@@ -3066,12 +3088,13 @@ where
         choice((
             rust_style_function_definition(resolver.clone()),
             rust_style_type_definition(resolver.clone()),
+            static_assert,
             simple,
             function,
         ))
         .boxed()
     } else {
-        choice((simple, function)).boxed()
+        choice((static_assert, simple, function)).boxed()
     };
 
     parser.map_with(move |v, e| {
@@ -3376,6 +3399,7 @@ fn attach_attrs_to_declaration<R: TypeResolver>(
             attrs: decl_attrs, ..
         } => *decl_attrs = attrs,
         Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
+        Declaration::StaticAssert { .. } => {}
     }
     decl
 }
