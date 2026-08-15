@@ -44,18 +44,18 @@ pub enum TestOutcome {
     Skip(String),
 }
 
-pub fn collect_tests(root: &Path, filter: Option<&str>) -> Result<Vec<TestCase>> {
+pub fn collect_tests(root: &Path, filters: &[String]) -> Result<Vec<TestCase>> {
     let mut out = Vec::new();
     let dir = root.join("tests");
     if !dir.exists() {
         return Ok(out);
     }
-    collect_tests_inner(root, &dir, filter, &mut out)?;
+    collect_tests_inner(root, &dir, filters, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
 
-pub fn collect_examples(root: &Path, filter: Option<&str>) -> Result<Vec<TestCase>> {
+pub fn collect_examples(root: &Path, filters: &[String]) -> Result<Vec<TestCase>> {
     let dir = root.join("examples");
     if !dir.exists() {
         return Ok(Vec::new());
@@ -87,9 +87,7 @@ pub fn collect_examples(root: &Path, filter: Option<&str>) -> Result<Vec<TestCas
             continue;
         };
 
-        if let Some(pattern) = filter
-            && !path_matches(root, &source_file, pattern)
-        {
+        if !path_matches(root, &source_file, filters) {
             continue;
         }
 
@@ -126,7 +124,7 @@ pub fn collect_examples(root: &Path, filter: Option<&str>) -> Result<Vec<TestCas
 fn collect_tests_inner(
     root: &Path,
     dir: &Path,
-    filter: Option<&str>,
+    filters: &[String],
     out: &mut Vec<TestCase>,
 ) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
@@ -135,9 +133,7 @@ fn collect_tests_inner(
         if path.is_dir() {
             let main_nu = path.join("main.nu");
             if main_nu.exists() {
-                if let Some(pattern) = filter
-                    && !path_matches(root, &path, pattern)
-                {
+                if !path_matches(root, &path, filters) {
                     continue;
                 }
                 out.push(TestCase {
@@ -148,7 +144,7 @@ fn collect_tests_inner(
                 });
                 continue;
             }
-            collect_tests_inner(root, &path, filter, out)?;
+            collect_tests_inner(root, &path, filters, out)?;
             continue;
         }
 
@@ -158,9 +154,7 @@ fn collect_tests_inner(
         if ext != "c" && ext != "co2" && ext != "rs" {
             continue;
         }
-        if let Some(pattern) = filter
-            && !path_matches(root, &path, pattern)
-        {
+        if !path_matches(root, &path, filters) {
             continue;
         }
 
@@ -180,9 +174,14 @@ fn collect_tests_inner(
     Ok(())
 }
 
-fn path_matches(root: &Path, path: &Path, filter: &str) -> bool {
+fn path_matches(root: &Path, path: &Path, filters: &[String]) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
     let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
-    glob_matches(filter, &relative)
+    filters
+        .iter()
+        .any(|pattern| glob_matches(pattern, &relative))
 }
 
 fn glob_matches(pattern: &str, text: &str) -> bool {

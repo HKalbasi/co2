@@ -10,11 +10,12 @@ export def assert-snapshot [name: string, actual: string, snapshot_path: string]
     if "CO2_UPDATE_SNAPSHOTS" in $env {
         print $"updating snapshot: ($snapshot_path)"
         let content = if ($actual | str ends-with (char newline)) { $actual } else { $actual ++ (char newline) }
+        let content = $content | str replace --all --regex "(?m)[ \t]+$" ""
         $content | save -f $snapshot_path
         return
     }
-    let snapshot = (open $snapshot_path | str trim)
-    if ($actual | str trim) != $snapshot {
+    let snapshot = (open $snapshot_path | str replace --all --regex "(?m)[ \t]+$" "" | str trim)
+    if ($actual | str replace --all --regex "(?m)[ \t]+$" "" | str trim) != $snapshot {
         print $"FAIL: ($name) mismatch!"
         print "--- GOT ---"
         print $actual

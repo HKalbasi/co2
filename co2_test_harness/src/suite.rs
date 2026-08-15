@@ -32,15 +32,15 @@ pub struct Stats {
 pub fn run_tests(
     root: &Path,
     bin_dir: Option<&Path>,
-    filter: Option<&str>,
+    filters: &[String],
     coverage_dir: Option<&Path>,
     dump_mir: bool,
     update_snapshots: bool,
     verbose: bool,
     stats: &mut Stats,
 ) -> Result<()> {
-    let mut tests = collect_tests(root, filter)?;
-    let examples = collect_examples(root, filter)?;
+    let mut tests = collect_tests(root, filters)?;
+    let examples = collect_examples(root, filters)?;
     tests.extend(examples);
     eprintln!("running {} tests", tests.len());
 

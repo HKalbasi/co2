@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 mod cli;
@@ -26,6 +26,23 @@ fn run_main() -> Result<()> {
     let cli = Cli::parse();
     let root = workspace_root()?;
 
+    let mut filters: Vec<String> = Vec::new();
+    if let Some(f) = &cli.filter {
+        filters.push(f.clone());
+    }
+    if let Some(path) = &cli.filter_file {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read filter file {}", path.display()))?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            filters.push(line.to_string());
+        }
+        eprintln!("loaded {} filter(s) from {}", filters.len(), path.display());
+    }
+
     let bin_dir: Option<std::path::PathBuf> = if cli.installed {
         if cli.coverage {
             anyhow::bail!("--coverage is not supported with --installed");
@@ -51,7 +68,7 @@ fn run_main() -> Result<()> {
     run_tests(
         &root,
         bin_dir.as_deref(),
-        cli.filter.as_deref(),
+        &filters,
         coverage_dir.as_deref(),
         cli.dump_mir,
         cli.update_snapshots,
@@ -77,6 +94,25 @@ fn run_main() -> Result<()> {
         stats.skipped,
         elapsed.as_secs_f64(),
     );
+
+    let fail_list_path = cli
+        .fail_list
+        .clone()
+        .unwrap_or_else(|| root.join("fail_list.txt"));
+    if stats.failed > 0 {
+        let mut content = stats.failed_names.join("\n");
+        content.push('\n');
+        std::fs::write(&fail_list_path, content).with_context(|| {
+            format!(
+                "failed to write failing test list to {}",
+                fail_list_path.display()
+            )
+        })?;
+        eprintln!("wrote failing test list to {}", fail_list_path.display());
+    } else if fail_list_path.exists() {
+        std::fs::remove_file(&fail_list_path)
+            .with_context(|| format!("failed to remove {}", fail_list_path.display()))?;
+    }
 
     if stats.failed > 0 {
         std::process::exit(1);

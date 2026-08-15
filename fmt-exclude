@@ -1,0 +1,5 @@
+# Files excluded from the formatter's whitespace/newline pass.
+# One glob per line, matched against workspace-relative paths.
+
+docs/vision/middle.svg
+tests/c/strings.out
