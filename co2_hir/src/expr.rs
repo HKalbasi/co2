@@ -84,7 +84,7 @@ fn check_generic_arg_count(
 }
 
 fn string_literal_ptr_ty(literal: &StringLiteral) -> Ty {
-    if literal.prefix == StringLiteralPrefix::Str {
+    if literal.prefix() == StringLiteralPrefix::Str {
         Ty::new_ref(
             Region {
                 kind: RegionKind::ReStatic,
@@ -93,7 +93,7 @@ fn string_literal_ptr_ty(literal: &StringLiteral) -> Ty {
             Mutability::Not,
         )
     } else {
-        let elem_ty = match literal.prefix {
+        let elem_ty = match literal.prefix() {
             StringLiteralPrefix::None | StringLiteralPrefix::Utf8 => Ty::signed_ty(IntTy::I8),
             StringLiteralPrefix::Utf16 => Ty::unsigned_ty(UintTy::U16),
             StringLiteralPrefix::Utf32 => Ty::unsigned_ty(UintTy::U32),
@@ -1465,10 +1465,8 @@ impl HirCtx<'_> {
                     })
                 }
                 co2_crate_sig::DefOrLocal::FuncName => Ok(HirExpr {
-                    kind: HirExprKind::ConstStr(StringLiteral {
-                        prefix: StringLiteralPrefix::None,
-                        bytes: self
-                            .function_name
+                    kind: HirExprKind::ConstStr(StringLiteral::None(
+                        self.function_name
                             .clone()
                             .unwrap_or_else(|| {
                                 self.terminate_with_error(
@@ -1477,7 +1475,7 @@ impl HirCtx<'_> {
                                 )
                             })
                             .into_bytes(),
-                    }),
+                    )),
                     ty: Ty::new_ptr(Ty::signed_ty(IntTy::I8), Mutability::Mut),
                     span,
                 }),

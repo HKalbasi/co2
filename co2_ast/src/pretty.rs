@@ -235,7 +235,7 @@ impl PrettyPrint for Constant {
             }
             Constant::String(literal) => {
                 let escaped: String = literal
-                    .bytes
+                    .to_bytes()
                     .iter()
                     .copied()
                     .flat_map(escape_default)
@@ -244,7 +244,7 @@ impl PrettyPrint for Constant {
                 pp.leaf_data(
                     "String",
                     "",
-                    format_args!("{}\"{escaped}\"", literal.prefix.as_str()),
+                    format_args!("{}\"{escaped}\"", literal.prefix().as_str()),
                 );
             }
         }

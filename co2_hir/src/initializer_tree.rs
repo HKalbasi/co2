@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use co2_ast::{Designator, Expression, Initializer, InitializerItem, Span, Spanned};
 use co2_crate_sig::LocalResolver;
 use la_arena::Arena;
-use rustc_public_generative::rustc_public::ty::{AdtKind, IntTy, RigidTy, Ty, TyKind, UintTy};
+use rustc_public_generative::rustc_public::ty::{AdtKind, RigidTy, Ty, TyKind};
 
 use crate::{
     expr::{HirExpr, HirExprKind, coerce_expr_to_type},
@@ -709,66 +709,55 @@ impl HirCtx<'_> {
 
     fn initializer_list_from_string(
         &self,
-        expected_ty: Ty,
+        _expected_ty: Ty,
         expr: Spanned<Expression<LocalResolver>>,
     ) -> Vec<Spanned<InitializerItem<LocalResolver>>> {
         let Expression::Constant(co2_ast::Constant::String(s)) = expr.0 else {
             return vec![];
         };
         let span = expr.1;
-        let is_byte_string = matches!(
-            array_elem_ty(expected_ty).map(|ty| ty.kind()),
-            Some(TyKind::RigidTy(
-                RigidTy::Int(IntTy::I8) | RigidTy::Uint(UintTy::U8)
-            ))
-        );
-        if is_byte_string {
-            s.bytes
+        // Strings initialize arrays element-by-element. Wide prefixes (u"", L"",
+        // U"") use the tokenizer-decoded code units: raw source bytes are UTF-8
+        // decoded, while each escape is its own code unit (e.g. L"\x92" -> 0x92).
+        // Narrow strings contribute their raw bytes. The element type provides the
+        // width, so the constant value is just the code unit.
+        let units = match s {
+            co2_ast::StringLiteral::Utf16(units)
+            | co2_ast::StringLiteral::Utf32(units)
+            | co2_ast::StringLiteral::Wide(units) => units
                 .iter()
                 .copied()
-                .chain([0u8])
-                .map(|byte| {
-                    (
-                        InitializerItem {
-                            designators: None,
-                            initializer: (
-                                Initializer::Expr((
-                                    Expression::Constant(co2_ast::Constant::Int(
-                                        i128::from(byte),
-                                        co2_ast::IntegerSuffix::None,
-                                    )),
-                                    span,
+                .chain(std::iter::once(0u32))
+                .collect::<Vec<_>>(),
+            co2_ast::StringLiteral::None(bytes)
+            | co2_ast::StringLiteral::Str(bytes)
+            | co2_ast::StringLiteral::Utf8(bytes) => bytes
+                .iter()
+                .copied()
+                .map(u32::from)
+                .chain(std::iter::once(0u32))
+                .collect::<Vec<_>>(),
+        };
+        units
+            .into_iter()
+            .map(|unit| {
+                (
+                    InitializerItem {
+                        designators: None,
+                        initializer: (
+                            Initializer::Expr((
+                                Expression::Constant(co2_ast::Constant::Int(
+                                    i128::from(unit),
+                                    co2_ast::IntegerSuffix::None,
                                 )),
                                 span,
-                            ),
-                        },
-                        span,
-                    )
-                })
-                .collect()
-        } else {
-            String::from_utf8_lossy(&s.bytes)
-                .chars()
-                .chain(['\0'])
-                .map(|ch| {
-                    (
-                        InitializerItem {
-                            designators: None,
-                            initializer: (
-                                Initializer::Expr((
-                                    Expression::Constant(co2_ast::Constant::Int(
-                                        ch as i128,
-                                        co2_ast::IntegerSuffix::None,
-                                    )),
-                                    span,
-                                )),
-                                span,
-                            ),
-                        },
-                        span,
-                    )
-                })
-                .collect()
-        }
+                            )),
+                            span,
+                        ),
+                    },
+                    span,
+                )
+            })
+            .collect()
     }
 }

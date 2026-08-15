@@ -1,5 +1,6 @@
 use std::{
     ascii::escape_default,
+    borrow::Cow,
     fmt::{self, Display},
 };
 
@@ -737,25 +738,58 @@ impl StringLiteralPrefix {
         }
     }
 
-    pub fn code_unit_len(self, bytes: &[u8]) -> usize {
-        match self {
-            Self::None | Self::Str | Self::Utf8 => bytes.len(),
-            Self::Utf16 | Self::Utf32 | Self::Wide => {
-                String::from_utf8_lossy(bytes).chars().count()
-            }
-        }
+    pub fn is_wide(self) -> bool {
+        matches!(self, Self::Utf16 | Self::Utf32 | Self::Wide)
     }
 }
 
+/// A string literal. The variant is the prefix: narrow prefixes (`"…"`,
+/// `s"…"`, `u8"…"`) store raw bytes, while wide prefixes (`u"…"`, `U"…"`,
+/// `L"…"`) store decoded code units — each escape is its own code unit (never
+/// UTF-8-decoded), while raw source bytes are UTF-8-decoded into one code unit
+/// per code point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct StringLiteral {
-    pub prefix: StringLiteralPrefix,
-    pub bytes: Vec<u8>,
+pub enum StringLiteral {
+    None(Vec<u8>),
+    Str(Vec<u8>),
+    Utf8(Vec<u8>),
+    Utf16(Vec<u32>),
+    Utf32(Vec<u32>),
+    Wide(Vec<u32>),
 }
 
 impl StringLiteral {
+    pub fn prefix(&self) -> StringLiteralPrefix {
+        match self {
+            StringLiteral::None(_) => StringLiteralPrefix::None,
+            StringLiteral::Str(_) => StringLiteralPrefix::Str,
+            StringLiteral::Utf8(_) => StringLiteralPrefix::Utf8,
+            StringLiteral::Utf16(_) => StringLiteralPrefix::Utf16,
+            StringLiteral::Utf32(_) => StringLiteralPrefix::Utf32,
+            StringLiteral::Wide(_) => StringLiteralPrefix::Wide,
+        }
+    }
+
+    pub fn is_wide(&self) -> bool {
+        matches!(
+            self,
+            StringLiteral::Utf16(_) | StringLiteral::Utf32(_) | StringLiteral::Wide(_)
+        )
+    }
+
+    pub fn element_size(&self) -> usize {
+        self.prefix().element_size()
+    }
+
     pub fn code_unit_len(&self) -> usize {
-        self.prefix.code_unit_len(&self.bytes)
+        match self {
+            StringLiteral::None(bytes) | StringLiteral::Str(bytes) | StringLiteral::Utf8(bytes) => {
+                bytes.len()
+            }
+            StringLiteral::Utf16(units)
+            | StringLiteral::Utf32(units)
+            | StringLiteral::Wide(units) => units.len(),
+        }
     }
 
     pub fn nul_terminated_len(&self) -> usize {
@@ -763,7 +797,28 @@ impl StringLiteral {
     }
 
     pub fn storage_size(&self) -> usize {
-        self.nul_terminated_len() * self.prefix.element_size()
+        self.nul_terminated_len() * self.element_size()
+    }
+
+    /// Raw bytes of the literal: for narrow strings the stored bytes, for wide
+    /// strings the code units re-encoded as UTF-8. Used for rendering and docs.
+    pub fn to_bytes(&self) -> Cow<'_, [u8]> {
+        match self {
+            StringLiteral::None(bytes) | StringLiteral::Str(bytes) | StringLiteral::Utf8(bytes) => {
+                Cow::Borrowed(bytes)
+            }
+            StringLiteral::Utf16(units)
+            | StringLiteral::Utf32(units)
+            | StringLiteral::Wide(units) => {
+                let mut out = Vec::with_capacity(units.len());
+                for &unit in units {
+                    let ch = char::from_u32(unit).unwrap_or('\u{FFFD}');
+                    let mut buf = [0u8; 4];
+                    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                }
+                Cow::Owned(out)
+            }
+        }
     }
 }
 
@@ -791,8 +846,8 @@ impl Display for Constant {
                 write!(f, "'")
             }
             Constant::String(literal) => {
-                write!(f, "{}\"", literal.prefix.as_str())?;
-                fmt_bytes(f, &literal.bytes)?;
+                write!(f, "{}\"", literal.prefix().as_str())?;
+                fmt_bytes(f, literal.to_bytes().as_ref())?;
                 write!(f, "\"")
             }
         }
@@ -902,8 +957,8 @@ impl Display for Token {
                 write!(f, "'")
             }
             Token::StringLit(literal) => {
-                write!(f, "{}\"", literal.prefix.as_str())?;
-                fmt_bytes(f, &literal.bytes)?;
+                write!(f, "{}\"", literal.prefix().as_str())?;
+                fmt_bytes(f, literal.to_bytes().as_ref())?;
                 write!(f, "\"")
             }
 

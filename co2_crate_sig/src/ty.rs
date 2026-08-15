@@ -1642,7 +1642,7 @@ impl LocalResolverBase {
         let rust_span = self.co2_span_to_rustc(*span);
         match expr {
             Expression::Constant(Constant::String(s)) => {
-                let elem_ty = match s.prefix {
+                let elem_ty = match s.prefix() {
                     StringLiteralPrefix::None
                     | StringLiteralPrefix::Str
                     | StringLiteralPrefix::Utf8 => HirTy::signed_ty(IntTy::I8, rust_span),

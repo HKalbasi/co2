@@ -335,6 +335,80 @@ int main(void)
     assert(L'ف' ==1601);
 
     /* --------------------------------------------------------
+     * char16_t (u"...") — 2-byte code units, little-endian
+     * -------------------------------------------------------- */
+
+    _Static_assert(sizeof(u"ab") == 6);
+
+    {
+        unsigned char *b16 = (unsigned char *)u"ab";
+        assert(b16[0] == 0x61);
+        assert(b16[1] == 0x00);
+        assert(b16[2] == 0x62);
+        assert(b16[3] == 0x00);
+        assert(b16[4] == 0x00);
+        assert(b16[5] == 0x00);
+    }
+
+    {
+        unsigned short s16[3];
+        const unsigned char *src = (const unsigned char *)u"ab";
+        s16[0] = (unsigned short)(src[0] | ((unsigned short)src[1] << 8));
+        s16[1] = (unsigned short)(src[2] | ((unsigned short)src[3] << 8));
+        s16[2] = (unsigned short)(src[4] | ((unsigned short)src[5] << 8));
+        assert(s16[0] == 0x0061);
+        assert(s16[1] == 0x0062);
+        assert(s16[2] == 0x0000);
+    }
+
+
+    /* --------------------------------------------------------
+     * Wide string escapes are code units, not UTF-8 decoded
+     * -------------------------------------------------------- */
+
+    {
+        wchar_t a[] = L"\x92";
+        assert((int)a[0] == 0x92);
+        assert((int)a[1] == 0);
+    }
+
+    {
+        wchar_t u[] = L"\xc3\xa9";
+        assert((int)u[0] == 0xC3);
+        assert((int)u[1] == 0xA9);
+        assert((int)u[2] == 0);
+    }
+
+    {
+        wchar_t raw[] = L"é";
+        assert((int)raw[0] == 0xE9);
+        assert((int)raw[1] == 0);
+    }
+
+
+    /* --------------------------------------------------------
+     * Wide string deref through pointers (element alignment)
+     * -------------------------------------------------------- */
+
+    {
+        const wchar_t *p = L"abcdef";
+        assert(p[0] == L'a');
+        assert(p[1] == L'b');
+        assert(p[2] == L'c');
+        assert(p[3] == L'd');
+        assert(p[4] == L'e');
+        assert(p[5] == L'f');
+        assert(p[6] == L'\0');
+    }
+
+    {
+        const wchar_t *q = L"\x92\x93\x94";
+        assert((int)q[0] == 0x92);
+        assert((int)q[1] == 0x93);
+        assert((int)q[2] == 0x94);
+    }
+
+    /* --------------------------------------------------------
      * Runtime success
      * -------------------------------------------------------- */
 

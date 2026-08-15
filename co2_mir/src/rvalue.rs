@@ -85,18 +85,33 @@ impl Builder<'_, '_> {
         // width. Single-byte prefixes keep the raw bytes; wide prefixes must be
         // widened (e.g. L"foo" -> i32 code units) so that element indexing
         // reads correct values.
-        let elem_size = literal.prefix.element_size();
-        let mut bytes = Vec::with_capacity(literal.bytes.len() * elem_size);
-        if elem_size == 1 {
-            bytes.extend_from_slice(&literal.bytes);
+        let elem_size = literal.element_size();
+        let mut bytes = Vec::with_capacity(literal.code_unit_len() * elem_size);
+        if !literal.is_wide() {
+            bytes.extend_from_slice(match literal {
+                StringLiteral::None(b) | StringLiteral::Str(b) | StringLiteral::Utf8(b) => b,
+                StringLiteral::Utf16(_) | StringLiteral::Utf32(_) | StringLiteral::Wide(_) => {
+                    unreachable!()
+                }
+            });
         } else {
-            for ch in String::from_utf8_lossy(&literal.bytes).chars() {
-                let code_unit = if elem_size == 2 {
-                    u16::try_from(ch as u32).unwrap_or(u16::MAX) as u32
+            // Wide prefixes: the tokenizer already decoded code units — raw
+            // source bytes are UTF-8-decoded, while each escape is its own code
+            // unit (e.g. L"\x92" -> 0x92, L"\xc3\xa9" -> 0xC3, 0xA9). Widen each
+            // unit to the element width.
+            for &unit in match literal {
+                StringLiteral::Utf16(units)
+                | StringLiteral::Utf32(units)
+                | StringLiteral::Wide(units) => units,
+                StringLiteral::None(_) | StringLiteral::Str(_) | StringLiteral::Utf8(_) => {
+                    unreachable!()
+                }
+            } {
+                if elem_size == 2 {
+                    bytes.extend_from_slice(&(unit as u16).to_le_bytes());
                 } else {
-                    ch as u32
-                };
-                bytes.extend_from_slice(&code_unit.to_le_bytes());
+                    bytes.extend_from_slice(&unit.to_le_bytes());
+                }
             }
         }
         let needs_nul = !matches!(ptr_ty.kind(), TyKind::RigidTy(RigidTy::Ref(_, _, _)));
@@ -104,10 +119,8 @@ impl Builder<'_, '_> {
             bytes.extend(std::iter::repeat(0).take(elem_size));
         }
 
-        // Allocate string bytes in static (rodata) memory via a &'static str constant.
-        // TODO: This unsafe is super invalid. C allow arbitrary string literal, not just utf8.
-        //       The whole code here is nonsense.
-        let str_const = MirConst::from_str(unsafe { std::str::from_utf8_unchecked(&bytes) });
+        // Allocate string bytes in static (rodata) memory.
+        let str_const = MirConst::from_bytes_aligned(&bytes, elem_size as u64);
         let str_ref_ty = str_const.ty(); // &'static str
 
         // If the requested type is a reference (e.g. &str for s"..." literals),

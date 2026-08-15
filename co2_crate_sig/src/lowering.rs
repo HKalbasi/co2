@@ -87,7 +87,7 @@ fn lower_generated_attrs(attrs: &[co2_ast::Spanned<co2_ast::RustAttribute>]) -> 
                     | [
                         (co2_ast::Token::Assign, _),
                         (co2_ast::Token::StringLit(lit), _),
-                    ] => Some(lit.bytes.clone()),
+                    ] => Some(lit.to_bytes().into_owned()),
                     _ => None,
                 }?;
                 Some(Co2Attr::DocComment {
@@ -119,7 +119,7 @@ fn lower_generated_attrs(attrs: &[co2_ast::Spanned<co2_ast::RustAttribute>]) -> 
                         (co2_ast::Token::LParen, _),
                         (co2_ast::Token::StringLit(lit), _),
                         (co2_ast::Token::RParen, _),
-                    ] => String::from_utf8_lossy(&lit.bytes).into_owned(),
+                    ] => String::from_utf8_lossy(lit.to_bytes().as_ref()).into_owned(),
                     _ => return None,
                 };
                 Some(Co2Attr::Alias(name))

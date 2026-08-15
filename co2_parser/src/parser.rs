@@ -36,17 +36,52 @@ fn join_spans(start: Span, end: Span) -> Span {
 fn merge_string_literals(parts: Vec<StringLiteral>) -> StringLiteral {
     let prefix = parts
         .iter()
-        .map(|part| part.prefix)
+        .map(StringLiteral::prefix)
         .find(|prefix| *prefix != StringLiteralPrefix::None)
         .unwrap_or(StringLiteralPrefix::None);
     debug_assert!(
         parts
             .iter()
-            .all(|part| part.prefix == StringLiteralPrefix::None || part.prefix == prefix)
+            .all(|part| { part.prefix() == StringLiteralPrefix::None || part.prefix() == prefix })
     );
-    StringLiteral {
-        prefix,
-        bytes: parts.into_iter().flat_map(|part| part.bytes).collect(),
+    if prefix.is_wide() {
+        let mut code_units = Vec::new();
+        for part in parts {
+            match part {
+                StringLiteral::Utf16(units)
+                | StringLiteral::Utf32(units)
+                | StringLiteral::Wide(units) => {
+                    code_units.extend(units);
+                }
+                StringLiteral::None(bytes)
+                | StringLiteral::Str(bytes)
+                | StringLiteral::Utf8(bytes) => {
+                    code_units.extend(String::from_utf8_lossy(&bytes).chars().map(|ch| ch as u32));
+                }
+            }
+        }
+        match prefix {
+            StringLiteralPrefix::Utf16 => StringLiteral::Utf16(code_units),
+            StringLiteralPrefix::Utf32 => StringLiteral::Utf32(code_units),
+            _ => StringLiteral::Wide(code_units),
+        }
+    } else {
+        let mut bytes = Vec::new();
+        for part in parts {
+            match part {
+                StringLiteral::None(b) | StringLiteral::Str(b) | StringLiteral::Utf8(b) => {
+                    bytes.extend_from_slice(&b);
+                }
+                StringLiteral::Utf16(_) | StringLiteral::Utf32(_) | StringLiteral::Wide(_) => {
+                    unreachable!("wide part with narrow target prefix")
+                }
+            }
+        }
+        match prefix {
+            StringLiteralPrefix::Str => StringLiteral::Str(bytes),
+            StringLiteralPrefix::Utf8 => StringLiteral::Utf8(bytes),
+            _ => StringLiteral::None(bytes),
+        }
     }
 }
 
@@ -245,10 +280,7 @@ where
             RustAttribute {
                 path: vec![("doc".to_owned(), span)],
                 args: vec![(
-                    Token::StringLit(StringLiteral {
-                        prefix: StringLiteralPrefix::None,
-                        bytes: text.into_bytes(),
-                    }),
+                    Token::StringLit(StringLiteral::None(text.into_bytes())),
                     span,
                 )],
                 style: if inner {
@@ -3050,7 +3082,8 @@ where
                     .map_with(|parts, e| {
                         let literal = merge_string_literals(parts);
                         let span = e.span();
-                        let message = String::from_utf8_lossy(&literal.bytes).into_owned();
+                        let message =
+                            String::from_utf8_lossy(literal.to_bytes().as_ref()).into_owned();
                         (message, span)
                     }),
                 )
