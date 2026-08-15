@@ -4,7 +4,8 @@ use chumsky::{
 };
 use co2_ast::TypeResolver;
 use co2_ast::{
-    BinOp, CompoundStatement, Constant, Declaration, DeclarationSpecifier, Declarator, Designator,
+    BinOp, CharPrefix, CompoundStatement, Constant, Declaration, DeclarationSpecifier,
+    Declarator, Designator,
     EnumSpecifier, Enumerator, Expression, FileId, FloatSuffix, ForInit,
     FunctionDefinitionSignature, FunctionSpecifier, GenericAssociation, InitDeclarator,
     Initializer, InitializerItem, IntegerSuffix, LazyCompoundStatement, LazyRustConstExpr,
@@ -20,7 +21,7 @@ use co2_ast::{
 enum LiteralToken {
     Int(String, IntegerSuffix),
     Float(String, FloatSuffix),
-    Char(Vec<u8>),
+    Char(Vec<u8>, CharPrefix),
 }
 
 fn join_spans(start: Span, end: Span) -> Span {
@@ -1017,7 +1018,7 @@ where
             select! {
                 Token::Integer(i, suffix) => LiteralToken::Int(i, suffix),
                 Token::FloatLit(i, suffix) => LiteralToken::Float(i, suffix),
-                Token::CharLit(s) => LiteralToken::Char(s),
+                Token::CharLit(s, prefix) => LiteralToken::Char(s, prefix),
             }
             .map_with(|lit, e| {
                 let span = e.span();
@@ -1068,14 +1069,14 @@ where
                             }
                         }
                     }
-                    LiteralToken::Char(s) => {
+                    LiteralToken::Char(s, prefix) => {
                         if s.is_empty() {
                             co2_ast::emit_errors(vec![co2_ast::Rich::custom(
                                 span,
                                 "Invalid character constant",
                             )]);
                             Expression::Constant(Constant::Char(0))
-                        } else if s.len() > 1 {
+                        } else if prefix == CharPrefix::None && s.len() > 1 {
                             // Multi-character character constant (implementation defined).
                             // gcc packs up to sizeof(int) characters into an int,
                             // first character in the most significant byte:
@@ -1097,7 +1098,20 @@ where
                                 IntegerSuffix::None,
                             ))
                         } else {
-                            Expression::Constant(Constant::Char(u32::from(s[0])))
+                            // Narrow character constants hold the (sign-extended)
+                            // byte value; wide prefixes hold the code point.
+                            let value = if prefix == CharPrefix::None {
+                                (s[0] as i8) as u32
+                            } else if s.len() == 1 {
+                                u32::from(s[0])
+                            } else {
+                                String::from_utf8_lossy(&s)
+                                    .chars()
+                                    .next()
+                                    .map(|c| c as u32)
+                                    .unwrap_or(0)
+                            };
+                            Expression::Constant(Constant::Char(value))
                         }
                     }
                 }

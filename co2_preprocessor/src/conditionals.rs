@@ -345,7 +345,8 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
                     }
                     let hex_str = bytes_to_str(bytes, hex_start, i);
                     (u64::from_str_radix(hex_str, 16).unwrap_or(0), true)
-                } else if b == b'0' && i + 1 < len && (bytes[i + 1] == b'b' || bytes[i + 1] == b'B') {
+                } else if b == b'0' && i + 1 < len && (bytes[i + 1] == b'b' || bytes[i + 1] == b'B')
+                {
                     i += 2;
                     let bin_start = i;
                     while i < len && matches!(bytes[i], b'0' | b'1') {

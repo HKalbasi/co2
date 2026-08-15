@@ -1518,7 +1518,7 @@ impl HirCtx<'_> {
                 })
             }
             Expression::Constant(Constant::Char(ch)) => Ok(HirExpr {
-                kind: HirExprKind::ConstInt(i128::from(ch as u8 as i8)),
+                kind: HirExprKind::ConstInt(i128::from(ch as i32)),
                 ty: Ty::signed_ty(IntTy::I32),
                 span,
             }),

@@ -1,3 +1,4 @@
+use co2_ast::StringLiteral;
 use co2_hir::HirBinOp;
 use rustc_public_generative::rustc_public::{
     mir::{
@@ -76,14 +77,31 @@ impl Builder<'_, '_> {
 
     pub(crate) fn lower_const_string(
         &mut self,
-        s: &[u8],
+        literal: &StringLiteral,
         ptr_ty: Ty,
         span: RustSpan,
     ) -> MirOperand {
-        let mut bytes = s.to_vec();
+        // Expand the literal to an array of code units of the required element
+        // width. Single-byte prefixes keep the raw bytes; wide prefixes must be
+        // widened (e.g. L"foo" -> i32 code units) so that element indexing
+        // reads correct values.
+        let elem_size = literal.prefix.element_size();
+        let mut bytes = Vec::with_capacity(literal.bytes.len() * elem_size);
+        if elem_size == 1 {
+            bytes.extend_from_slice(&literal.bytes);
+        } else {
+            for ch in String::from_utf8_lossy(&literal.bytes).chars() {
+                let code_unit = if elem_size == 2 {
+                    u16::try_from(ch as u32).unwrap_or(u16::MAX) as u32
+                } else {
+                    ch as u32
+                };
+                bytes.extend_from_slice(&code_unit.to_le_bytes());
+            }
+        }
         let needs_nul = !matches!(ptr_ty.kind(), TyKind::RigidTy(RigidTy::Ref(_, _, _)));
         if needs_nul {
-            bytes.push(0);
+            bytes.extend(std::iter::repeat(0).take(elem_size));
         }
 
         // Allocate string bytes in static (rodata) memory via a &'static str constant.

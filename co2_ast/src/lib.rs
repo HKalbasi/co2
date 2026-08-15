@@ -587,7 +587,7 @@ pub enum Token {
     // Constants
     Integer(String, IntegerSuffix),
     FloatLit(String, FloatSuffix),
-    CharLit(Vec<u8>),
+    CharLit(Vec<u8>, CharPrefix),
     StringLit(StringLiteral),
 
     // Operators
@@ -684,6 +684,27 @@ pub enum FloatSuffix {
     None,
     Float, // f or F
     Long,  // l or L
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CharPrefix {
+    None,
+    Utf8,
+    Utf16,
+    Utf32,
+    Wide,
+}
+
+impl CharPrefix {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "",
+            Self::Utf8 => "u8",
+            Self::Utf16 => "u",
+            Self::Utf32 => "U",
+            Self::Wide => "L",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -875,8 +896,8 @@ impl Display for Token {
                     FloatSuffix::Long => write!(f, "l"),
                 }
             }
-            Token::CharLit(bytes) => {
-                write!(f, "'")?;
+            Token::CharLit(bytes, prefix) => {
+                write!(f, "{}'", prefix.as_str())?;
                 fmt_bytes(f, bytes)?;
                 write!(f, "'")
             }

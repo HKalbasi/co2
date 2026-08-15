@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use co2_ast::{FloatSuffix, IntegerSuffix, StringLiteral, StringLiteralPrefix, Token};
+use co2_ast::{CharPrefix, FloatSuffix, IntegerSuffix, StringLiteral, StringLiteralPrefix, Token};
 
 use super::utils::{
     char_allowed, decode_utf8_char, ident_char_len, invalid_ident_char_message, is_ident_cont_byte,
@@ -303,7 +303,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     if b == b'u' && self.matches(b"u8'") {
                         self.pos += 3;
-                        self.scan_char_body(out);
+                        self.scan_char_body(out, CharPrefix::Utf8);
                         continue;
                     }
                     if b == b'u' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'"' {
@@ -313,7 +313,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     if b == b'u' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'\'' {
                         self.pos += 2;
-                        self.scan_char_body(out);
+                        self.scan_char_body(out, CharPrefix::Utf16);
                         continue;
                     }
                     if b == b'U' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'"' {
@@ -323,7 +323,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     if b == b'U' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'\'' {
                         self.pos += 2;
-                        self.scan_char_body(out);
+                        self.scan_char_body(out, CharPrefix::Utf32);
                         continue;
                     }
                     if b == b'L' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'"' {
@@ -333,7 +333,7 @@ impl<'a> Tokenizer<'a> {
                     }
                     if b == b'L' && self.pos + 1 < self.len && self.bytes[self.pos + 1] == b'\'' {
                         self.pos += 2;
-                        self.scan_char_body(out);
+                        self.scan_char_body(out, CharPrefix::Wide);
                         continue;
                     }
 
@@ -363,7 +363,7 @@ impl<'a> Tokenizer<'a> {
                             if self.pos < self.len && self.bytes[self.pos] == b'\'' {
                                 // Has closing ' - it's a char literal
                                 self.pos = saved_pos + 1;
-                                self.scan_char_body(out);
+                                self.scan_char_body(out, CharPrefix::None);
                             } else {
                                 // No closing ' - it's a lifetime
                                 let name = unsafe {
@@ -377,7 +377,7 @@ impl<'a> Tokenizer<'a> {
                                 self.buf.clear();
                             }
                         } else {
-                            self.scan_char_body(out);
+                            self.scan_char_body(out, CharPrefix::None);
                         }
                         continue;
                     }
@@ -752,10 +752,10 @@ impl<'a> Tokenizer<'a> {
         out
     }
 
-    fn scan_char_body(&mut self, out: &mut Vec<(Token, usize, usize)>) {
+    fn scan_char_body(&mut self, out: &mut Vec<(Token, usize, usize)>, prefix: CharPrefix) {
         let start = self.token_start;
         let body = self.scan_char_literal_body();
-        out.push((Token::CharLit(body), start, self.pos));
+        out.push((Token::CharLit(body, prefix), start, self.pos));
         self.state = State::Start;
         self.buf.clear();
     }

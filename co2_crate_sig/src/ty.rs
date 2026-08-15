@@ -1027,7 +1027,7 @@ impl LocalResolverBase {
     ) -> Result<i128, (co2_ast::Span, String)> {
         match expr {
             Expression::Constant(Constant::Int(v, _)) => Ok(*v),
-            Expression::Constant(Constant::Char(ch)) => Ok(i128::from(*ch as u8 as i8)),
+            Expression::Constant(Constant::Char(ch)) => Ok(i128::from(*ch as i32)),
             Expression::Constant(Constant::Float(_, _)) => Err(spanned_error(
                 *span,
                 "cannot use floats in const expressions",

@@ -526,9 +526,9 @@ impl LocalResolverBase {
         assert!(data.emitted_fields.is_none(), "Redefinition happened");
         let mut anon_field_count = 0;
         let mut emitted_fields = Vec::new();
-let mut logical_fields = Vec::new();
-                let mut open_bitfield_storage: Option<OpenBitfieldStorage> = None;
-                let mut abs_bit = 0usize;
+        let mut logical_fields = Vec::new();
+        let mut open_bitfield_storage: Option<OpenBitfieldStorage> = None;
+        let mut abs_bit = 0usize;
         let total_declarators = fields
             .iter()
             .map(|(field, _)| field.declarators.len())
@@ -657,13 +657,13 @@ let mut logical_fields = Vec::new();
                             // GCC SysV: a bit-field may not span more units of
                             // alignment of its type than the type itself; if it
                             // would, advance to the next type boundary.
-                            let candidate =
-                                if abs_bit / storage_bits != (abs_bit + bit_width - 1) / storage_bits
-                                {
-                                    round_up_bit(abs_bit, storage_bits)
-                                } else {
-                                    abs_bit
-                                };
+                            let candidate = if abs_bit / storage_bits
+                                != (abs_bit + bit_width - 1) / storage_bits
+                            {
+                                round_up_bit(abs_bit, storage_bits)
+                            } else {
+                                abs_bit
+                            };
                             let (storage_index, bit_offset) = ensure_bitfield_storage(
                                 &mut emitted_fields,
                                 &mut open_bitfield_storage,
@@ -932,9 +932,7 @@ fn ensure_bitfield_storage(
             // unit in place if it can be upgraded to a wider type while still
             // sitting at its original (byte-aligned) offset.
             if let Some(needed) = smallest_uint_bits_covering(span_bits) {
-                if needed > open.storage_bits
-                    && (open.storage_start_bit / 8) % (needed / 8) == 0
-                {
+                if needed > open.storage_bits && (open.storage_start_bit / 8) % (needed / 8) == 0 {
                     let new_ty = unsigned_ty_for_bits(needed, storage_ty.span);
                     emitted_fields[open.index].ty = new_ty.clone();
                     for lf in logical_fields.iter_mut().skip(open.first_logical) {
