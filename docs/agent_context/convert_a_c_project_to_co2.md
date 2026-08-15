@@ -35,7 +35,7 @@ CO2 is designed to be a "C with Rust powers." It maintains high compatibility wi
 
 ## Module Structure
 
-CO2 integrates into the Rust module system. 
+CO2 integrates into the Rust module system.
 
 ### .rs and .co2 Relationship
 A Rust file (e.g., `main.rs`) can "host" a CO2 file by using the `#![language(co2)]` attribute at the crate root or a module level.

@@ -25,7 +25,7 @@ fn simple() {
 fn generic() {
     print_name(s"generic");
     Struct1 s = Struct1::new(42);
-    
+
     s.generic_debug::<i32>(4);
     s.generic_debug(6);
 
@@ -50,7 +50,7 @@ fn generic_with_default() {
 
     GenericWrapWithDefault::<i64, i64> w2 = GenericWrapWithDefault::<i64, i64>::new(18, 19);
     w2.ok();
-    w2.sum();    
+    w2.sum();
 }
 
 fn auto_deref() {

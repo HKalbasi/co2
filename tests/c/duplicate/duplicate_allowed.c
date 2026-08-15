@@ -14,7 +14,7 @@ extern int f1();
 int f2();
 extern int f2();
 
-typedef int t1; 
+typedef int t1;
 typedef int t1;
 
 typedef t1 t2;

@@ -140,7 +140,7 @@ CT_ASSERT(VAR_SUM(1, 2) == 3);  /* two arguments – no comma in constant expres
   	#error "__STDC__ not defined"
   #else
 	#error "super broken"
-  #endif	
+  #endif
 #endif
 CT_ASSERT(NESTED_DEFINED_OK == 1);
 

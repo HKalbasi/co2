@@ -4,7 +4,7 @@
 #define TRUE
 
      #ifdef TRUE
-    //^^^^^ Unterminated conditional directive 
+    //^^^^^ Unterminated conditional directive
 int main(void) {
     return 0;
 }

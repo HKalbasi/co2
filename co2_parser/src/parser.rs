@@ -4,9 +4,8 @@ use chumsky::{
 };
 use co2_ast::TypeResolver;
 use co2_ast::{
-    BinOp, CharPrefix, CompoundStatement, Constant, Declaration, DeclarationSpecifier,
-    Declarator, Designator,
-    EnumSpecifier, Enumerator, Expression, FileId, FloatSuffix, ForInit,
+    BinOp, CharPrefix, CompoundStatement, Constant, Declaration, DeclarationSpecifier, Declarator,
+    Designator, EnumSpecifier, Enumerator, Expression, FileId, FloatSuffix, ForInit,
     FunctionDefinitionSignature, FunctionSpecifier, GenericAssociation, InitDeclarator,
     Initializer, InitializerItem, IntegerSuffix, LazyCompoundStatement, LazyRustConstExpr,
     LazySubscription, ModItem, ParameterList, RustAttribute, RustAttributeStyle, RustFunctionParam,

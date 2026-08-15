@@ -20,7 +20,7 @@ at the FFI boundary.
 
 ## The core language inside Rust
 
-Inside of Rust, there is a [minimal, core language which is called minirust](https://github.com/minirust/minirust) 
+Inside of Rust, there is a [minimal, core language which is called minirust](https://github.com/minirust/minirust)
 and in this document I call it the "MIR language". MIR language consists of:
 * Type system of the Rust, with all details:
   * Traits
@@ -57,7 +57,7 @@ It enables using Rust API involving generics or types with non trivial destructo
 without needing an unsafe and type erased wrapper.
 
 CO2 is also important as a MIR lang because it can act as a bridge between MIR langs and the languages that
-can talk C. 
+can talk C.
 
 ## C++ as a MIR lang
 

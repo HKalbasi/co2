@@ -87,7 +87,7 @@ int main()
 	printf("%d\n", i);
 	i = _Generic(l == 2, _Bool: 1, int: 2, signed long int: 3);
 	printf("%d\n", i);
-	
+
 	i = _Generic(RED, int: 1, enum Color: 2, default: 3);
 	printf("%d\n", i);
 	enum Color c = BLUE;
@@ -95,6 +95,6 @@ int main()
 	printf("%d\n", i);
 	i = _Generic(~c, int: 1, enum Color: 2, default: 3);
 	printf("%d\n", i);
-	
+
 	return 0;
 }

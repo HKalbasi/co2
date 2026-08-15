@@ -87,10 +87,10 @@ const _: () = {
             let _: *const NormalReprCStruct = &raw const (*dummy2).d;
             let _: *const BitFieldReprCStruct = &raw const (*dummy2).e;
             let _: *const *mut BitFieldReprCStruct = &raw const (*dummy2).f;
-        
+
             let _: *const Vec<i32> = &raw const (*dummy3).b;
             let _: *const Vec<RustStructHoldingVector> = &raw const (*dummy3).c;
-        
+
             let _: *const Point = &raw const (*dummy4).b;
             let _: *const *mut CopyReprRustStruct = &raw const (*dummy4).c;
             let _: *const *const RustStructHoldingVector = &raw const (*dummy4).foo;

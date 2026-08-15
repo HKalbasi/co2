@@ -39,7 +39,7 @@ int main2()
 
 int main3() {
     int x;
-    
+
     x = 1;
     for(x = 10; x; x = x - 1)
         ;
@@ -56,7 +56,7 @@ int main3() {
     if(x)
         return 1;
     x = 10;
-    do 
+    do
         x = x - 1;
     while(x);
     if(x)
@@ -67,7 +67,7 @@ int main3() {
 int main4()
 {
     int x;
-    
+
     x = 1;
     x = x * 10;
     x = x / 2;
@@ -141,7 +141,7 @@ int main7()
 int main8()
 {
     struct { int x; int y; } s, s2, *s3;
-    
+
     s.x = 3;
     s.y = 5;
     if (s.y - s.x - 2) {
@@ -516,7 +516,7 @@ int main15()
         return 1;
 
     char x[4][3][3] = { [1][2] = "0", "1", "x2", {'3'}, {"4"} };
-    if (x[1][2][0] != '0' || x[2][0][0] != '1' || x[2][1][1] != '2' 
+    if (x[1][2][0] != '0' || x[2][0][0] != '1' || x[2][1][1] != '2'
         || x[2][2][0] != '3' || x[3][0][0] != '4') {
         return 1;
     }
@@ -722,7 +722,7 @@ int main18()
     fp_static3 = 0;
     if (fp_static3)
         return 1;
-    
+
     if (0) {
         ((void (*)(void))0) ();
     }
@@ -994,7 +994,7 @@ int main28()
         return 2;
     if (static_array[2] != 2)
         return 3;
-    
+
     return 0;
 }
 
@@ -1034,7 +1034,7 @@ int main29()
     if (ar4[1][1] != 7 || ar4[0][4] != 5 || sizeof(ar4) / sizeof(int) != 10) {
         return 3;
     }
-    
+
     if (static_ar1[0] != 10 || static_ar1[6] != 16 || sizeof(static_ar1) / sizeof(int) != 7) {
         return 4;
     }
@@ -1304,14 +1304,14 @@ int main42()
 {
     int x;
     long long l;
-    
+
     x = 0;
     l = 0;
-    
+
     x = ~x;
     if (x != 0xffffffff)
         return 1;
-    
+
     l = ~l;
     if (x != 0xffffffffffffffff)
         return 2;
@@ -1508,7 +1508,7 @@ int main55() {
     return 0;
 }
 
-static const double one_half = 1.5; 
+static const double one_half = 1.5;
 
 int main56() {
     float x = 1.5f;
@@ -2086,7 +2086,7 @@ int main() {
         main86, main87, main88, main89, main90,
         main91, main92,
     };
-    
+
     int i;
     for (i = 0; i < sizeof(mains) / sizeof(mains[0]); i += 1) {
         if (mains[i]()) {

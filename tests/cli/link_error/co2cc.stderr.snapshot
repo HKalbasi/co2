@@ -6,6 +6,6 @@ error: linking with `cc` failed: exit status: 1
           >>> referenced by test.CGU_HASH-cgu.0
           >>>               [TEMP]/test.o:(main)
           collect2: error: ld returned 1 exit status
-          
+
 
 error: aborting due to 1 previous error

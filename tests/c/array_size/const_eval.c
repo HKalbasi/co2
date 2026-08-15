@@ -186,7 +186,7 @@ int main() {
     return 39;
   if (sizeof(ar40) / sizeof(int) != offsetof(struct Bar, z))
     return 40;
-  
+
   if (the_ar[12] == 1 && the_ar[12 + 3] == 2 && the_ar[12 / 3 + 4 * 5] == 3 &&
       the_ar[sizeof(ar3) + 3] == 5 && the_ar[Var1 * Var2] == 8 &&
       the_ar[Var1 * sizeof(ar3)] == 9 && the_ar[5 ^ 3] == 17 &&

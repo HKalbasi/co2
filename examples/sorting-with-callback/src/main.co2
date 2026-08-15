@@ -16,7 +16,7 @@ fn print_all(values: Vec<i32>) {
     printf("\n");
 }
 
-int c_sort_callback(const void * elem1, const void * elem2) 
+int c_sort_callback(const void * elem1, const void * elem2)
 {
     i32 f = *((i32*)elem1);
     i32 s = *((i32*)elem2);

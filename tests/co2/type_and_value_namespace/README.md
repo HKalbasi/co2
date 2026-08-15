@@ -15,7 +15,7 @@ pub mod gav {
     fn x() {
         square(2);
         square::y();
-    }    
+    }
 }
 
 pub fn square(num: i32) -> i32 {

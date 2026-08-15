@@ -28,7 +28,7 @@ Here is a tour over CO2 features:
 
 ```C
 // Use statements can import from Rust std.
-// They should be at the beginning of the file due parser technical limitations. 
+// They should be at the beginning of the file due parser technical limitations.
 use std::vec::Vec;
 use std::option::Option;
 
@@ -42,7 +42,7 @@ fn rust_style_function(a: i32, b: i32) -> i32 {
     // The body is still C.
     goto label;
     label:
-        return c_style_function2(a, b); // Forward declarations are optional. 
+        return c_style_function2(a, b); // Forward declarations are optional.
 }
 
 #include <stdio.h>

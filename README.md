@@ -3,7 +3,7 @@
 CO2 (oxidized C) is a programming language which is backward compatible with
 C (See [incompatibilities](./docs/known_incompatibilities_with_c.md)) but with
 direct access to the Rust ecosystem. CO2 and Rust can use each other crates seamlessly,
-with no FFI boundaries or extra tooling required. 
+with no FFI boundaries or extra tooling required.
 
 ## Example
 
@@ -137,7 +137,7 @@ After that, your CO2 code is a crate like any other Rust crates. You can import 
 use all of their API (even generic types and functions), split your code into multiple CO2 crates,
 and rewriting some of them or incrementally all of them to Rust for safety gains.
 
-Even if you don't need Rust interop, and you just want a better C with some features, 
+Even if you don't need Rust interop, and you just want a better C with some features,
 [CO2 might address your needs](./docs/c_successor.md).
 
 ## Getting started
@@ -185,7 +185,7 @@ But it is not a safe language like Rust:
 ### Is C++ syntax supported?
 
 No. We can imagine a CO2++ language which is backward compatible with C++. But CO2 is just compatible with C.
-For more details on CO2++, see [this page](./docs/vision/co2pp.md). 
+For more details on CO2++, see [this page](./docs/vision/co2pp.md).
 
 ### Why the compiler binary is so huge?
 

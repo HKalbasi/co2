@@ -122,7 +122,7 @@ int main() {
         main1, main2, main3, main4, main5,
         main6,
     };
-    
+
     int i;
     for (i = 0; i < sizeof(mains) / sizeof(mains[0]); i += 1) {
         if (mains[i]()) {

@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-const char str[] = 
+const char str[] =
     "foo\0"
     "bar\0";
 

@@ -15,7 +15,7 @@ static int check(const struct s *p, const struct s *q)
     );
 }
 
-int main(void) { 
+int main(void) {
     struct s s = { 2, 4 };
     if (!check(&s, &s)) {
         return 1;

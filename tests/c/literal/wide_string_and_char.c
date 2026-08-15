@@ -328,7 +328,7 @@ int main(void)
     assert((int)c2 == 0xff);
     wchar_t c3 = '\xff';
     assert((int)c3 == -1);
-    
+
     assert(_Generic('a', char: 0, int: 1, default: 0));
     assert(_Generic(L'a', char: 0, int: 1, default: 0));
 

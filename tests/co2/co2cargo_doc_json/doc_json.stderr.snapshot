@@ -7,7 +7,7 @@ warning: unresolved link to `invalid`
    | |_^
    |
    = note: the link appears in this line:
-           
+
            Rust doc link to [`nested_value`] [`invalid`]
                                               ^^^^^^^^^
    = note: no item named `invalid` in scope

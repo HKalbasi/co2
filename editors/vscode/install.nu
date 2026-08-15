@@ -2,7 +2,7 @@
 
 # Build and install the CO2 VS Code extension
 
-let script_dir = $env.PWD 
+let script_dir = $env.PWD
 cd $script_dir
 
 # Check vsce is installed

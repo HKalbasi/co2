@@ -1,6 +1,6 @@
 # CO2 as a C successor language
 
-In recent years, many languages have been proposed as successors to C, such as Zig, Hare, Odin, C3, and others. 
+In recent years, many languages have been proposed as successors to C, such as Zig, Hare, Odin, C3, and others.
 They have different goals and make different tradeoffs, but they all try to improve some aspects of C while preserving some of its strengths.
 
 While the original goal of CO2 was not to be a C successor language,

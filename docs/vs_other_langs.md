@@ -56,7 +56,7 @@ language instead of CO2 itself.
 
 Benefits of CO2 over bindgen and cbindgen:
 * Unlike CO2, they limit Rust side to a narrow C-like API, so the Rust side needs a wrapper.
-* C side is always unsafe to call in those tools, but CO2 gives the C author the control to declare their functions as either safe or unsafe. 
+* C side is always unsafe to call in those tools, but CO2 gives the C author the control to declare their functions as either safe or unsafe.
   CO2 functions can also receive things like references and smart pointers to ensure the API is safe to call.
 * Miri works with CO2 and can detect UB in the mixed code.
 * A CO2 code is probably faster than a bindgen bridged code:

@@ -26,7 +26,7 @@ let run = (do { ^$bin } | complete)
 # 4. Handle "Aborted (core dumped)" message from shell if it's there (usually not when using 'complete' in nu)
 
 let stderr_normalized = (
-    $run.stderr 
+    $run.stderr
     | str replace --regex '\(\d+\) panicked' '(PID) panicked'
     | str replace --regex 'panicked at .+[/\\]main\.c:' 'panicked at main.c:'
     | str replace --regex 'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\s*' ''

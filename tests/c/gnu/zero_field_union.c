@@ -4,7 +4,7 @@
 typedef union {} zero_field;
 
 union U a;
-union U {} b;    
+union U {} b;
 
 int main() {
     zero_field x;

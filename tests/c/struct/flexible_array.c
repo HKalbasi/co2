@@ -22,13 +22,13 @@ int main() {
     if (sizeof(struct S) != sizeof(int) * 2) {
         return 1;
     }
-    
+
     if (sizeof(struct T) != 4) {
         return 2;
     }
 
     struct S s1 = {1, 2};
-    
+
     if (s1.x != 1 || s1.y != 2) {
         return 3;
     }
@@ -44,6 +44,6 @@ int main() {
     // Flexible array members are typically used with dynamic allocation
     // For this basic test, we verify the struct can be defined
     // and sizeof works correctly
-    
+
     return 0;
 }

@@ -28,7 +28,7 @@ fn main() {
     assert(sizeof(ReprRust) == 8);
     if (offsetof(ReprRust, field2) == 0) {
         if (offsetof(ReprRust, field1) == 4) {
-            assert(offsetof(ReprRust, field3) == 6);            
+            assert(offsetof(ReprRust, field3) == 6);
         } else {
             assert(offsetof(ReprRust, field3) == 4);
             assert(offsetof(ReprRust, field1) == 6);
@@ -36,7 +36,7 @@ fn main() {
     } else {
         assert(offsetof(ReprRust, field2) == 4);
         if (offsetof(ReprRust, field1) == 2) {
-            assert(offsetof(ReprRust, field3) == 0);            
+            assert(offsetof(ReprRust, field3) == 0);
         } else {
             assert(offsetof(ReprRust, field3) == 2);
             assert(offsetof(ReprRust, field1) == 0);
@@ -44,12 +44,12 @@ fn main() {
     }
 
     assert(sizeof(ReprC) == 12);
-    assert(offsetof(ReprC, field1) == 0);    
-    assert(offsetof(ReprC, field2) == 4);    
-    assert(offsetof(ReprC, field3) == 8);    
+    assert(offsetof(ReprC, field1) == 0);
+    assert(offsetof(ReprC, field2) == 4);
+    assert(offsetof(ReprC, field3) == 8);
 
     assert(sizeof(ReprPacked) == 8);
-    assert(offsetof(ReprPacked, field1) == 0);    
-    assert(offsetof(ReprPacked, field2) == 2);    
+    assert(offsetof(ReprPacked, field1) == 0);
+    assert(offsetof(ReprPacked, field2) == 2);
     assert(offsetof(ReprPacked, field3) == 6);
 }

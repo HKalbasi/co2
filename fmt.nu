@@ -3,15 +3,17 @@
 # stage 1: format workspace crates
 cargo fmt
 
-# stage 2: ensure every text file in project root ends with a newline
+# stage 2: strip trailing whitespace and ensure every text file ends with a newline
 idx init . --wait
 for f in (idx files .) {
     let f = $f.full_path
-    let ft = (^file --brief --mime-type $f | str trim)
+    let ft = (ls -m $f).0.type
     if ($ft | str starts-with "text/") {
         let content = (open --raw $f)
-        if not ($content | str ends-with "\n") {
-            $content + "\n" | save --force $f
+        let clean = ($content | str replace --all --regex "(?m)[ \t]+$" "")
+        let clean = if ($clean | str ends-with "\n") { $clean } else { $clean + "\n" }
+        if $clean != $content {
+            $clean | save --force $f
         }
     }
 }

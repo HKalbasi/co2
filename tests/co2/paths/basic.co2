@@ -4,7 +4,7 @@
 
 mod checker {
     use libc::printf;
-    
+
     fn check(x: i32) {
         printf("Checking %d\n", x);
     }
@@ -13,7 +13,7 @@ mod checker {
 mod runner {
     use ::libc::puts;
     use crate::checker::check;
-    
+
     fn run(x: i32) {
         puts("Running");
         check(x);

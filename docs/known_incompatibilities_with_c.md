@@ -15,7 +15,7 @@ cases when CO2 miscompiles or reject valid C code.
 static int value = (int)"foo"; // Valid in C, compile error in CO2!
 
 int array_decl[(intptr_t)some_pointer]; // Valid (although not useful) in C, compile error in CO2
-``` 
+```
 * In C, primitives are `int`, `long int`, `long long int`, ... and `intN_t` is a type alias to those.
   In CO2, like Rust, `iN` is the primitive type and `core::ffi::{c_int, c_long, c_longlong}` are type aliases.
   So in C in x86_64, `long` and `long long` are distinct 64 bit integer types, but in CO2 both are the same type.

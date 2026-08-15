@@ -1,7 +1,7 @@
 //@ mode: c
 
 /*
- * Reproduction of "cannot borrow data in a *const pointer as mutable" 
+ * Reproduction of "cannot borrow data in a *const pointer as mutable"
  * found in git's attr.c.
  */
 

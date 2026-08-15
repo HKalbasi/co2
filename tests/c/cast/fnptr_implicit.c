@@ -33,9 +33,9 @@ int main() {
     void (*p2)(const int, int*) = foo;
     p2(5000, &s);
 
-    foo_checker(foo);   
-    foo_checker((void*)foo);   
-    foo_checker(p1);   
+    foo_checker(foo);
+    foo_checker((void*)foo);
+    foo_checker(p1);
     foo_checker(p2);
     foo_checker((void (*)())foo); // Removed in C23
     bar_checker(bar);
