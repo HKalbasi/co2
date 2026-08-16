@@ -1,0 +1,61 @@
+//@ mode: co2
+//@ compile-pass
+
+use std::vec::Vec;
+use std::mem::drop;
+
+// A Vec that is never dropped (and not moved out) leaks.
+fn forgot_drop() {
+    Vec<i32> v = Vec::<i32>::new();
+               //^^^^^^^^^^^^^^^^^ warning: value leaked: `v` (of type `Vec`, never dropped)
+    v.push(2);
+}
+
+// Forgetting to drop a parameter also leaks.
+fn forgot_param(arg: Vec<i32>) {
+                   //^^^^^^^^ warning: value leaked: `arg` (of type `Vec`, never dropped)
+    arg.push(2);
+}
+
+// Moving a value into a container that is itself leaked leaks once: the
+// container owns the inner value now, so only the container warns.
+fn container_leaks() {
+    Vec<Vec<i32> > outer = Vec::<Vec<i32> >::new();
+                         //^^^^^^^^^^^^^^^^^^^^^^^ warning: value leaked: `outer` (of type `Vec`, never dropped)
+    Vec<i32> inner = Vec::<i32>::new();
+    outer.push(inner);
+}
+
+// Moving out of the function (return) transfers ownership: no leak.
+fn returned(v: Vec<i32>) -> Vec<i32> {
+    return v;
+}
+
+// Dropping everything: no leak.
+fn all_dropped() {
+    Vec<i32> v = Vec::<i32>::new();
+    v.push(2);
+    drop(v);
+}
+
+// A local that is moved into a call that drops it: no leak in this function.
+fn moved_to_callee() {
+    Vec<i32> v = Vec::<i32>::new();
+    dropped(v);
+}
+
+fn dropped(v: Vec<i32>) {
+    drop(v);
+}
+
+fn main() {
+    forgot_drop();
+    Vec::<i32> p = Vec::<i32>::new();
+    forgot_param(p);
+    container_leaks();
+    Vec::<i32> r = returned(Vec::<i32>::new());
+    drop(r);
+    all_dropped();
+    moved_to_callee();
+    std::process::exit(0);
+}

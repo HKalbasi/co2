@@ -223,11 +223,12 @@ pub fn parse_ui_span_expectations(path: &Path, _mode: Mode) -> Result<Vec<UiSpan
     let src = fs::read_to_string(path)
         .with_context(|| format!("failed to read test source {}", path.display()))?;
     let line_starts = line_start_offsets(&src);
+    let lines: Vec<&str> = src.lines().collect();
     let mut out = Vec::new();
 
     let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
 
-    for (idx, line) in src.lines().enumerate() {
+    for (idx, line) in lines.iter().enumerate() {
         let Some((column_start, column_end, level, message)) = parse_ui_span_annotation(line)
         else {
             continue;
@@ -239,7 +240,13 @@ pub fn parse_ui_span_expectations(path: &Path, _mode: Mode) -> Result<Vec<UiSpan
                 path.display()
             );
         }
-        let source_line_idx = line_no - 2;
+        // Resolve the source line this annotation points at by skipping over
+        // any annotation lines directly above it, so that multiple
+        // annotations for the same source line can be stacked.
+        let mut source_line_idx = line_no - 2;
+        while source_line_idx > 0 && parse_ui_span_annotation(lines[source_line_idx]).is_some() {
+            source_line_idx -= 1;
+        }
         let line_start = line_starts[source_line_idx];
         out.push(UiSpanExpectation {
             file_name: file_name.clone(),

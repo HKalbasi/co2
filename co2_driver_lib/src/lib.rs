@@ -240,6 +240,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                 param_names,
                 resolver,
                 body,
+                had_errors,
             } => {
                 let span_converter = |span: co2_ast::Span| self.map_co2_span(&ctx, span);
                 let chumsky_span_converter =
@@ -312,6 +313,9 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                     );
                     dump_mir_body(&mir_result.body, &name);
                 }
+                if !mir_result.is_error_recovery && !had_errors {
+                    self.emit_borrowck_warnings(&ctx, &mir_result.body);
+                }
                 mir_result.body
             }
             MirOwnerInfo::FnBodyError { def, body_span } => {
@@ -362,6 +366,21 @@ impl Co2GeneratorState {
         let (file_id, lo, hi) = ctx.span_data(span);
         let co2_file_id = self.reverse_file_ids[&file_id];
         co2_ast::Span::from_parts(co2_file_id, lo as usize..hi as usize)
+    }
+
+    fn emit_borrowck_warnings(&self, ctx: &HirStructureCtx<'_>, body: &Body) {
+        let warnings = co2_borrowck::check(body);
+        if warnings.is_empty() {
+            return;
+        }
+        let diagnostics = warnings
+            .into_iter()
+            .map(|warning| {
+                let span = self.map_rust_to_co2_span(ctx, warning.span);
+                co2_ast::Rich::custom(span, warning.message)
+            })
+            .collect();
+        co2_ast::emit_warnings(diagnostics);
     }
 
     fn lower_explicit_static_mir(

@@ -1,0 +1,18 @@
+[package]
+name = "co2_borrowck"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+co2_ast = { path = "../co2_ast" }
+rustc_public_generative = { path = "../rustc_public_generative" }
+polonius-engine = "0.13.0"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

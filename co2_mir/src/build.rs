@@ -16,6 +16,7 @@ use rustc_public_generative::rustc_public::{
 
 pub struct MirBodyResult {
     pub body: Body,
+    pub is_error_recovery: bool,
 }
 
 pub fn build_mir_for_body(
@@ -26,7 +27,7 @@ pub fn build_mir_for_body(
     wellknown_defs: WellknownDefs,
     decl_resolver: Option<LocalResolver>,
 ) -> MirBodyResult {
-    let span = ctx.span_in_file(file_id, 0, 0);
+    let span = body.span;
 
     let mut locals = Vec::with_capacity(body.locals.len());
     let mut local_indices = HashMap::new();
@@ -93,6 +94,7 @@ pub fn build_mir_for_body(
         pending_gotos: Vec::new(),
         pending_indirect_gotos: Vec::new(),
         span,
+        last_stmt_span: None,
         wellknown_defs,
         decl_resolver,
         var_debug_info,
@@ -118,6 +120,7 @@ pub fn build_mir_for_body(
                 None,
                 span,
             ),
+            is_error_recovery: false,
         }
     }));
 
@@ -165,6 +168,7 @@ fn dummy_mir_body(
     });
     MirBodyResult {
         body: Body::new(blocks, locals, body.params.len(), Vec::new(), None, span),
+        is_error_recovery: true,
     }
 }
 
@@ -183,6 +187,7 @@ pub(crate) struct Builder<'ctx, 'tcx> {
     pub(crate) pending_gotos: Vec<(usize, LabelId)>,
     pub(crate) pending_indirect_gotos: Vec<usize>,
     pub(crate) span: RustSpan,
+    pub(crate) last_stmt_span: Option<RustSpan>,
     pub(crate) c_variadic_local: Option<usize>,
     pub(crate) var_debug_info: Vec<VarDebugInfo>,
     pub(crate) local_vdi_map: HashMap<usize, usize>,

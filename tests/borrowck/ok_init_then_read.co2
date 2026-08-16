@@ -1,0 +1,9 @@
+//@ mode: co2
+//@ compile-pass
+
+fn ok_init_then_read() -> i32 {
+    int x = 3;
+    return x;
+}
+
+fn main() {}

@@ -3,21 +3,21 @@
 
 #include <stdarg.h>
 
-int multiple_types(int normal_arg, ...) {
+void multiple_types(int normal_arg, ...) {
     if (normal_arg != 5) {
-        return 10;
+        return;
     }
 
     va_list args;
     va_start(args, normal_arg);
 
     if (va_arg(args, int) != 1) {
-        return 1;
+        return;
     }
 
     if ((int)va_arg(args, int *) != 2) {
            //^^^^^^^^^^^^^^^^^^^ error: Undefined Behavior: va_arg type mismatch: requested `*mut i32` is incompatible with next argument of type `i32`
-        return 2;
+        return;
     }
 
     va_end(args);

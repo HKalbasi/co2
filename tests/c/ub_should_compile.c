@@ -16,8 +16,10 @@ int main1()
 {
     int x;
     int y = x; // Reading x is UB
+          //^ warning: possible use of uninitialized value: `x`
     struct { int a, b; } s;
     s.a = x;
+  //^^^^^^^ warning: possible use of uninitialized value: `x`
     x = s.b;
     return 0;
 }
@@ -28,6 +30,7 @@ int main2()
     void *p;
 
     i = i ? 0 : 0l; // Reading i is UB
+      //^ warning: possible use of uninitialized value: `i`
     p = i ? (void *) 0 : 0;
     p = i ? 0 : (void *) 0;
     p = i ? 0 : (const void *) 0;
@@ -98,6 +101,7 @@ int main4() {
 
 int not_return(int x) {
     x += 3;
+  //^ warning: function returns without a value
 }
 
 int main5() {

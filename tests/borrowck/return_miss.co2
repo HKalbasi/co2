@@ -1,0 +1,139 @@
+//@ mode: co2
+//@ compile-pass
+
+// Functions that fall out of the end of their body without returning a value.
+
+// Empty body: nothing ever returns a value.
+fn miss_empty() -> i32 {
+                     //^ warning: function returns without a value
+}
+
+// Only one branch of the `if` returns; falling out of the `if` misses.
+fn miss_if(x: i32) -> i32 {
+    if (x) {
+        return 1;
+      //^ warning: function returns without a value
+    }
+}
+
+// Neither branch returns; the function always falls through.
+fn miss_if_else(x: i32) -> i32 {
+    if (x) {
+        int a = x;
+    } else {
+        int b = x;
+              //^ warning: function returns without a value
+    }
+}
+
+// A `while` loop may exit without returning from inside the body.
+fn miss_while(x: i32) -> i32 {
+    while (x > 0) {
+  //^ warning: function returns without a value
+        int a = x;
+    }
+}
+
+// A `do-while` body may finish and the function falls through.
+fn miss_do_while(x: i32) -> i32 {
+    do {
+  //^ warning: function returns without a value
+        int a = x;
+    } while (x > 0);
+}
+
+// A `do-while` that return in body always returns.
+fn do_while_unconditional_return(x: i32) -> i32 {
+    do {
+        int a = x;
+        return a;
+    } while (x > 0);
+}
+
+// A `for` loop with no return anywhere.
+fn miss_for(x: i32) -> i32 {
+    for (int i = 0; i < x; i = i + 1) {
+  //^ warning: function returns without a value
+        int a = i;
+    }
+}
+
+// The return is inside the loop body, but the loop can complete normally.
+fn miss_loop_body(x: i32) -> i32 {
+    while (x > 0) {
+  //^ warning: function returns without a value
+        x = x - 1;
+        if (x == 0) {
+            return x;
+        }
+    }
+}
+
+// A `goto` jumps past the `return`; the target label falls through.
+fn miss_goto(x: i32) -> i32 {
+    goto done;
+    return 0;
+done:
+    x = x + 1;
+  //^ warning: function returns without a value
+}
+
+// A `goto` jumps past the `return`; the target label falls through.
+fn ok_goto(x: i32) -> i32 {
+    if (x > 5) {
+        done: return 6;
+    }
+    if (x < 3) {
+        goto done;
+    } else {
+        return 3;
+    }
+}
+
+
+// A label at the start with a falling-through body.
+fn miss_label(x: i32) -> i32 {
+start:
+    x = x + 1;
+  //^ warning: function returns without a value
+}
+
+// Positive cases: these must not warn.
+
+fn ok_if_else(x: i32) -> i32 {
+    if (x) {
+        return 1;
+    } else {
+        return 2;
+    }
+}
+
+fn ok_always_returns(x: i32) -> i32 {
+    int y = x + 1;
+    return y;
+}
+
+void ok_void_fallthrough() {}
+
+void ok_void_explicit_return() {
+    return;
+}
+
+fn main() {
+    // Loop functions are called with 0 so their loops terminate at runtime.
+    miss_empty();
+    miss_if(1);
+    miss_if_else(1);
+    miss_while(0);
+    miss_do_while(0);
+    do_while_unconditional_return(4);
+    miss_for(0);
+    miss_loop_body(0);
+    miss_goto(1);
+    ok_goto(1);
+    miss_label(1);
+    ok_if_else(1);
+    ok_always_returns(1);
+    ok_void_fallthrough();
+    ok_void_explicit_return();
+}

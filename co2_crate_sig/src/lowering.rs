@@ -1332,6 +1332,7 @@ fn lower_translation_unit_items(
                     })
                     .collect();
                 let parse_body_start = Instant::now();
+                let errors_before_parse = co2_ast::diagnostic_error_count();
                 let parsed_body = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     parse_compound_statement(
                         &body.0.tokens.0,
@@ -1352,6 +1353,7 @@ fn lower_translation_unit_items(
                         param_names,
                         resolver: resolver.clone(),
                         body,
+                        had_errors: co2_ast::diagnostic_error_count() > errors_before_parse,
                     },
                     Err(payload) => {
                         if co2_ast::is_diagnostic_abort(payload.as_ref()) {

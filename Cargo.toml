@@ -5,6 +5,7 @@ members = [
   "co2_preprocessor",
   "co2_hir",
   "co2_mir",
+  "co2_borrowck",
   "co2_driver_lib",
   "co2rustc",
   "co2rustdoc",

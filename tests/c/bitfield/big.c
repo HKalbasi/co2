@@ -310,6 +310,7 @@ test_bool(void)
     } s;
 
     s.x = 0;
+  //^^^^^^^ warning: possible use of uninitialized value: `s`
     assert(s.x == 0);
 
     s.x = 1;
@@ -401,6 +402,7 @@ test_increment_decrement(void)
     } s;
 
     s.x = 10;
+  //^^^^^^^^ warning: possible use of uninitialized value: `s`
     assert(++s.x == 11);
     assert(s.x == 11);
 
@@ -422,6 +424,7 @@ test_compound_assignment(void)
     } s;
 
     s.x = 10;
+  //^^^^^^^^ warning: possible use of uninitialized value: `s`
 
     s.x += 5;
     assert(s.x == 15);
@@ -449,6 +452,7 @@ test_promotions(void)
     } s;
 
     s.u3 = 7;
+  //^^^^^^^^ warning: possible use of uninitialized value: `s`
     s.u8 = 255;
     s.u40 = 123456;
 
@@ -482,6 +486,7 @@ test_signed_fields(void)
     } s;
 
     s.s1 = 0;
+  //^^^^^^^^ warning: possible use of uninitialized value: `s`
     assert(s.s1 == 0);
 
     s.s1 = 1;
@@ -919,6 +924,7 @@ test_bit_isolation(void)
     struct abi_ull_40_24 s;
 
     s.a = 0;
+  //^^^^^^^ warning: possible use of uninitialized value: `s`
     s.b = 0;
 
     s.a = 1;
@@ -960,6 +966,7 @@ test_volatile(void)
     } s;
 
     s.a = 0;
+  //^^^^^^^ warning: possible use of uninitialized value: `s`
     s.b = 0;
 
     s.a = 0x123456789aULL;
@@ -998,6 +1005,7 @@ make_call_8(uint64_t a, uint64_t b)
     struct call_8 s;
 
     s.a = a;
+  //^^^^^^^ warning: possible use of uninitialized value: `s`
     s.b = b;
 
     return s;
@@ -1018,6 +1026,7 @@ make_call_16(uint64_t a, uint64_t b)
     struct call_16 s;
 
     s.a = a;
+  //^^^^^^^ warning: possible use of uninitialized value: `s`
     s.b = b;
 
     return s;

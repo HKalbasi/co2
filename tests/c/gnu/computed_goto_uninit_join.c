@@ -23,6 +23,7 @@ case_default:
 
 done:
     return value;
+         //^^^^^ warning: possible use of uninitialized value: `value`
 }
 
 int main(void) {

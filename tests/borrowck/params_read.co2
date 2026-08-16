@@ -1,0 +1,9 @@
+//@ mode: co2
+//@ compile-pass
+
+fn params_read(a: i32, b: i32) -> i32 {
+    int sum = a + b;
+    return sum;
+}
+
+fn main() {}

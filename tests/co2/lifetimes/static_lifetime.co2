@@ -2,10 +2,12 @@
 
 use std::borrow::Cow;
 use std::string::String;
+use std::mem::drop;
 
 fn f1(x: Cow<'static, str>) {
     Cow::<'static, str> y = x;
     String z = y.into_owned();
+    drop(z);
 }
 
 fn main() {

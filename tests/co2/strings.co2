@@ -4,6 +4,7 @@
 
 use std::string::String;
 use std::ffi::{CStr};
+use std::mem::drop;
 use libc::printf;
 
 fn c_str_to_rust_str(s: *const i8) -> *const str {
@@ -20,4 +21,5 @@ fn main() {
     print_rust_str(s.as_str());
 
     print_rust_str(s"foo\n");
+    drop(s);
 }

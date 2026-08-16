@@ -1,0 +1,65 @@
+//@ mode: co2
+//@ compile-pass
+
+use std::vec::Vec;
+use std::mem::drop;
+
+// Using a local after it was moved into `drop` is a use-after-move.
+fn use_after_drop() {
+    Vec<i32> v = Vec::<i32>::new();
+    drop(v);
+    v.push(2);
+  //^ warning: use of moved value: `v`
+}
+
+// Moving into another local (`let y = x;`) also moves `x`.
+fn move_to_local() {
+    Vec<i32> a = Vec::<i32>::new();
+    Vec<i32> b = a;
+    a.push(1);
+  //^ warning: use of moved value: `a`
+    drop(b);
+}
+
+// Moving a value into a container moves it.
+fn move_into_container(inner: Vec<i32>) {
+    Vec<Vec<i32> > outer = Vec::<Vec<i32> >::new();
+    outer.push(inner);
+    drop(outer);
+    inner.push(2);
+  //^^^^^ warning: use of moved value: `inner`
+}
+
+// A second drop is also a use-after-move.
+fn double_drop() {
+    Vec<i32> v = Vec::<i32>::new();
+    drop(v);
+    drop(v);
+  //^^^^^^^ warning: use of moved value: `v`
+}
+
+// Positive: dropping after the last use is fine.
+fn drop_ok() {
+    Vec<i32> v = Vec::<i32>::new();
+    v.push(2);
+    drop(v);
+}
+
+// Positive: borrowing an initialized value is fine; only borrowing a moved
+// value is an error.
+fn borrow_ok() {
+    Vec<i32> v = Vec::<i32>::new();
+    v.push(2);
+    usize n = v.len();
+    drop(v);
+}
+
+fn main() {
+    use_after_drop();
+    move_to_local();
+    Vec::<i32> inner = Vec::<i32>::new();
+    move_into_container(inner);
+    double_drop();
+    drop_ok();
+    borrow_ok();
+}

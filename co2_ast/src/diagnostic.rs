@@ -2,7 +2,7 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex, Once,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use ariadne::{Color, Label, Report, ReportKind, sources};
@@ -13,6 +13,8 @@ use crate::{FileId, Span, Token};
 
 static ERRORS: Mutex<Vec<Rich<'static, Token, Span>>> = Mutex::new(Vec::new());
 static DIAGNOSTICS_EMITTED: AtomicBool = AtomicBool::new(false);
+/// TODO: Remove this and do proper error tracking for single bodies.
+static DIAGNOSTIC_ERROR_COUNT: AtomicUsize = AtomicUsize::new(0);
 static FORCE_JSON_DIAGNOSTICS: AtomicBool = AtomicBool::new(false);
 static INSTALL_HOOK: Once = Once::new();
 static SOURCE_MAP: Mutex<Option<Arc<dyn SourceMap>>> = Mutex::new(None);
@@ -101,6 +103,7 @@ fn snap_to_char_boundaries(src: &str, range: std::ops::Range<usize>) -> std::ops
 pub fn reset_diagnostic_state() {
     install_diagnostic_panic_hook();
     DIAGNOSTICS_EMITTED.store(false, Ordering::SeqCst);
+    DIAGNOSTIC_ERROR_COUNT.store(0, Ordering::SeqCst);
 }
 
 pub fn set_source_map(source_map: Arc<dyn SourceMap>) {
@@ -113,6 +116,10 @@ pub fn set_force_json_diagnostics(force: bool) {
 
 pub fn diagnostics_were_emitted() -> bool {
     DIAGNOSTICS_EMITTED.load(Ordering::SeqCst)
+}
+
+pub fn diagnostic_error_count() -> usize {
+    DIAGNOSTIC_ERROR_COUNT.load(Ordering::SeqCst)
 }
 
 pub fn panic_with_diagnostic_abort() -> ! {
@@ -215,6 +222,7 @@ fn emit_mapped_diagnostics(
     // clear) this flag.
     if level == DiagnosticLevel::Error {
         DIAGNOSTICS_EMITTED.store(true, Ordering::SeqCst);
+        DIAGNOSTIC_ERROR_COUNT.fetch_add(1, Ordering::SeqCst);
     }
     if FORCE_JSON_DIAGNOSTICS.load(Ordering::SeqCst)
         || std::env::var_os("CO2_FORCE_JSON_DIAGNOSTICS").is_some()

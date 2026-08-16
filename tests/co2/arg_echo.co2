@@ -8,6 +8,7 @@ use std::iter::Iterator;
 use std::option::Option;
 use std::string::String;
 use std::vec::Vec;
+use std::mem::drop;
 
 int write(int, u8*, usize);
 
@@ -20,4 +21,5 @@ fn main() {
     Vec<u8> bytes = arg.into_bytes();
     u8* ptr = bytes.as_mut_ptr();
     write(1, ptr, len);
+    drop(bytes);
 }

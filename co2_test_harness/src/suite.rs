@@ -160,6 +160,10 @@ fn run_test(
         );
     }
 
+    if test.directives.contains_key("compile-pass") {
+        return Ok(TestOutcome::Pass);
+    }
+
     let is_debuginfo =
         test.directives.contains_key("gdb-command") || test.directives.contains_key("gdb-check");
 
@@ -631,23 +635,36 @@ fn check_miri_error(
         bail!("miri-error test unexpectedly succeeded");
     }
 
-    let error_expectations = span_expectations
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let diagnostics = parse_miri_rendered_diagnostics(&stderr);
+
+    let span_expectations = span_expectations
         .iter()
         .filter(|expected| expected.level == Some(UiAnnotationLevel::Error))
         .collect::<Vec<_>>();
-    if error_expectations.is_empty() {
+    // Spanless expectations come from the `//@ miri-error: <message>`
+    // directive, which is used for errors miri reports outside the test
+    // source (e.g. the memory-leak check, which points at the allocation
+    // site in std).
+    let directive_expectations = test
+        .directives
+        .get("miri-error")
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if span_expectations.is_empty() && directive_expectations.is_empty() {
         bail!(
-            "miri-error test has no inline error expectations; add a `//^^^^ error: ...` annotation near the UB source: {}",
+            "miri-error test has no expectations; add a `//^^^^ error: ...` annotation near the UB source or a `//@ miri-error: <message>` directive: {}",
             test.path.display()
         );
     }
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let diagnostics = parse_miri_rendered_diagnostics(&stderr);
     let mut issues = Vec::new();
     let mut matched = vec![false; diagnostics.len()];
 
-    for expected in error_expectations {
+    for expected in &span_expectations {
         let mut found = false;
         for (i, diagnostic) in diagnostics.iter().enumerate() {
             if !matched[i] && miri_diagnostic_matches_expected(test, expected, diagnostic) {
@@ -658,7 +675,7 @@ fn check_miri_error(
         }
         if !found {
             issues.push(crate::error::UiTestIssue {
-                span: Some(expected.clone()),
+                span: Some((*expected).clone()),
                 reason: expected.message.as_ref().map_or_else(
                     || "Missing miri error".to_owned(),
                     |message| format!("Missing miri error: {message}"),
@@ -667,35 +684,53 @@ fn check_miri_error(
         }
     }
 
-    for (i, diagnostic) in diagnostics.into_iter().enumerate() {
-        if !matched[i] {
-            let file_name = test.path.file_name().unwrap().to_string_lossy().to_string();
-            let (byte_start, byte_end) = if let Some(source) = sources.get(&file_name) {
-                let offsets = crate::util::line_start_offsets(source);
-                if diagnostic.line > 0 && diagnostic.line <= offsets.len() {
-                    let line_start = offsets[diagnostic.line - 1];
-                    (
-                        line_start + diagnostic.column_start.saturating_sub(1),
-                        line_start + diagnostic.column_end.saturating_sub(1),
-                    )
-                } else {
-                    (0, 0)
-                }
-            } else {
-                (0, 0)
-            };
-
+    for expected in &directive_expectations {
+        let mut found = false;
+        for (i, diagnostic) in diagnostics.iter().enumerate() {
+            if !matched[i] && diagnostic.message.starts_with(expected) {
+                matched[i] = true;
+                found = true;
+                break;
+            }
+        }
+        if !found {
             issues.push(crate::error::UiTestIssue {
-                span: Some(UiSpanExpectation {
-                    file_name,
-                    byte_start,
-                    byte_end,
-                    level: Some(UiAnnotationLevel::Error),
-                    message: Some(diagnostic.message.clone()),
-                }),
-                reason: format!("Unexpected miri error: {}", diagnostic.message),
+                span: None,
+                reason: format!("Missing miri error: {expected}"),
             });
         }
+    }
+
+    for (i, diagnostic) in diagnostics.into_iter().enumerate() {
+        if matched[i] {
+            continue;
+        }
+        let file_name = test.path.file_name().unwrap().to_string_lossy().to_string();
+        let (byte_start, byte_end) = if let Some(source) = sources.get(&file_name) {
+            let offsets = crate::util::line_start_offsets(source);
+            if diagnostic.line > 0 && diagnostic.line <= offsets.len() {
+                let line_start = offsets[diagnostic.line - 1];
+                (
+                    line_start + diagnostic.column_start.saturating_sub(1),
+                    line_start + diagnostic.column_end.saturating_sub(1),
+                )
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        };
+
+        issues.push(crate::error::UiTestIssue {
+            span: Some(UiSpanExpectation {
+                file_name,
+                byte_start,
+                byte_end,
+                level: Some(UiAnnotationLevel::Error),
+                message: Some(diagnostic.message.clone()),
+            }),
+            reason: format!("Unexpected miri error: {}", diagnostic.message),
+        });
     }
 
     if !issues.is_empty() {

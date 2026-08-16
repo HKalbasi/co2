@@ -1,0 +1,14 @@
+//@ mode: co2
+//@ compile-pass
+
+void no_warning_on_void(int a) {
+    int x = a;
+    return;
+}
+
+void fallthrough_void() {}
+
+fn main() {
+    no_warning_on_void(1);
+    fallthrough_void();
+}

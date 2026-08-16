@@ -2,6 +2,7 @@
 //@ run-status: 0
 
 use std::vec::Vec;
+use std::mem::drop;
 
 #include <assert.h>
 
@@ -10,7 +11,9 @@ int foo() {
     v.push(1);
     v.push(2);
     v.extend::<Vec<i32>>(v.clone());
-    return v.len();
+    int r = v.len();
+    drop(v);
+    return r;
 }
 
 fn main() {
@@ -24,4 +27,5 @@ fn main() {
     assert(v.len() == 24);
 
     assert(foo() == 4);
+    drop(v);
 }

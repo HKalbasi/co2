@@ -8,6 +8,7 @@ fn conditional_init_indirect(init: i32) -> i32 {
         *y = 5;
     }
     return x * 3;
+         //^^^^^ warning: possible use of uninitialized value: `x`
 }
 
 typedef struct { int x; int y; } St;
@@ -42,6 +43,7 @@ fn conditional_init(init: i32) -> i32 {
         x = 5;
     }
     return x * 3;
+         //^^^^^ warning: possible use of uninitialized value: `x`
          //^^^^^ error: Undefined Behavior: using uninitialized data, but this operation requires initialized memory
 }
 

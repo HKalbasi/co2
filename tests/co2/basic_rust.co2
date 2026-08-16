@@ -86,4 +86,7 @@ fn main() {
     if (*v3.pop().unwrap() != 5) {
         std::process::exit(5);
     }
+
+    drop(vv);
+    drop(v3);
 }

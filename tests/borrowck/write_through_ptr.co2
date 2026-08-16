@@ -1,0 +1,15 @@
+//@ mode: co2
+//@ compile-pass
+
+// A write through a raw pointer (`*p = ...`) initializes whatever `p` points
+// to, so `x` is considered initialized after `*p = 5`.
+fn write_through_ptr() -> i32 {
+    int x;
+    int* p = &x;
+    *p = 5;
+    return x;
+}
+
+fn main() {
+    write_through_ptr();
+}

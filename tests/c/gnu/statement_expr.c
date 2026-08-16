@@ -26,6 +26,7 @@ int void_type() {
 	1 ? ({ }) : 3;
     1 ? ({ side_effect_counter += 1; int x = 5; }) : 3;
     1 ? ({ return side_effect_counter - 1; }) : 3;
+         //^ warning: function returns without a value
 }
 
 int main() {

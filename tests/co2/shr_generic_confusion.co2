@@ -169,4 +169,9 @@ fn main() {
             >
         >
     > _ac;
+
+    drop(_s);
+    drop(_t);
+    drop(_u);
+    drop(_v);
 }

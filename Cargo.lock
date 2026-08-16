@@ -391,6 +391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "co2_borrowck"
+version = "0.1.0"
+dependencies = [
+ "co2_ast",
+ "polonius-engine",
+ "rustc_public_generative",
+]
+
+[[package]]
 name = "co2_crate_sig"
 version = "0.1.0"
 dependencies = [
@@ -406,6 +415,7 @@ name = "co2_driver_lib"
 version = "0.1.0"
 dependencies = [
  "co2_ast",
+ "co2_borrowck",
  "co2_crate_sig",
  "co2_hir",
  "co2_mir",
@@ -597,6 +607,12 @@ checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
 dependencies = [
  "hybrid-array",
 ]
+
+[[package]]
+name = "datafrog"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0afaad2b26fa326569eb264b1363e8ae3357618c43982b3f285f0774ce76b69"
 
 [[package]]
 name = "digest"
@@ -1187,6 +1203,17 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "polonius-engine"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4e8e505342045d397d0b6674dcb82d6faf5cf40484d30eeb88fc82ef14e903f"
+dependencies = [
+ "datafrog",
+ "log",
+ "rustc-hash 1.1.0",
+]
 
 [[package]]
 name = "postcard"

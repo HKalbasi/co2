@@ -4,6 +4,7 @@
 use std::option::Option;
 use std::range::Range;
 use std::vec::Vec;
+use std::mem::drop;
 
 #include <assert.h>
 
@@ -40,4 +41,5 @@ fn main() {
 
     Vec::<i32> v = r.into_iter().collect::<Vec<i32>>();
     v.sort_by_key(triple_ref);
+    drop(v);
 }

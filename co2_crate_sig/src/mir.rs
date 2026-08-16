@@ -31,6 +31,8 @@ pub enum MirOwnerInfo {
         param_names: Vec<(usize, String, Span)>,
         resolver: LocalResolver,
         body: co2_ast::Spanned<co2_ast::CompoundStatement<LocalResolver>>,
+        /// Whether errors were reported while parsing this function body.
+        had_errors: bool,
     },
     FnBodyError {
         def: FnDef,

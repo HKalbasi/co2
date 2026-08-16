@@ -1,0 +1,10 @@
+//@ mode: co2
+//@ compile-pass
+
+fn read_uninit() -> i32 {
+    int x;
+    return x;
+         //^ warning: possible use of uninitialized value: `x`
+}
+
+fn main() {}

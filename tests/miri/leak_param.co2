@@ -1,0 +1,17 @@
+//@ mode: co2
+//@ miri-error: memory leaked: alloc301 (Rust heap, size: 16, align: 4)
+
+use std::vec::Vec;
+use std::mem::drop;
+
+// A vector parameter that is never dropped leaks: borrowck warns about the
+// forgotten drop and miri reports the leaked allocation.
+fn forgot_param(arg: Vec<i32>) {
+                   //^^^^^^^^ warning: value leaked: `arg` (of type `Vec`, never dropped)
+    arg.push(2);
+}
+
+fn main() {
+    Vec::<i32> v = Vec::<i32>::new();
+    forgot_param(v);
+}

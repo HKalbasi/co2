@@ -11,6 +11,9 @@ use crate::{build::Builder, place::place};
 
 impl Builder<'_, '_> {
     pub(crate) fn lower_stmt(&mut self, stmt: &HirStmt) {
+        if let Some(span) = stmt_span(stmt) {
+            self.last_stmt_span = Some(span);
+        }
         match stmt {
             HirStmt::Decl(HirDecl {
                 local, initializer, ..
@@ -158,8 +161,19 @@ impl Builder<'_, '_> {
     }
 
     pub(crate) fn terminate_fallthrough(&mut self) {
-        self.push_terminator(TerminatorKind::Return, self.span);
+        let span = self.fallthrough_span();
+        self.push_terminator(TerminatorKind::Return, span);
         self.patch_pending_gotos();
+    }
+
+    fn fallthrough_span(&self) -> RustSpan {
+        let span = self.last_stmt_span.unwrap_or(self.span);
+        let (file_id, lo, hi) = self.ctx.span_data(span);
+        if hi > lo {
+            self.ctx.span_in_file(file_id, lo, lo + 1)
+        } else {
+            self.span
+        }
     }
 
     fn bind_label(&mut self, label: LabelId, span: RustSpan) {
@@ -294,5 +308,18 @@ impl Builder<'_, '_> {
             }
             _ => panic!("expected switchint terminator at block {block_idx}"),
         }
+    }
+}
+
+fn stmt_span(stmt: &HirStmt) -> Option<RustSpan> {
+    match stmt {
+        HirStmt::Decl(HirDecl { initializer, .. }) => initializer.as_ref().map(|init| init.span),
+        HirStmt::Expr(expr) => Some(expr.span),
+        HirStmt::Label(_, span)
+        | HirStmt::Goto(_, span)
+        | HirStmt::IndirectGoto(_, span)
+        | HirStmt::Return(_, span)
+        | HirStmt::Block(_, span) => Some(*span),
+        HirStmt::If { span, .. } => Some(*span),
     }
 }
