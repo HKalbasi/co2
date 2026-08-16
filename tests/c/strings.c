@@ -341,7 +341,45 @@ n");
             (unsigned char)b[0]);
     }
 
-    separator("30. done");
+    separator("30. unknown escape sequences");
+
+    {
+        const char *a = "\c";
+        //               ^^ warning: unknown escape sequence: '\c'
+        const char *b = "\8";
+        //               ^^ warning: unknown escape sequence: '\8'
+        const char *c = "\9";
+        //               ^^ warning: unknown escape sequence: '\9'
+        const char *d = "\X";
+        //               ^^ warning: unknown escape sequence: '\X'
+
+        printf("\\c = %02X\n", (unsigned char)a[0]);
+        printf("\\8 = %02X\n", (unsigned char)b[0]);
+        printf("\\9 = %02X\n", (unsigned char)c[0]);
+        printf("\\X = %02X\n", (unsigned char)d[0]);
+    }
+
+    puts("\X41");
+    //    ^^ warning: unknown escape sequence: '\X'
+
+    printf("\\x4A is a hex escape: %c\n", "\x4A"[0]);
+
+    separator("31. char8_t literals");
+
+    {
+        printf("u8'a'             = %d\n", u8'a');
+        printf("sizeof(u8'a')     = %zu\n", sizeof(u8'a'));
+        printf("u8'\\x41'          = %d\n", u8'\x41');
+        printf("u8'\\x7F'          = %d\n", u8'\x7F');
+        printf("u8'\\u007F'        = %d\n", u8'\u007F');
+
+        printf("u8\"\\xFF\"[0]      = %d\n", (unsigned char)u8"\xFF"[0]);
+        printf("u8\"\\u00E9\"[0]    = %d\n", (unsigned char)u8"\u00E9"[0]);
+        printf("u8\"\\u00E9\"[1]    = %d\n", (unsigned char)u8"\u00E9"[1]);
+        printf("sizeof(u8\"\\u00E9\") = %zu\n", sizeof(u8"\u00E9"));
+    }
+
+    separator("32. done");
 
     return 0;
 }

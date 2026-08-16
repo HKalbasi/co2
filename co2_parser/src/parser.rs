@@ -33,17 +33,24 @@ fn join_spans(start: Span, end: Span) -> Span {
     }
 }
 
-fn merge_string_literals(parts: Vec<StringLiteral>) -> StringLiteral {
-    let prefix = parts
-        .iter()
-        .map(StringLiteral::prefix)
-        .find(|prefix| *prefix != StringLiteralPrefix::None)
-        .unwrap_or(StringLiteralPrefix::None);
-    debug_assert!(
-        parts
-            .iter()
-            .all(|part| { part.prefix() == StringLiteralPrefix::None || part.prefix() == prefix })
-    );
+fn merge_string_literals(parts: Vec<StringLiteral>, span: Span) -> StringLiteral {
+    let mut target: Option<StringLiteralPrefix> = None;
+    for part in &parts {
+        let prefix = part.prefix();
+        if prefix != StringLiteralPrefix::None {
+            match target {
+                None => target = Some(prefix),
+                Some(t) if t != prefix => {
+                    co2_ast::emit_errors(vec![co2_ast::Rich::custom(
+                        span,
+                        "unsupported concatenation of string literals with different encoding prefixes",
+                    )]);
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    let prefix = target.unwrap_or(StringLiteralPrefix::None);
     if prefix.is_wide() {
         let mut code_units = Vec::new();
         for part in parts {
@@ -56,7 +63,16 @@ fn merge_string_literals(parts: Vec<StringLiteral>) -> StringLiteral {
                 StringLiteral::None(bytes)
                 | StringLiteral::Str(bytes)
                 | StringLiteral::Utf8(bytes) => {
-                    code_units.extend(String::from_utf8_lossy(&bytes).chars().map(|ch| ch as u32));
+                    for ch in String::from_utf8_lossy(&bytes).chars() {
+                        let cp = ch as u32;
+                        if prefix == StringLiteralPrefix::Utf16 && cp > 0xFFFF {
+                            let base = cp - 0x10000;
+                            code_units.push(0xD800 | (base >> 10));
+                            code_units.push(0xDC00 | (base & 0x3FF));
+                        } else {
+                            code_units.push(cp);
+                        }
+                    }
                 }
             }
         }
@@ -1045,7 +1061,9 @@ where
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(|parts| Expression::Constant(Constant::String(merge_string_literals(parts)))),
+            .map_with(|parts, e| {
+                Expression::Constant(Constant::String(merge_string_literals(parts, e.span())))
+            }),
             select! {
                 Token::Integer(i, suffix) => LiteralToken::Int(i, suffix),
                 Token::FloatLit(i, suffix) => LiteralToken::Float(i, suffix),
@@ -1106,7 +1124,7 @@ where
                                 span,
                                 "Invalid character constant",
                             )]);
-                            Expression::Constant(Constant::Char(0))
+                            Expression::Constant(Constant::Char(0, prefix))
                         } else if prefix == CharPrefix::None && s.len() > 1 {
                             // Multi-character character constant (implementation defined).
                             // gcc packs up to sizeof(int) characters into an int,
@@ -1128,12 +1146,10 @@ where
                                 i128::from(value as i32),
                                 IntegerSuffix::None,
                             ))
-                        } else {
-                            // Narrow character constants hold the (sign-extended)
-                            // byte value; wide prefixes hold the code point.
-                            let value = if prefix == CharPrefix::None {
-                                (s[0] as i8) as u32
-                            } else if s.len() == 1 {
+                        } else if prefix == CharPrefix::Utf8 {
+                            // char8_t holds the (unsigned) byte value of a
+                            // single byte or a UTF-8-encoded code point.
+                            let value = if s.len() == 1 {
                                 u32::from(s[0])
                             } else {
                                 String::from_utf8_lossy(&s)
@@ -1142,7 +1158,19 @@ where
                                     .map(|c| c as u32)
                                     .unwrap_or(0)
                             };
-                            Expression::Constant(Constant::Char(value))
+                            Expression::Constant(Constant::Char(value, prefix))
+                        } else if prefix == CharPrefix::None {
+                            // Narrow character constants hold the
+                            // (sign-extended) byte value.
+                            Expression::Constant(Constant::Char((s[0] as i8) as u32, prefix))
+                        } else {
+                            // Wide character constants: the tokenizer encodes
+                            // the value as 4 little-endian bytes.
+                            let mut bytes = [0u8; 4];
+                            for (i, &b) in s.iter().take(4).enumerate() {
+                                bytes[i] = b;
+                            }
+                            Expression::Constant(Constant::Char(u32::from_le_bytes(bytes), prefix))
                         }
                     }
                 }
@@ -3080,8 +3108,8 @@ where
                     .at_least(1)
                     .collect::<Vec<_>>()
                     .map_with(|parts, e| {
-                        let literal = merge_string_literals(parts);
                         let span = e.span();
+                        let literal = merge_string_literals(parts, span);
                         let message =
                             String::from_utf8_lossy(literal.to_bytes().as_ref()).into_owned();
                         (message, span)

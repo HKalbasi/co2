@@ -225,7 +225,7 @@ impl PrettyPrint for Constant {
                 };
                 pp.leaf_data("Float", "", &s);
             }
-            Constant::Char(c) => {
+            Constant::Char(c, _) => {
                 if let Ok(b) = u8::try_from(*c) {
                     let escaped: String = escape_default(b).map(|e| e as char).collect();
                     pp.leaf_data("Char", "", format_args!("'{escaped}'"));

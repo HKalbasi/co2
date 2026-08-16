@@ -23,6 +23,9 @@ enum StringPart {
     Byte(u8),
     /// A `\u`/`\U` universal character escape, decoded to its code point.
     CodePoint(u32),
+    /// An escape (`\xNN`, octal) in a wide literal: the raw code-unit value,
+    /// truncated to the element width. Unlike `CodePoint`, never surrogate-split.
+    Unit(u32),
 }
 
 /// Flatten parts into the byte array of a narrow (char/byte) literal: raw bytes
@@ -39,20 +42,43 @@ fn string_parts_to_bytes(parts: &[StringPart]) -> Vec<u8> {
                 let mut buf = [0u8; 4];
                 bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
             }
+            StringPart::Unit(value) => {
+                // A wide literal (e.g. `L'\x1234'`) with an escape whose value
+                // exceeds one byte. Encode the value as a code point so the
+                // parser can recover it via UTF-8 decoding.
+                let ch = char::from_u32(*value).unwrap_or('\u{FFFD}');
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            }
         }
     }
     bytes
 }
 
+/// Push a decoded code point into a wide code-unit list, splitting it into a
+/// UTF-16 surrogate pair when the element is 2 bytes and the value exceeds the
+/// BMP.
+fn push_code_point(units: &mut Vec<u32>, cp: u32, elem_size: usize) {
+    if elem_size == 2 && cp > 0xFFFF {
+        let base = cp - 0x10000;
+        units.push(0xD800 | (base >> 10));
+        units.push(0xDC00 | (base & 0x3FF));
+    } else {
+        units.push(cp);
+    }
+}
+
 /// Compute the code units of a wide string literal: raw source bytes are
 /// UTF-8-decoded into one code unit per code point; every escape contributes
-/// its own code unit without any UTF-8 decoding.
-fn wide_code_units(parts: &[StringPart]) -> Vec<u32> {
+/// its own code unit without any UTF-8 decoding. Code points that don't fit a
+/// 2-byte element are emitted as a UTF-16 surrogate pair; hex/octal escape
+/// values are truncated to the element width instead.
+fn wide_code_units(parts: &[StringPart], elem_size: usize) -> Vec<u32> {
     let mut units = Vec::new();
     let mut raw: Vec<u8> = Vec::new();
     let flush_raw = |raw: &mut Vec<u8>, units: &mut Vec<u32>| {
         for ch in String::from_utf8_lossy(raw).chars() {
-            units.push(ch as u32);
+            push_code_point(units, ch as u32, elem_size);
         }
         raw.clear();
     };
@@ -65,12 +91,65 @@ fn wide_code_units(parts: &[StringPart]) -> Vec<u32> {
             }
             StringPart::CodePoint(cp) => {
                 flush_raw(&mut raw, &mut units);
-                units.push(*cp);
+                push_code_point(&mut units, *cp, elem_size);
+            }
+            StringPart::Unit(value) => {
+                flush_raw(&mut raw, &mut units);
+                units.push(match elem_size {
+                    2 => *value & 0xFFFF,
+                    _ => *value,
+                });
             }
         }
     }
     flush_raw(&mut raw, &mut units);
     units
+}
+
+/// The value a code point contributes to a wide character literal: char16_t
+/// literals store the low surrogate of a supplementary code point's UTF-16
+/// encoding (matching gcc), everything else stores the code point itself.
+fn char_code_unit(cp: u32, elem_size: usize) -> u32 {
+    if elem_size == 2 && cp > 0xFFFF {
+        0xDC00 | (cp & 0x3FF)
+    } else {
+        cp
+    }
+}
+
+/// The value of a wide character literal: the last code point or escape value
+/// wins (matching gcc), truncated to the element width where relevant.
+fn wide_char_value(parts: &[StringPart], elem_size: usize) -> u32 {
+    let mut value: Option<u32> = None;
+    let mut raw: Vec<u8> = Vec::new();
+    let flush_raw = |raw: &mut Vec<u8>, value: &mut Option<u32>| {
+        for ch in String::from_utf8_lossy(raw).chars() {
+            *value = Some(char_code_unit(ch as u32, elem_size));
+        }
+        raw.clear();
+    };
+    for part in parts {
+        match part {
+            StringPart::Raw(b) => raw.push(*b),
+            StringPart::Byte(b) => {
+                flush_raw(&mut raw, &mut value);
+                value = Some(u32::from(*b));
+            }
+            StringPart::CodePoint(cp) => {
+                flush_raw(&mut raw, &mut value);
+                value = Some(char_code_unit(*cp, elem_size));
+            }
+            StringPart::Unit(unit) => {
+                flush_raw(&mut raw, &mut value);
+                value = Some(match elem_size {
+                    2 => *unit & 0xFFFF,
+                    _ => *unit,
+                });
+            }
+        }
+    }
+    flush_raw(&mut raw, &mut value);
+    value.unwrap_or(0)
 }
 
 /// A warning produced during tokenization (e.g. hex escape overflow).
@@ -777,9 +856,10 @@ impl<'a> Tokenizer<'a> {
         prefix: StringLiteralPrefix,
     ) {
         let start = self.token_start;
-        let parts = self.scan_string_literal_body();
+        let elem_size = prefix.element_size();
+        let parts = self.scan_string_literal_body(elem_size);
         let literal = if prefix.is_wide() {
-            let units = wide_code_units(&parts);
+            let units = wide_code_units(&parts, elem_size);
             match prefix {
                 StringLiteralPrefix::Utf16 => StringLiteral::Utf16(units),
                 StringLiteralPrefix::Utf32 => StringLiteral::Utf32(units),
@@ -798,7 +878,7 @@ impl<'a> Tokenizer<'a> {
         self.buf.clear();
     }
 
-    fn scan_string_literal_body(&mut self) -> Vec<StringPart> {
+    fn scan_string_literal_body(&mut self, elem_size: usize) -> Vec<StringPart> {
         let body_start = self.pos;
         let mut out = Vec::new();
         while self.pos < self.len {
@@ -812,7 +892,14 @@ impl<'a> Tokenizer<'a> {
                 self.pos += 1;
                 let escape = self.bytes[self.pos];
                 self.pos += 1;
-                self.decode_escape(escape, body_start, esc_start - body_start, &mut out);
+                self.decode_escape(
+                    escape,
+                    body_start,
+                    esc_start - body_start,
+                    &mut out,
+                    elem_size,
+                    false,
+                );
                 continue;
             }
             out.push(StringPart::Raw(b));
@@ -823,33 +910,69 @@ impl<'a> Tokenizer<'a> {
 
     fn scan_char_body(&mut self, out: &mut Vec<(Token, usize, usize)>, prefix: CharPrefix) {
         let start = self.token_start;
-        let body = self.scan_char_literal_body();
+        let is_utf8_char = prefix == CharPrefix::Utf8;
+        let body = self.scan_char_literal_body(prefix.element_size(), is_utf8_char);
         out.push((Token::CharLit(body, prefix), start, self.pos));
         self.state = State::Start;
         self.buf.clear();
     }
 
-    fn scan_char_literal_body(&mut self) -> Vec<u8> {
+    fn finish_char_body(&self, parts: &[StringPart], elem_size: usize) -> Vec<u8> {
+        if elem_size > 1 {
+            if parts.is_empty() {
+                Vec::new()
+            } else {
+                wide_char_value(parts, elem_size).to_le_bytes().to_vec()
+            }
+        } else {
+            string_parts_to_bytes(parts)
+        }
+    }
+
+    fn scan_char_literal_body(&mut self, elem_size: usize, is_utf8_char: bool) -> Vec<u8> {
         let body_start = self.pos;
         let mut out = Vec::new();
         while self.pos < self.len {
             let b = self.bytes[self.pos];
             if b == b'\'' {
                 self.pos += 1;
-                return string_parts_to_bytes(&out);
+                return self.finish_char_body(&out, elem_size);
             }
             if b == b'\\' && self.pos + 1 < self.len {
                 let esc_start = self.pos;
                 self.pos += 1;
                 let escape = self.bytes[self.pos];
                 self.pos += 1;
-                self.decode_escape(escape, body_start, esc_start - body_start, &mut out);
+                self.decode_escape(
+                    escape,
+                    body_start,
+                    esc_start - body_start,
+                    &mut out,
+                    elem_size,
+                    is_utf8_char,
+                );
                 continue;
+            }
+            if is_utf8_char && b >= 0x80 {
+                let char_len = if b >= 0xF0 {
+                    4
+                } else if b >= 0xE0 {
+                    3
+                } else if b >= 0xC0 {
+                    2
+                } else {
+                    1
+                };
+                self.err(
+                    self.pos,
+                    self.pos + char_len,
+                    "character not encodable in a single code unit".to_string(),
+                );
             }
             out.push(StringPart::Raw(b));
             self.pos += 1;
         }
-        string_parts_to_bytes(&out)
+        self.finish_char_body(&out, elem_size)
     }
 
     fn decode_escape(
@@ -858,6 +981,8 @@ impl<'a> Tokenizer<'a> {
         body_start: usize,
         esc_offset: usize,
         out: &mut Vec<StringPart>,
+        elem_size: usize,
+        is_utf8_char: bool,
     ) {
         match escape {
             b'\n' => {}
@@ -889,19 +1014,23 @@ impl<'a> Tokenizer<'a> {
                     }
                 }
                 let value = u16::from_str_radix(&digits, 8).unwrap_or(0);
-                if value > u16::from(u8::MAX) {
-                    let range_start = body_start + escape_start_offset;
-                    self.warn(
-                        range_start,
-                        self.pos,
-                        "octal escape sequence out of range; using low 8 bits".to_string(),
-                    );
+                if elem_size == 1 {
+                    if value > u16::from(u8::MAX) {
+                        let range_start = body_start + escape_start_offset;
+                        self.warn(
+                            range_start,
+                            self.pos,
+                            "octal escape sequence out of range; using low 8 bits".to_string(),
+                        );
+                    }
+                    out.push(StringPart::Byte(value as u8));
+                } else {
+                    out.push(StringPart::Unit(u32::from(value)));
                 }
-                out.push(StringPart::Byte(value as u8));
             }
-            b'x' | b'X' => {
+            b'x' => {
                 let escape_start_offset = esc_offset;
-                let mut value = 0u8;
+                let mut value = 0u64;
                 let mut overflowed = false;
                 let mut saw_digit = false;
                 while self.pos < self.len && self.bytes[self.pos].is_ascii_hexdigit() {
@@ -911,22 +1040,42 @@ impl<'a> Tokenizer<'a> {
                         b'A'..=b'F' => self.bytes[self.pos] - b'A' + 10,
                         _ => unreachable!(),
                     };
-                    overflowed |=
-                        u16::from(value) * 16 + u16::from(digit_value) > u16::from(u8::MAX);
-                    value = value.wrapping_mul(16).wrapping_add(digit_value);
+                    let next = value.wrapping_mul(16).wrapping_add(u64::from(digit_value));
+                    let max = match elem_size {
+                        1 => u64::from(u8::MAX),
+                        2 => u64::from(u16::MAX),
+                        _ => u64::from(u32::MAX),
+                    };
+                    overflowed = overflowed || next > max;
+                    value = next;
                     saw_digit = true;
                     self.pos += 1;
                 }
-                if saw_digit {
-                    if overflowed {
-                        let range_start = body_start + escape_start_offset;
-                        self.warn(
-                            range_start,
-                            self.pos,
-                            "hex escape sequence out of range; using low 8 bits".to_string(),
-                        );
+                if !saw_digit {
+                    let range_start = body_start + escape_start_offset;
+                    self.err(
+                        range_start,
+                        self.pos,
+                        "`\\x` used with no following hex digits".to_string(),
+                    );
+                } else if overflowed {
+                    let range_start = body_start + escape_start_offset;
+                    self.warn(
+                        range_start,
+                        self.pos,
+                        "hex escape sequence out of range; using low 8 bits".to_string(),
+                    );
+                    if elem_size == 1 {
+                        out.push(StringPart::Byte(value as u8));
+                    } else {
+                        out.push(StringPart::Unit(value as u32));
                     }
-                    out.push(StringPart::Byte(value));
+                } else {
+                    if elem_size == 1 {
+                        out.push(StringPart::Byte(value as u8));
+                    } else {
+                        out.push(StringPart::Unit(value as u32));
+                    }
                 }
             }
             b'u' | b'U' => {
@@ -947,11 +1096,48 @@ impl<'a> Tokenizer<'a> {
                     value = value * 16 + u32::from(digit_value);
                     self.pos += 1;
                 }
-                if valid && char::from_u32(value).is_some() {
+                if !valid {
+                    let range_start = body_start + esc_offset;
+                    let text = String::from_utf8_lossy(&self.bytes[range_start..self.pos]);
+                    self.err(
+                        range_start,
+                        self.pos,
+                        format!("incomplete universal character name {text}"),
+                    );
+                } else if valid && (0xD800..=0xDFFF).contains(&value) {
+                    let range_start = body_start + esc_offset;
+                    let text = String::from_utf8_lossy(&self.bytes[range_start..self.pos]);
+                    self.err(
+                        range_start,
+                        self.pos,
+                        format!("{text} is not a valid universal character"),
+                    );
+                } else if valid && is_utf8_char && value >= 0x80 {
+                    let range_start = body_start + esc_offset;
+                    self.err(
+                        range_start,
+                        self.pos,
+                        "character not encodable in a single code unit".to_string(),
+                    );
+                } else if valid && value >= 0x8000_0000 {
+                    let range_start = body_start + esc_offset;
+                    let text = String::from_utf8_lossy(&self.bytes[range_start..self.pos]);
+                    self.err(
+                        range_start,
+                        self.pos,
+                        format!("{text} is not a valid universal character"),
+                    );
+                } else if valid && char::from_u32(value).is_some() {
                     out.push(StringPart::CodePoint(value));
                 }
             }
             _ => {
+                let range_start = body_start + esc_offset;
+                self.warn(
+                    range_start,
+                    self.pos,
+                    format!("unknown escape sequence: '\\{}'", escape as char),
+                );
                 out.push(StringPart::Byte(escape));
             }
         }

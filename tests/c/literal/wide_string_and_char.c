@@ -114,6 +114,7 @@ _Static_assert(
     sizeof(foo) == 4 * sizeof(wchar_t)
 );
 
+_Static_assert(sizeof(u8'a') == 1);
 
 /* ------------------------------------------------------------
  * 7. Runtime string indexing
@@ -329,6 +330,17 @@ int main(void)
     wchar_t c3 = '\xff';
     assert((int)c3 == -1);
 
+    wchar_t c4 = L'\x1234';
+    assert((int)c4 == 0x1234);
+    wchar_t c5 = L'\x9ABC';
+    assert((int)c5 == 0x9ABC);
+    wchar_t c6 = L'\777';
+    assert((int)c6 == 0x1FF);
+
+    _Static_assert(sizeof(u8'a') == 1);
+    int c7 = u8'\xff';
+    assert(c7 == 0xff);
+
     assert(_Generic('a', char: 0, int: 1, default: 0));
     assert(_Generic(L'a', char: 0, int: 1, default: 0));
 
@@ -339,6 +351,7 @@ int main(void)
      * -------------------------------------------------------- */
 
     _Static_assert(sizeof(u"ab") == 6);
+    _Static_assert(sizeof(u'a') == 2);
 
     {
         unsigned char *b16 = (unsigned char *)u"ab";
@@ -407,6 +420,33 @@ int main(void)
         assert((int)q[1] == 0x93);
         assert((int)q[2] == 0x94);
     }
+
+    {
+        const wchar_t *q = L"\x1234\x5678\x9ABC";
+        assert((int)q[0] == 0x1234);
+        assert((int)q[1] == 0x5678);
+        assert((int)q[2] == 0x9ABC);
+    }
+
+    {
+        const typeof(u'a') *q = u"\U0001F600";
+        assert((int)q[0] == 0xd83d);
+        assert((int)q[1] == 0xde00);
+    }
+
+    /* --------------------------------------------------------
+     * Wide char literal values: last value wins; escape values
+     * are carried losslessly (not via UTF-8 code points)
+     * -------------------------------------------------------- */
+
+    assert((unsigned int)L'\x41424344' == 0x41424344);
+    assert((unsigned int)L'\xFFFFFFFF' == (unsigned int)-1);
+    assert((unsigned int)L'\U0001F600' == 0x1F600);
+    assert((unsigned int)U'\U0001F600' == 0x1F600);
+
+    /* u8 string literals have unsigned char elements (char8_t). */
+    assert(u8"\xFF"[0] == 255);
+    assert(u8'\u007F' == 127);
 
     /* --------------------------------------------------------
      * Runtime success

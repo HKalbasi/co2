@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use co2_ast::{
-    BinOp, Constant, DeclarationSpecifier, Declarator, Expression, GenericAssociation, Initializer,
-    IntegerSuffix, Span, Spanned, StorageClassSpecifier, StringLiteralPrefix, StructOrUnionKind,
-    TypeName, TypeQualifier, TypeResolver, TypeSpecifier, UnaryOp,
+    BinOp, CharPrefix, Constant, DeclarationSpecifier, Declarator, Expression, GenericAssociation,
+    Initializer, IntegerSuffix, Span, Spanned, StorageClassSpecifier, StringLiteralPrefix,
+    StructOrUnionKind, TypeName, TypeQualifier, TypeResolver, TypeSpecifier, UnaryOp,
 };
 use rustc_public_generative::{
     FunctionAbi, FunctionInput, FunctionSignature, HirTy, HirTyConst, HirTyKind,
@@ -1027,7 +1027,7 @@ impl LocalResolverBase {
     ) -> Result<i128, (co2_ast::Span, String)> {
         match expr {
             Expression::Constant(Constant::Int(v, _)) => Ok(*v),
-            Expression::Constant(Constant::Char(ch)) => Ok(i128::from(*ch as i32)),
+            Expression::Constant(Constant::Char(ch, _)) => Ok(i128::from(*ch as i32)),
             Expression::Constant(Constant::Float(_, _)) => Err(spanned_error(
                 *span,
                 "cannot use floats in const expressions",
@@ -1315,9 +1315,23 @@ impl LocalResolverBase {
                 };
                 self.const_int_ty_of_hir_kind(kind)
             }
-            Expression::Constant(Constant::Char(_)) => Some(ConstIntTy {
-                width: 8,
-                signed: true,
+            Expression::Constant(Constant::Char(_, prefix)) => Some(match prefix {
+                CharPrefix::Utf16 => ConstIntTy {
+                    width: 16,
+                    signed: false,
+                },
+                CharPrefix::Utf8 => ConstIntTy {
+                    width: 8,
+                    signed: false,
+                },
+                CharPrefix::Utf32 => ConstIntTy {
+                    width: 32,
+                    signed: false,
+                },
+                CharPrefix::None | CharPrefix::Wide => ConstIntTy {
+                    width: 32,
+                    signed: true,
+                },
             }),
             Expression::UnaryOp(op, inner) => match op {
                 UnaryOp::Plus | UnaryOp::Minus | UnaryOp::Not | UnaryOp::Com => {
@@ -1643,9 +1657,10 @@ impl LocalResolverBase {
         match expr {
             Expression::Constant(Constant::String(s)) => {
                 let elem_ty = match s.prefix() {
-                    StringLiteralPrefix::None
-                    | StringLiteralPrefix::Str
-                    | StringLiteralPrefix::Utf8 => HirTy::signed_ty(IntTy::I8, rust_span),
+                    StringLiteralPrefix::None | StringLiteralPrefix::Str => {
+                        HirTy::signed_ty(IntTy::I8, rust_span)
+                    }
+                    StringLiteralPrefix::Utf8 => HirTy::unsigned_ty(UintTy::U8, rust_span),
                     StringLiteralPrefix::Utf16 => HirTy::unsigned_ty(UintTy::U16, rust_span),
                     StringLiteralPrefix::Utf32 => HirTy::unsigned_ty(UintTy::U32, rust_span),
                     StringLiteralPrefix::Wide => HirTy::signed_ty(IntTy::I32, rust_span),
@@ -1682,7 +1697,18 @@ impl LocalResolverBase {
                     span: rust_span,
                 }
             }
-            Expression::Constant(Constant::Char(_)) => HirTy::signed_ty(IntTy::I8, rust_span),
+            Expression::Constant(Constant::Char(_, prefix)) => {
+                let kind = match prefix {
+                    CharPrefix::Utf16 => HirTyKind::Uint(UintTy::U16),
+                    CharPrefix::Utf32 => HirTyKind::Uint(UintTy::U32),
+                    CharPrefix::Utf8 => HirTyKind::Uint(UintTy::U8),
+                    CharPrefix::None | CharPrefix::Wide => HirTyKind::Int(IntTy::I32),
+                };
+                HirTy {
+                    kind,
+                    span: rust_span,
+                }
+            }
             Expression::Identifier((resolved, _)) => match resolved {
                 crate::DefOrLocal::Local(_) | crate::DefOrLocal::LocalConst(_) => self
                     .terminate_with_error(

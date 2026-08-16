@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use co2_ast::{
-    BinOp as ParsedBinOp, Constant, DoTransform as _, Expression, GenericAssociation, Initializer,
-    IntegerSuffix, RustTy, Span, Spanned, Statement, StatementOrDeclaration, StringLiteral,
-    StringLiteralPrefix, TypeName, UnaryOp as ParsedUnaryOp, UpdateOp as ParsedUpdateOp,
+    BinOp as ParsedBinOp, CharPrefix, Constant, DoTransform as _, Expression, GenericAssociation,
+    Initializer, IntegerSuffix, RustTy, Span, Spanned, Statement, StatementOrDeclaration,
+    StringLiteral, StringLiteralPrefix, TypeName, UnaryOp as ParsedUnaryOp,
+    UpdateOp as ParsedUpdateOp,
 };
 use co2_crate_sig::{LocalResolver, LogicalAdtFieldKind, MethodResolutionKind};
 use la_arena::Arena;
@@ -94,7 +95,8 @@ fn string_literal_ptr_ty(literal: &StringLiteral) -> Ty {
         )
     } else {
         let elem_ty = match literal.prefix() {
-            StringLiteralPrefix::None | StringLiteralPrefix::Utf8 => Ty::signed_ty(IntTy::I8),
+            StringLiteralPrefix::None => Ty::signed_ty(IntTy::I8),
+            StringLiteralPrefix::Utf8 => Ty::unsigned_ty(UintTy::U8),
             StringLiteralPrefix::Utf16 => Ty::unsigned_ty(UintTy::U16),
             StringLiteralPrefix::Utf32 => Ty::unsigned_ty(UintTy::U32),
             StringLiteralPrefix::Wide => Ty::signed_ty(IntTy::I32),
@@ -1515,9 +1517,14 @@ impl HirCtx<'_> {
                     span,
                 })
             }
-            Expression::Constant(Constant::Char(ch)) => Ok(HirExpr {
+            Expression::Constant(Constant::Char(ch, prefix)) => Ok(HirExpr {
                 kind: HirExprKind::ConstInt(i128::from(ch as i32)),
-                ty: Ty::signed_ty(IntTy::I32),
+                ty: match prefix {
+                    CharPrefix::Utf16 => Ty::unsigned_ty(UintTy::U16),
+                    CharPrefix::Utf32 => Ty::unsigned_ty(UintTy::U32),
+                    CharPrefix::Utf8 => Ty::unsigned_ty(UintTy::U8),
+                    CharPrefix::None | CharPrefix::Wide => Ty::signed_ty(IntTy::I32),
+                },
                 span,
             }),
             Expression::Constant(Constant::String(s)) => Ok(HirExpr {

@@ -82,7 +82,7 @@ pub enum ForInit<R: TypeResolver> {
 pub enum Constant {
     Int(i128, IntegerSuffix),
     Float(f64, FloatSuffix),
-    Char(u32),
+    Char(u32, CharPrefix),
     String(StringLiteral),
 }
 
@@ -706,6 +706,14 @@ impl CharPrefix {
             Self::Wide => "L",
         }
     }
+
+    pub fn element_size(self) -> usize {
+        match self {
+            Self::None | Self::Utf8 => 1,
+            Self::Utf16 => 2,
+            Self::Utf32 | Self::Wide => 4,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -836,7 +844,7 @@ impl Display for Constant {
         match self {
             Constant::Int(v, _) => write!(f, "{v}"),
             Constant::Float(v, _) => write!(f, "{v}"),
-            Constant::Char(value) => {
+            Constant::Char(value, _) => {
                 write!(f, "'")?;
                 if let Ok(byte) = u8::try_from(*value) {
                     fmt_bytes(f, &[byte])?;
