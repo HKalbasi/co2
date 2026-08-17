@@ -16,4 +16,6 @@ int f3() {
   //^^^^^^^ error: duplicate base specifier found
 }
 
-int main() {}
+int main() {
+    return 0;
+}

@@ -211,6 +211,15 @@ impl HirCtx<'_> {
                     }
                     out.push(HirStmt::Return(Some(expr), span));
                 } else {
+                    if !self.ret_ty.kind().is_unit() {
+                        self.terminate_with_error(
+                            parser_span,
+                            &format!(
+                                "`return;` is not valid for functions returning value {}",
+                                self.format_ty(self.ret_ty),
+                            ),
+                        );
+                    }
                     out.push(HirStmt::Return(None, span));
                 }
             }

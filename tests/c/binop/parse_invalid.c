@@ -13,4 +13,6 @@ void shr_with_space() {
       //TODO emit error: found end of input expected Type specifier, Type qualifier, Storage specifier, or Function specifier
 }
 
-int main() {}
+int main() {
+    return 0;
+}

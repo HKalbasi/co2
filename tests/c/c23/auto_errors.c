@@ -17,4 +17,6 @@ void f3(void) {
        //^ error: `auto` requires an initializer
 }
 
-int main() {}
+int main() {
+    return 0;
+}

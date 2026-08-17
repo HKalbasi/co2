@@ -682,6 +682,7 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
         return true;
     }
     match (expected.kind(), actual.kind()) {
+        // TODO: Wait what? this was intended to catch maybe_uninit, but it is catching everything!
         (TyKind::RigidTy(RigidTy::Adt(_, exp_args)), TyKind::RigidTy(RigidTy::FnDef(_, _)))
             if exp_args.0.len() == 1 =>
         {

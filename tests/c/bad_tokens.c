@@ -48,4 +48,6 @@ int f9() {
               // ^^^^^^^^^ error: unsupported concatenation of string literals with different encoding prefixes
 }
 
-int main() {}
+int main() {
+    return 0;
+}

@@ -16,4 +16,6 @@ void f3(int a, int b) {
   //^^^^ error: subscript requires one pointer and one integer operand
 }
 
-int main() {}
+int main() {
+    return 0;
+}

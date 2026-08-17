@@ -21,4 +21,5 @@ void f2() {
 }
 
 int main() {
+    return 0;
 }

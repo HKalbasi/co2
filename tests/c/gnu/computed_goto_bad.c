@@ -17,4 +17,6 @@ static int f3(void *opcode) {
   //^^^^^^^^^^^^^^ error: unresolved label
 }
 
-int main(void) {}
+int main(void) {
+    return 0;
+}
