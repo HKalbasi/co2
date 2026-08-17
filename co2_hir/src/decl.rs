@@ -582,7 +582,18 @@ impl HirCtx<'_> {
                         };
                         let cty = self.lower_typeof_expr(init_expr, locals, local_map)?;
                         let ty = match cty {
-                            CTy::Ty(ty) => ty,
+                            CTy::Ty(ty) => {
+                                // C23 6.7.10p3: `auto` deduction applies lvalue
+                                // conversion, so an array initializer decays to a
+                                // pointer to its element type.
+                                if is_array_ty(ty) {
+                                    let elem = array_elem_ty(ty)
+                                        .expect("array type should have an element type");
+                                    Ty::new_ptr(elem, Mutability::Mut)
+                                } else {
+                                    ty
+                                }
+                            }
                             CTy::Function(sig) => {
                                 let fn_ptr_ty =
                                     Ty::from_rigid_kind(RigidTy::FnPtr(Binder::dummy(sig)));

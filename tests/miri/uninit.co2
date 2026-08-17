@@ -17,6 +17,25 @@ fn init_struct(st: *mut St) {
     st->y = 2;
 }
 
+fn init_array() -> i32 {
+    i32 ar[5];
+    ar[0] = 1;
+    ar[1] = 2;
+    for (usize i = 2; i < 5; i += 1) {
+        ar[i] = ar[i - 1] + ar[i - 2];
+    }
+    return ar[4];
+}
+
+fn init_array2() -> i32 {
+    St ar[5];
+    auto ptr = ar;
+    St **ptr2 = &ptr;
+    ptr2[0][0].x = 1;
+    ptr2[0][2].y = 5;
+    return ar[0].x + ar[2].y;
+}
+
 fn conditional_init(init: i32) -> i32 {
     i32 x;
     if (init) {
@@ -34,6 +53,9 @@ fn main() {
     if (st.x + st.y != 3) {
         std::process::abort();
     }
+
+    init_array();
+    init_array2();
 
     conditional_init(1);
     conditional_init(0);

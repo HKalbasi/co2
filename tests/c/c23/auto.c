@@ -12,6 +12,10 @@ struct S {
     int x;
 };
 
+struct SA {
+    int a[3];
+};
+
 enum E {
     A,
     B
@@ -64,6 +68,12 @@ int main(void) {
 
     assert(_Generic(x, int: 1, default: 0));
 
+    volatile int vi = 5;
+
+    auto v = vi;
+
+    assert(_Generic(v, int: 1, default: 0));
+
     // ------------------------------------------------------------
     // pointer deduction
     // ------------------------------------------------------------
@@ -93,7 +103,30 @@ int main(void) {
 
     auto arrp = arr;
 
+    assert(_Generic(arr, int *: 1, default: 0));
     assert(_Generic(arrp, int *: 1, default: 0));
+    assert(_Generic(&arr, int (*)[10]: 1, default: 0));
+    assert(_Generic(&arrp, int **: 1, default: 0));
+
+    // ------------------------------------------------------------
+    // multi-dimensional array decay -> pointer to array
+    // ------------------------------------------------------------
+
+    int m[2][3];
+
+    auto mp = m;
+
+    assert(_Generic(mp, int (*)[3]: 1, default: 0));
+
+    // ------------------------------------------------------------
+    // struct member array decay
+    // ------------------------------------------------------------
+
+    struct SA sa = {{1, 2, 3}};
+
+    auto sap = sa.a;
+
+    assert(_Generic(sap, int *: 1, default: 0));
 
     // ------------------------------------------------------------
     // string literal decay
