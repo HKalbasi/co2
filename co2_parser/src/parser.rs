@@ -213,8 +213,9 @@ fn c_type_keywords_suggestion(words: &[&str]) -> Option<(&'static str, &'static 
         | ["long", "long", "int"]
         | ["signed", "long", "long"]
         | ["signed", "long", "long", "int"] => Some(("i64", "c_longlong")),
-        ["unsigned", "long", "long"]
-        | ["unsigned", "long", "long", "int"] => Some(("u64", "c_ulonglong")),
+        ["unsigned", "long", "long"] | ["unsigned", "long", "long", "int"] => {
+            Some(("u64", "c_ulonglong"))
+        }
         ["float"] => Some(("f32", "c_float")),
         ["double"] => Some(("f64", "c_double")),
         ["long", "double"] => Some(("f64", "c_longdouble")),
@@ -255,8 +256,8 @@ where
 /// Recover from C type specifier keywords appearing in a Rust type position.
 /// Consumes the keyword run, emits an error suggesting the Rust equivalent,
 /// and returns a unit-type placeholder so parsing can continue.
-fn recover_c_type_keyword<'src, I, R: TypeResolver>(
-) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+fn recover_c_type_keyword<'src, I, R: TypeResolver>()
+-> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
 where
     I: ValueInput<'src, Token = Token, Span = Span>
         + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
