@@ -1,0 +1,5 @@
+typedef int fn_t(void);
+static fn_t *const t0[] = { fa, fb };
+static int fa(void){return 0;}
+static int fb(void){return 1;}
+int use_table(int j){ return t0[j](); }

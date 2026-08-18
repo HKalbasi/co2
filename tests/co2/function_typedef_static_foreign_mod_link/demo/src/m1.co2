@@ -1,0 +1,5 @@
+typedef int fn_t(void);
+fn_t *const g0[] = { fc, fd };
+static int fc(void){return 0;}
+static int fd(void){return 1;}
+int use_global(int j){ return g0[j](); }

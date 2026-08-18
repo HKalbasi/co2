@@ -351,12 +351,16 @@ impl ModuleData {
                             if this.items.contains_key(&name) {
                                 continue;
                             }
-                            let parent =
-                                if decl.is_function() || is_extern || is_function_type_usage {
-                                    foreign_mod
-                                } else {
-                                    parent
-                                };
+                            // TODO: this is probably wrong. Why is_function_type_usage???
+                            // See also tests/co2/function_typedef_static which is affected by this.
+                            let parent = if decl.is_function()
+                                || is_extern
+                                || (is_function_type_usage && decl.is_terminal())
+                            {
+                                foreign_mod
+                            } else {
+                                parent
+                            };
                             let def_id =
                                 ctx.allocate_def_id(parent, &DefData::ValueNs(name.clone()));
                             this.items.insert(

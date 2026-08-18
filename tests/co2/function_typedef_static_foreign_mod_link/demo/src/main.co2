@@ -1,0 +1,4 @@
+mod m0;
+mod m1;
+
+fn main() { std::process::exit(crate::m0::use_table(0) + crate::m1::use_global(0)); }
