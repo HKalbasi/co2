@@ -1351,9 +1351,7 @@ static int i44 = 5;
 
 int main44() {
     // The point of this test is to keep the do while at the start of function
-    // TODO: warning is false positive. We should detect while(1) as infinite loop.
     do {
-  //^ warning: function returns without a value
         if (i44 == 0) {
             return i44;
         }
@@ -1906,7 +1904,6 @@ int main86() {
     int x = 0;
     int y = 0;
     for (;;) {
-  //^ warning: function returns without a value
         switch (x) {
         case 0:
             y = 10;

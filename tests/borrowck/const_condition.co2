@@ -1,0 +1,103 @@
+//@ mode: co2
+//@ compile-pass
+
+#include <stdbool.h>
+
+use std::vec::Vec;
+use std::mem::drop;
+
+// Branches that are statically dead because the condition is a constant are
+// not analyzed by the borrow checker, so the (unsound-if-executed) code in
+// them produces no warnings.
+fn dead_branches_skipped() {
+    Vec<i32> v = Vec::<i32>::new();
+    if (0) {
+        drop(v);
+    }
+    v.push(2);
+    drop(v);
+
+    Vec<i32> w = Vec::<i32>::new();
+    if (1) {
+        w.push(2);
+    } else {
+        drop(w);
+    }
+    drop(w);
+}
+
+// The bool literals `true` and `false` fold the same way as `1` and `0`.
+fn bool_literal_branches() {
+    Vec<i32> v = Vec::<i32>::new();
+    if (false) {
+        drop(v);
+    }
+    v.push(2);
+    drop(v);
+
+    Vec<i32> w = Vec::<i32>::new();
+    if (true) {
+        w.push(2);
+    } else {
+        drop(w);
+    }
+    drop(w);
+
+    Vec<i32> u = Vec::<i32>::new();
+    if (!true) {
+        drop(u);
+    }
+    u.push(2);
+    drop(u);
+}
+
+// Ternary with a constant condition folds to the taken branch.
+fn const_ternary() -> i32 {
+    int x = 1 ? 10 : 20;
+    int y = 0 ? 10 : 20;
+    int z = true ? 10 : 20;
+    int w = false ? 10 : 20;
+    return x + y + z + w;
+}
+
+fn const_ternary_leak(n: i32) {
+    1 ? ({ }) : ({ Vec::<i32>::new(); });
+    0 ? ({ Vec::<i32>::new(); }) : ({ });
+    true ? ({ }) : ({ Vec::<i32>::new(); });
+    n < 5 ? ({ }) : ({ Vec::<i32>::new(); });
+                     //^^^^^^^^^^^^^^^^^ warning: value leaked: a temporary (of type `Vec`, never dropped)
+}
+
+// A constant condition on a loop makes the exit unreachable, so
+// "function returns without a value" no longer fires for infinite loops.
+fn infinite_loop() -> i32 {
+    int i = 0;
+    while (1) {
+        i += 1;
+    }
+}
+
+// Logical operators with constant operands short-circuit correctly: the
+// right-hand side is not analyzed, so moving `v` into the (never evaluated)
+// call does not make the later `drop(v)` a use-after-move.
+fn const_logical() {
+    Vec<i32> v = Vec::<i32>::new();
+    bool b = 0 && takes_vec(v);
+    drop(v);
+}
+
+fn takes_vec(v: Vec<i32>) -> i32 {
+    drop(v);
+    return 1;
+}
+
+fn main() {
+    dead_branches_skipped();
+    bool_literal_branches();
+    const_ternary();
+    const_ternary_leak(4);
+    const_logical();
+    Vec::<i32> r = Vec::<i32>::new();
+    drop(r);
+    std::process::exit(0);
+}

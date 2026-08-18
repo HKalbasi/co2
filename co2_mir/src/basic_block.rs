@@ -122,42 +122,88 @@ impl Builder<'_, '_> {
         span: RustSpan,
     ) {
         debug_assert!(matches!(cond.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
-        let cond_op = self.lower_expr_to_operand(cond);
-        let entry_span = span;
-        let entry_idx = self.blocks.len();
+        self.lower_condition(
+            cond,
+            span,
+            |b| {
+                for stmt in then_stmts {
+                    b.lower_stmt(stmt);
+                }
+            },
+            |b| {
+                for stmt in else_stmts {
+                    b.lower_stmt(stmt);
+                }
+            },
+        );
+    }
+
+    /// Lowers a boolean condition into a branch on the taken/not-taken sides.
+    ///
+    /// When the condition is a compile-time constant (`1`, `0`, `true`,
+    /// `false`, a cast of one of those, or `!` of a constant), a direct
+    /// `Goto` to the taken branch is emitted and the unreachable branch is
+    /// skipped entirely, so later passes (notably the borrow checker) never
+    /// see the dead code.
+    pub(crate) fn lower_condition(
+        &mut self,
+        cond: &HirExpr,
+        span: RustSpan,
+        then: impl FnOnce(&mut Self),
+        els: impl FnOnce(&mut Self),
+    ) {
+        debug_assert!(matches!(cond.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
+        let constant = constant_condition(cond);
+        let entry_kind = match constant {
+            Some(_) => TerminatorKind::Goto { target: usize::MAX },
+            None => TerminatorKind::SwitchInt {
+                discr: self.lower_expr_to_operand(cond),
+                targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
+            },
+        };
+        let entry_bb = self.blocks.len();
         self.blocks
             .push(rustc_public_generative::rustc_public::mir::BasicBlock {
                 statements: std::mem::take(&mut self.stmts),
                 terminator: MirTerminator {
-                    kind: TerminatorKind::SwitchInt {
-                        discr: cond_op,
-                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
-                    },
+                    kind: entry_kind,
                     source_info: SourceInfo {
-                        span: entry_span,
+                        span,
                         scope: self.current_scope(),
                     },
                 },
             });
 
-        let then_bb = self.blocks.len();
-        for stmt in then_stmts {
-            self.lower_stmt(stmt);
-        }
-        let then_exit =
-            self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, entry_span);
+        let then_start = self.blocks.len();
+        let then_exit = match constant {
+            Some(false) => None,
+            _ => {
+                then(self);
+                Some(self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span))
+            }
+        };
 
-        let else_bb = self.blocks.len();
-        for stmt in else_stmts {
-            self.lower_stmt(stmt);
-        }
-        let else_exit =
-            self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, entry_span);
+        let else_start = self.blocks.len();
+        let else_exit = match constant {
+            Some(true) => None,
+            _ => {
+                els(self);
+                Some(self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span))
+            }
+        };
 
         let join_bb = self.blocks.len();
-        self.patch_goto_target(then_exit, join_bb);
-        self.patch_goto_target(else_exit, join_bb);
-        self.patch_switch_targets(entry_idx, then_bb, else_bb);
+        if let Some(exit) = then_exit {
+            self.patch_goto_target(exit, join_bb);
+        }
+        if let Some(exit) = else_exit {
+            self.patch_goto_target(exit, join_bb);
+        }
+        match constant {
+            Some(true) => self.patch_goto_target(entry_bb, then_start),
+            Some(false) => self.patch_goto_target(entry_bb, else_start),
+            None => self.patch_switch_targets(entry_bb, then_start, else_start),
+        }
     }
 
     pub(crate) fn terminate_fallthrough(&mut self) {
@@ -321,5 +367,17 @@ fn stmt_span(stmt: &HirStmt) -> Option<RustSpan> {
         | HirStmt::Return(_, span)
         | HirStmt::Block(_, span) => Some(*span),
         HirStmt::If { span, .. } => Some(*span),
+    }
+}
+
+/// Returns `Some(taken)` when a boolean condition is a compile-time constant,
+/// so the taken branch is statically known. `None` means the condition must be
+/// evaluated at runtime.
+fn constant_condition(cond: &HirExpr) -> Option<bool> {
+    match &cond.kind {
+        HirExprKind::ConstInt(value) => Some(*value != 0),
+        HirExprKind::Cast(inner) => constant_condition(inner),
+        HirExprKind::LogicalNot(inner) => constant_condition(inner).map(|v| !v),
+        _ => None,
     }
 }

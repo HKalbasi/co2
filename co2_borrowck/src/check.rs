@@ -181,7 +181,8 @@ fn analyze(
             if is_terminator
                 && matches!(&body.blocks[block].terminator.kind, TerminatorKind::Return)
             {
-                check_leaks(body, &uninit, &owned, &needs_drop, &last_assign, &mut leaks);
+                // Leaks are collected below, once the dataflow has converged,
+                // using the final entry state of each return block.
             }
         }
         for &succ in &body.blocks[block].terminator.successors() {
@@ -208,15 +209,59 @@ fn analyze(
         }
     }
 
+    // The dataflow has converged; `entry[block]` holds the final in-state of
+    // every block. A local leaks if on *some* path reaching a return it is
+    // still owned (assigned and never moved/dropped afterwards): CO2 has no
+    // implicit drop, so a drop-needing value that reaches the end of the
+    // function without being dropped or moved out is a leak, even if it was
+    // only created on one side of a branch.
+    //
+    // We replay each return block's statements from its converged in-state so
+    // that effects of statements *inside* the return block itself (e.g. a
+    // `v = Move(t)` that reborrows a temporary) are visible at the return.
+    for (block, block_data) in body.blocks.iter().enumerate() {
+        if !matches!(&block_data.terminator.kind, TerminatorKind::Return) {
+            continue;
+        }
+        let (mut uninit, mut moved, mut owned) = entry[block].clone();
+        let n = block_data.statements.len();
+        for i in 0..=n {
+            let mid = location_table.mid_index(block, i);
+            if let Some(ev) = events.get(&mid) {
+                for &path in &ev.moved {
+                    set_bit(&mut uninit, path.index());
+                    set_bit(&mut moved, path.index());
+                    clear_bit(&mut owned, path.index());
+                }
+                for &path in &ev.written {
+                    clear_bit(&mut uninit, path.index());
+                    clear_bit(&mut moved, path.index());
+                }
+                for &path in &ev.assigned {
+                    clear_bit(&mut uninit, path.index());
+                    clear_bit(&mut moved, path.index());
+                    set_bit(&mut owned, path.index());
+                    last_assign[path.index()] = Some(if i == n {
+                        block_data.terminator.source_info.span
+                    } else {
+                        block_data.statements[i].source_info.span
+                    });
+                }
+            }
+        }
+        check_leaks(body, &owned, &needs_drop, &last_assign, &mut leaks);
+    }
+
     (errors, leaks)
 }
 
 /// A local that owns memory or a resource (its type needs drop) and is
-/// definitely still owned when the function returns has leaked: CO2 has no
-/// automatic drop at scope exit, so it must be dropped or moved out explicitly.
+/// still owned on some path reaching a return has leaked: CO2 has no
+/// automatic drop at scope exit, so it must be dropped or moved out
+/// explicitly. This includes temporaries (statement-expression values,
+/// discarded call results, and so on), which are never auto-dropped either.
 fn check_leaks(
     body: &Body,
-    uninit: &[u64],
     owned: &[u64],
     needs_drop: &[bool],
     last_assign: &[Option<Span>],
@@ -226,23 +271,29 @@ fn check_leaks(
         if local == RETURN_LOCAL {
             continue;
         }
-        if !is_user_local(body, local) || !needs_drop[local] {
+        if !needs_drop[local] {
             continue;
         }
-        // Only flag values that are definitely still owned here: the local
-        // must be owned and definitely initialized.
-        if !is_set(owned, local) || is_set(uninit, local) {
+        // The value is leaked if there is a path to this return on which it is
+        // still owned. `owned` is a may-set, so a branch-local value created
+        // on only one side of an if/ternary is still flagged (it leaks
+        // whenever that side is taken). `uninit` does not matter here: a local
+        // that may be owned is necessarily initialized on the owning path.
+        if !is_set(owned, local) {
             continue;
         }
-        let name = local_name(body, local);
         let span = last_assign[local].unwrap_or(decl.span);
-        leaks.push((
-            span,
-            format!(
+        let message = match local_display_name(body, local) {
+            Some(name) => format!(
                 "value leaked: `{name}` (of type `{}`, never dropped)",
                 format_ty(decl.ty)
             ),
-        ));
+            None => format!(
+                "value leaked: a temporary (of type `{}`, never dropped)",
+                format_ty(decl.ty)
+            ),
+        };
+        leaks.push((span, message));
     }
 }
 
@@ -306,8 +357,13 @@ fn local_name(body: &Body, local: usize) -> String {
     format!("_{local}")
 }
 
-fn is_user_local(body: &Body, local: usize) -> bool {
-    body.var_debug_info.iter().any(|vdi| vdi.local() == Some(local))
+/// The user-visible name of a local, or `None` for compiler-generated
+/// temporaries (which have no `var_debug_info`).
+fn local_display_name(body: &Body, local: usize) -> Option<String> {
+    body.var_debug_info
+        .iter()
+        .find(|vdi| vdi.local() == Some(local))
+        .map(|vdi| vdi.name.clone())
 }
 
 fn compute_needs_drop(body: &Body) -> Vec<bool> {

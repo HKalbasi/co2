@@ -7,7 +7,7 @@ use rustc_public_generative::{
             AggregateKind, BorrowKind, CastKind, ConstOperand, MutBorrowKind, Mutability,
             Operand as MirOperand, PointerCoercion, ProjectionElem as MirProjection, RawPtrKind,
             Rvalue, Safety, SourceInfo, Statement as MirStatement,
-            StatementKind as MirStatementKind, SwitchTargets, TerminatorKind, WithRetag,
+            StatementKind as MirStatementKind, WithRetag,
         },
         ty::{
             FloatTy, GenericArgKind, GenericArgs, IntTy, MirConst, Region, RegionKind, RigidTy,
@@ -2105,208 +2105,70 @@ impl Builder<'_, '_> {
         ty: Ty,
     ) -> MirOperand {
         let result_local = self.new_temp(ty, Mutability::Mut, span);
-        let zero_init = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(0),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(zero_init, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
-            },
-        });
+        self.assign_const(result_local, 0, ty, span);
 
-        debug_assert!(matches!(lhs.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
-        let lhs_op = self.lower_expr_to_operand(lhs);
-        let entry_bb = self.blocks.len();
-        self.blocks
-            .push(rustc_public_generative::rustc_public::mir::BasicBlock {
-                statements: std::mem::take(&mut self.stmts),
-                terminator: rustc_public_generative::rustc_public::mir::Terminator {
-                    kind: TerminatorKind::SwitchInt {
-                        discr: lhs_op,
-                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
-                    },
-                    source_info: SourceInfo {
-                        span,
-                        scope: self.current_scope(),
-                    },
-                },
-            });
-
-        let (lhs_short_bb, rhs_eval_bb, lhs_short_val) = match op {
-            HirLogicalOp::And => (self.blocks.len(), self.blocks.len() + 1, 0),
-            HirLogicalOp::Or => (self.blocks.len(), self.blocks.len() + 1, 1),
-        };
-
-        let lhs_short_operand = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(lhs_short_val),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(lhs_short_operand, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
-            },
-        });
-        let lhs_short_exit =
-            self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        debug_assert_eq!(rhs_eval_bb, self.blocks.len());
-        debug_assert!(matches!(rhs.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
-        let rhs_op = self.lower_expr_to_operand(rhs);
-        let rhs_switch_bb = self.blocks.len();
-        self.blocks
-            .push(rustc_public_generative::rustc_public::mir::BasicBlock {
-                statements: std::mem::take(&mut self.stmts),
-                terminator: rustc_public_generative::rustc_public::mir::Terminator {
-                    kind: TerminatorKind::SwitchInt {
-                        discr: rhs_op,
-                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
-                    },
-                    source_info: SourceInfo {
-                        span,
-                        scope: self.current_scope(),
-                    },
-                },
-            });
-
-        let rhs_false_bb = self.blocks.len();
-        let rhs_false_operand = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(0),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(rhs_false_operand, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
-            },
-        });
-        let rhs_false_exit =
-            self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let rhs_true_bb = self.blocks.len();
-        let rhs_true_operand = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(1),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(rhs_true_operand, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
-            },
-        });
-        let rhs_true_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let join_bb = self.blocks.len();
-
-        self.patch_goto_target(lhs_short_exit, join_bb);
-        self.patch_goto_target(rhs_false_exit, join_bb);
-        self.patch_goto_target(rhs_true_exit, join_bb);
         match op {
-            HirLogicalOp::And => {
-                self.patch_switch_targets(entry_bb, rhs_eval_bb, lhs_short_bb);
-            }
-            HirLogicalOp::Or => {
-                self.patch_switch_targets(entry_bb, lhs_short_bb, rhs_eval_bb);
-            }
+            HirLogicalOp::And => self.lower_condition(
+                lhs,
+                span,
+                |b| {
+                    b.lower_condition(
+                        rhs,
+                        span,
+                        |b| b.assign_const(result_local, 1, ty, span),
+                        |_| {},
+                    );
+                },
+                |_| {},
+            ),
+            HirLogicalOp::Or => self.lower_condition(
+                lhs,
+                span,
+                |b| {
+                    b.assign_const(result_local, 1, ty, span);
+                },
+                |b| {
+                    b.lower_condition(
+                        rhs,
+                        span,
+                        |b| b.assign_const(result_local, 1, ty, span),
+                        |_| {},
+                    );
+                },
+            ),
         }
-        self.patch_switch_targets(rhs_switch_bb, rhs_true_bb, rhs_false_bb);
 
         MirOperand::Copy(place(result_local))
     }
 
     fn lower_logical_not_expr(&mut self, inner: &HirExpr, span: RustSpan, ty: Ty) -> MirOperand {
         let result_local = self.new_temp(ty, Mutability::Mut, span);
-        let zero_init = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(0),
-            ty,
+        self.lower_condition(
+            inner,
             span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(zero_init, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
+            |b| {
+                b.assign_const(result_local, 0, ty, span);
             },
-        });
-        debug_assert!(matches!(inner.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
-        let inner_op = self.lower_expr_to_operand(inner);
-        let entry_bb = self.blocks.len();
-        self.blocks
-            .push(rustc_public_generative::rustc_public::mir::BasicBlock {
-                statements: std::mem::take(&mut self.stmts),
-                terminator: rustc_public_generative::rustc_public::mir::Terminator {
-                    kind: TerminatorKind::SwitchInt {
-                        discr: inner_op,
-                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
-                    },
-                    source_info: SourceInfo {
-                        span,
-                        scope: self.current_scope(),
-                    },
-                },
-            });
-
-        let true_bb = self.blocks.len();
-        let one = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(1),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(one, WithRetag::Yes)),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
+            |b| {
+                b.assign_const(result_local, 1, ty, span);
             },
-        });
-        let true_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let false_bb = self.blocks.len();
-        let zero = self.lower_expr_to_operand(&HirExpr {
-            kind: HirExprKind::ConstInt(0),
-            ty,
-            span,
-        });
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(zero, WithRetag::Yes)),
-            source_info: SourceInfo {
-                span,
-                scope: self.current_scope(),
-            },
-        });
-        let false_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let join_bb = self.blocks.len();
-        self.patch_goto_target(true_exit, join_bb);
-        self.patch_goto_target(false_exit, join_bb);
-        self.patch_switch_targets(entry_bb, false_bb, true_bb);
-
+        );
         MirOperand::Copy(place(result_local))
+    }
+
+    fn assign_const(&mut self, local: usize, value: i128, ty: Ty, span: RustSpan) {
+        let operand = self.lower_expr_to_operand(&HirExpr {
+            kind: HirExprKind::ConstInt(value),
+            ty,
+            span,
+        });
+        self.stmts.push(MirStatement {
+            kind: MirStatementKind::Assign(place(local), Rvalue::Use(operand, WithRetag::Yes)),
+            source_info: SourceInfo {
+                span,
+                scope: self.current_scope(),
+            },
+        });
     }
 
     fn lower_conditional_expr(
@@ -2318,57 +2180,36 @@ impl Builder<'_, '_> {
         ty: Ty,
     ) -> MirOperand {
         let result_local = self.new_temp(ty, Mutability::Mut, span);
-        debug_assert!(matches!(cond.ty.kind(), TyKind::RigidTy(RigidTy::Bool)));
-        let cond_op = self.lower_expr_to_operand(cond);
-        let entry_bb = self.blocks.len();
-        self.blocks
-            .push(rustc_public_generative::rustc_public::mir::BasicBlock {
-                statements: std::mem::take(&mut self.stmts),
-                terminator: rustc_public_generative::rustc_public::mir::Terminator {
-                    kind: TerminatorKind::SwitchInt {
-                        discr: cond_op,
-                        targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
-                    },
+        self.lower_condition(
+            cond,
+            span,
+            |b| {
+                let op = b.lower_expr_to_operand(then_expr);
+                b.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(result_local),
+                        Rvalue::Use(op, WithRetag::Yes),
+                    ),
                     source_info: SourceInfo {
-                        span,
-                        scope: self.current_scope(),
+                        span: then_expr.span,
+                        scope: b.current_scope(),
                     },
-                },
-            });
-
-        let then_bb = self.blocks.len();
-        let then_op = self.lower_expr_to_operand(then_expr);
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(then_op, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span: then_expr.span,
-                scope: self.current_scope(),
+                });
             },
-        });
-        let then_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let else_bb = self.blocks.len();
-        let else_op = self.lower_expr_to_operand(else_expr);
-        self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(
-                place(result_local),
-                Rvalue::Use(else_op, WithRetag::Yes),
-            ),
-            source_info: SourceInfo {
-                span: else_expr.span,
-                scope: self.current_scope(),
+            |b| {
+                let op = b.lower_expr_to_operand(else_expr);
+                b.stmts.push(MirStatement {
+                    kind: MirStatementKind::Assign(
+                        place(result_local),
+                        Rvalue::Use(op, WithRetag::Yes),
+                    ),
+                    source_info: SourceInfo {
+                        span: else_expr.span,
+                        scope: b.current_scope(),
+                    },
+                });
             },
-        });
-        let else_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
-
-        let join_bb = self.blocks.len();
-        self.patch_goto_target(then_exit, join_bb);
-        self.patch_goto_target(else_exit, join_bb);
-        self.patch_switch_targets(entry_bb, then_bb, else_bb);
-
+        );
         MirOperand::Copy(place(result_local))
     }
 
