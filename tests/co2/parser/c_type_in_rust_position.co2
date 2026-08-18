@@ -1,0 +1,36 @@
+//@ mode: co2
+//@ compile-fail
+
+use std::vec::Vec;
+
+fn f1() -> int {
+         //^^^ error: int is invalid as Rust type. Use either `i32` or `std::ffi::c_int`
+}
+
+fn f2(x: unsigned int) {}
+       //^^^^^^^^^^^^ error: unsigned int is invalid as Rust type. Use either `u32` or `std::ffi::c_uint`
+
+fn f3(x: double) -> signed long {
+       //^^^^^^ error: double is invalid as Rust type. Use either `f64` or `std::ffi::c_double`
+                  //^^^^^^^^^^^ error: signed long is invalid as Rust type. Use either `i64` or `std::ffi::c_long`
+}
+
+fn f4(x: *const int) {}
+              //^^^ error: int is invalid as Rust type. Use either `i32` or `std::ffi::c_int`
+
+fn f5(x: &mut long double) {}
+            //^^^^^^^^^^^ error: long double is invalid as Rust type. Use either `f64` or `std::ffi::c_longdouble`
+
+type T1 = float;
+        //^^^^^ error: float is invalid as Rust type. Use either `f32` or `std::ffi::c_float`
+
+type T2 = Vec::<unsigned long long>;
+              //^^^^^^^^^^^^^^^^^^ error: unsigned long long is invalid as Rust type. Use either `u64` or `std::ffi::c_ulonglong`
+
+struct S1 {
+    x: char,
+    y: short,
+     //^^^^^ error: short is invalid as Rust type. Use either `i16` or `std::ffi::c_short`
+}
+
+fn main() {}

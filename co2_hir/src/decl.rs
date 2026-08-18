@@ -1778,6 +1778,7 @@ fn prim_ty_to_ty(primitive_ty: co2_crate_sig::PrimitiveTy) -> Ty {
     match primitive_ty {
         co2_crate_sig::PrimitiveTy::Bool => Ty::bool_ty(),
         co2_crate_sig::PrimitiveTy::Str => Ty::from_rigid_kind(RigidTy::Str),
+        co2_crate_sig::PrimitiveTy::Char => Ty::from_rigid_kind(RigidTy::Char),
         co2_crate_sig::PrimitiveTy::IntTy(int_ty) => Ty::from_rigid_kind(RigidTy::Int(int_ty)),
         co2_crate_sig::PrimitiveTy::UintTy(uint_ty) => Ty::from_rigid_kind(RigidTy::Uint(uint_ty)),
         co2_crate_sig::PrimitiveTy::FloatTy(float_ty) => {

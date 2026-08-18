@@ -1,0 +1,33 @@
+//@ mode: co2
+//@ run-status: 0
+
+use std::vec::Vec;
+
+#include <assert.h>
+
+fn f1(x: _Bool) -> bool {
+    return x;
+}
+
+fn f2(x: char) -> char {
+    return x;
+}
+
+fn f3(x: *const char) {}
+
+fn f4(x: &mut _Bool) {}
+
+type T1 = char;
+type T2 = _Bool;
+type T3 = Vec<_Bool>;
+type T4 = Vec<char>;
+
+struct S1 {
+    x: char,
+    b: _Bool,
+}
+
+fn main() {
+    assert(sizeof(T1) == 4);
+    assert(sizeof(char) == 1);
+}

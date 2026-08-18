@@ -163,6 +163,126 @@ where
         })
 }
 
+/// C type-specifier and qualifier keywords that are not valid in Rust type
+/// positions. Returns the keyword text if `token` is one of them.
+fn c_type_keyword_token_str(token: &Token) -> Option<&'static str> {
+    Some(match token {
+        Token::Bool => "_Bool",
+        Token::Char => "char",
+        Token::Const => "const",
+        Token::Double => "double",
+        Token::Float => "float",
+        Token::Int => "int",
+        Token::Long => "long",
+        Token::Restrict => "restrict",
+        Token::Short => "short",
+        Token::Signed => "signed",
+        Token::Unsigned => "unsigned",
+        Token::Void => "void",
+        Token::Volatile => "volatile",
+        Token::Atomic => "_Atomic",
+        _ => return None,
+    })
+}
+
+/// Compute the Rust type suggestion for a sequence of C type keywords.
+/// Returns `(rust_primitive, ffi_path_suffix)`.
+fn c_type_keywords_suggestion(words: &[&str]) -> Option<(&'static str, &'static str)> {
+    let types = words
+        .iter()
+        .copied()
+        .filter(|word| !matches!(*word, "const" | "volatile" | "restrict" | "_Atomic"))
+        .collect::<Vec<_>>();
+    match types.as_slice() {
+        ["void"] => Some(("()", "c_void")),
+        ["_Bool"] => Some(("bool", "c_bool")),
+        ["char"] => Some(("u8", "c_char")),
+        ["signed", "char"] => Some(("i8", "c_schar")),
+        ["unsigned", "char"] => Some(("u8", "c_uchar")),
+        ["short"] | ["short", "int"] | ["signed", "short"] | ["signed", "short", "int"] => {
+            Some(("i16", "c_short"))
+        }
+        ["unsigned", "short"] | ["unsigned", "short", "int"] => Some(("u16", "c_ushort")),
+        ["int"] | ["signed"] | ["signed", "int"] => Some(("i32", "c_int")),
+        ["unsigned"] | ["unsigned", "int"] => Some(("u32", "c_uint")),
+        ["long"] | ["long", "int"] | ["signed", "long"] | ["signed", "long", "int"] => {
+            Some(("i64", "c_long"))
+        }
+        ["unsigned", "long"] | ["unsigned", "long", "int"] => Some(("u64", "c_ulong")),
+        ["long", "long"]
+        | ["long", "long", "int"]
+        | ["signed", "long", "long"]
+        | ["signed", "long", "long", "int"] => Some(("i64", "c_longlong")),
+        ["unsigned", "long", "long"]
+        | ["unsigned", "long", "long", "int"] => Some(("u64", "c_ulonglong")),
+        ["float"] => Some(("f32", "c_float")),
+        ["double"] => Some(("f64", "c_double")),
+        ["long", "double"] => Some(("f64", "c_longdouble")),
+        _ => None,
+    }
+}
+
+/// Accept C `_Bool` as Rust `bool` and C `char` as Rust `char` when they
+/// appear as Rust types. Other C type keywords are rejected by
+/// [`recover_c_type_keyword`].
+fn rust_primitive_keyword<'src, I, R: TypeResolver>(
+    resolver: R,
+) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>
+        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
+{
+    let keyword = choice((
+        just(Token::Bool).map_with(|_, e| ("bool", e.span())),
+        just(Token::Char).map_with(|_, e| ("char", e.span())),
+    ));
+    keyword.try_map(move |(name, span), _| {
+        let path = RustPath {
+            segments: vec![(RustPathSegment::Ident(name.to_string()), span)],
+        };
+        match resolver.classify_path(&path) {
+            Ok((TypeQueryResult::Type | TypeQueryResult::Unsure, resolved)) => {
+                Ok((RustTy::Path((resolved, span)), span))
+            }
+            Ok((TypeQueryResult::Expr, _)) => {
+                Err(Rich::custom(span, format!("{name} is not a type")))
+            }
+            Err((msg, err_span)) => Err(Rich::custom(err_span, msg)),
+        }
+    })
+}
+
+/// Recover from C type specifier keywords appearing in a Rust type position.
+/// Consumes the keyword run, emits an error suggesting the Rust equivalent,
+/// and returns a unit-type placeholder so parsing can continue.
+fn recover_c_type_keyword<'src, I, R: TypeResolver>(
+) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = Span>
+        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
+{
+    let keyword = any::<I, extra::Err<Rich<'src, Token, Span>>>()
+        .filter(|token: &Token| c_type_keyword_token_str(token).is_some())
+        .map(|token: Token| c_type_keyword_token_str(&token).unwrap());
+    keyword
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<&'static str>>()
+        .map_with(|words, e| {
+            let slice: &[Spanned<Token>] = e.slice();
+            let span = slice_span(slice, e.span());
+            let c_type = words.join(" ");
+            let msg = match c_type_keywords_suggestion(&words) {
+                Some((primitive, ffi)) => format!(
+                    "{c_type} is invalid as Rust type. Use either `{primitive}` or `std::ffi::{ffi}`"
+                ),
+                None => format!("{c_type} is invalid as Rust type"),
+            };
+            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, msg)]);
+            (RustTy::Tuple(vec![]), span)
+        })
+}
+
 fn keyword_token_str(token: &Token) -> Option<&'static str> {
     Some(match token {
         Token::Auto => "auto",
@@ -1912,6 +2032,8 @@ where
             tuple,
             slice_or_array,
             lifetime,
+            rust_primitive_keyword(StatelessResolver::new()),
+            recover_c_type_keyword(),
         ))
     })
 }
@@ -2622,7 +2744,16 @@ where
             })
             .map_with(|r, e| (r, e.span()));
 
-        choice((path, ptr, reference, never, tuple, slice_or_array))
+        choice((
+            path,
+            ptr,
+            reference,
+            never,
+            tuple,
+            slice_or_array,
+            rust_primitive_keyword(resolver.clone()),
+            recover_c_type_keyword(),
+        ))
     })
 }
 
