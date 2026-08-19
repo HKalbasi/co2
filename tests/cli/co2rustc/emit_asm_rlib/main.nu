@@ -27,10 +27,13 @@ if $compile_bar.exit_code != 0 {
 let foo_raw = (open $foo_asm)
 let bar_raw = (open $bar_asm)
 let normalize = {|s|
-    $s | ^c++filt | str replace --all --regex 'foo\[[^\]]*\]' 'crate_name' | str replace --all --regex 'bar\[[^\]]*\]' 'crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3foo' '_RNvCsXXXX_3crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3bar' '_RNvCsXXXX_3crate_name' | str replace --all --regex 'rustc version [^"]+' 'rustc version VERSION' | str replace --all --regex '^\t+' ''
+    $s | ^c++filt | str replace --all --regex 'foo\[[^\]]*\]' 'crate_name' | str replace --all --regex 'bar\[[^\]]*\]' 'crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3foo' '_RNvCsXXXX_3crate_name' | str replace --all --regex '_RNvCs[0-9a-zA-Z]+_3bar' '_RNvCsXXXX_3crate_name' | str replace --all --regex 'rustc version [^"]+' 'rustc version VERSION' | str replace --all --regex '^\t+' '' | lines | where {|line|
+        let t = ($line | str trim)
+        ($t | str starts-with ".file") == false and ($t | str starts-with ".att_syntax") == false
+    } | str join "\n"
 }
-let foo_text = (do $normalize $foo_raw | lines | skip 1 | str join "\n")
-let bar_text = (do $normalize $bar_raw | lines | skip 1 | str join "\n")
+let foo_text = (do $normalize $foo_raw)
+let bar_text = (do $normalize $bar_raw)
 
 let snapshot_path = ($expected_dir | path join "func.snapshot")
 assert-snapshot "foo.s" $foo_text $snapshot_path

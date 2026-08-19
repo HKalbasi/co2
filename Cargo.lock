@@ -1035,9 +1035,9 @@ dependencies = [
 
 [[package]]
 name = "minifier"
-version = "0.3.6"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14f1541610994bba178cb36757e102d06a52a2d9612aa6d34c64b3b377c5d943"
+checksum = "245c950e30794ed20f72ff60c85ae1cddb0ba54fda4623017a678943f98f636c"
 
 [[package]]
 name = "mio"
@@ -1054,7 +1054,7 @@ dependencies = [
 [[package]]
 name = "miri"
 version = "0.1.0"
-source = "git+https://github.com/rust-lang/miri/?rev=3280d9986d55e8349ee67d5f572742028572c561#3280d9986d55e8349ee67d5f572742028572c561"
+source = "git+https://github.com/rust-lang/miri/?rev=1397f3a5cfa3ec23c56b462a32010ff22bf18d15#1397f3a5cfa3ec23c56b462a32010ff22bf18d15"
 dependencies = [
  "aes",
  "bitflags",
@@ -1424,7 +1424,7 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 [[package]]
 name = "rustc_public"
 version = "0.1.0-preview"
-source = "git+https://github.com/hkalbasi/co2-rustc-public-fork.git#8ee128817859947f3b97a06d4b0648abc0a2fbc5"
+source = "git+https://github.com/hkalbasi/co2-rustc-public-fork.git#6db6c90914a30a23ce1d947a40de2baf197a8cc3"
 dependencies = [
  "serde",
  "tracing",
@@ -1441,7 +1441,7 @@ dependencies = [
 [[package]]
 name = "rustdoc"
 version = "0.0.0"
-source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#8c103917334914958043d063c55e2d49606e35e7"
+source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#f06c22d583797661d1550f78086f419a17fd4fd1"
 dependencies = [
  "arrayvec",
  "askama",
@@ -1469,7 +1469,7 @@ dependencies = [
 [[package]]
 name = "rustdoc-json-types"
 version = "0.1.0"
-source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#8c103917334914958043d063c55e2d49606e35e7"
+source = "git+https://github.com/HKalbasi/co2-rustdoc-fork#f06c22d583797661d1550f78086f419a17fd4fd1"
 dependencies = [
  "rustc-hash 2.1.3",
  "serde",
@@ -1853,9 +1853,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-tree"
-version = "0.3.1"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b56c62d2c80033cb36fae448730a2f2ef99410fe3ecbffc916681a32f6807dbe"
+checksum = "ac87aa03b6a4d5a7e4810d1a80c19601dbe0f8a837e9177f23af721c7ba7beec"
 dependencies = [
  "nu-ansi-term",
  "tracing-core",

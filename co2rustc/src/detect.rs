@@ -118,6 +118,7 @@ pub fn detect_co2(args: &[String]) -> DetectResult {
         rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(args, &mut callbacks));
 
     if !callbacks.enabled {
+        co2_driver_lib::fix_prealign_in_asm_output(args);
         return DetectResult::Continue(exit_code);
     }
 

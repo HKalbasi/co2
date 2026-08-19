@@ -718,6 +718,31 @@ pub(crate) fn ty_matches_expected(expected: Ty, actual: Ty) -> bool {
                 && extra_adt_args_are_concrete(&exp_args.0[shared_len..])
                 && extra_adt_args_are_concrete(&act_args.0[shared_len..])
         }
+        // Function item types may be internally identical yet interned under
+        // different ids (e.g. one built from `tcx.type_of` and one re-created
+        // during generic-arg inference). Compare defs and args structurally.
+        (
+            TyKind::RigidTy(RigidTy::FnDef(exp_def, exp_args)),
+            TyKind::RigidTy(RigidTy::FnDef(act_def, act_args)),
+        ) => {
+            exp_def == act_def
+                && exp_args.0.len() == act_args.0.len()
+                && exp_args
+                    .0
+                    .iter()
+                    .zip(act_args.0.iter())
+                    .all(|(e, a)| match (e, a) {
+                        (
+                            rustc_public_generative::rustc_public::ty::GenericArgKind::Type(et),
+                            rustc_public_generative::rustc_public::ty::GenericArgKind::Type(at),
+                        ) => ty_matches_expected(*et, *at),
+                        (
+                            rustc_public_generative::rustc_public::ty::GenericArgKind::Lifetime(_),
+                            rustc_public_generative::rustc_public::ty::GenericArgKind::Lifetime(_),
+                        ) => true,
+                        _ => e == a,
+                    })
+        }
         // Function pointer types may differ only in lifetime parameters (e.g. VaList<'erased> vs
         // VaList<'static>) because SMIR erases lifetimes inside fn ptrs. Compare structurally
         // while recursing into parameter/return types with ty_matches_expected.

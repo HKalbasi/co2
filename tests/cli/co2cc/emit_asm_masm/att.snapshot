@@ -1,3 +1,4 @@
+	.att_syntax
 	.section	.text.f,"ax",@progbits
 	.globl	f
 	.p2align	4

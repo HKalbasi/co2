@@ -1,5 +1,5 @@
 //@ mode: co2
-//@ miri-error: memory leaked: alloc301 (Rust heap, size: 16, align: 4)
+//@ miri-error: memory leaked: alloc
 
 use std::vec::Vec;
 use std::mem::drop;

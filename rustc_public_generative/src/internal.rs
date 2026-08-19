@@ -34,7 +34,7 @@ use rustc_hir::def_id::{
     CRATE_DEF_ID, DefId as RustcDefId, LocalDefId, LocalDefIdMap, LocalModId, ModId,
 };
 use rustc_hir::definitions::{DefPathData, PerParentDisambiguatorState};
-use rustc_hir::lang_items::LangItem;
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_hir::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use rustc_hir_analysis::autoderef::{Autoderef, AutoderefKind};
 use rustc_index::{Idx, IndexVec};
@@ -2708,7 +2708,7 @@ pub(crate) fn check_fn_predicates(
 ) -> Result<(), String> {
     let rustc_fn_def_id = my_def_id_to_rustc_def_id(tcx, fn_def_id);
     let rustc_owner = my_def_id_to_rustc_def_id(tcx, owner);
-    let predicates = tcx.predicates_of(rustc_fn_def_id);
+    let predicates = tcx.clauses_of(rustc_fn_def_id);
     let rustc_args = tcx.mk_args_from_iter(fn_generic_args.0.iter().map(|arg| match arg {
         GenericArgKind::Lifetime(region) => ty::GenericArg::from(mir_region_to_rustc(tcx, region)),
         GenericArgKind::Type(ty) => ty::GenericArg::from(mir_ty_to_rustc(tcx, ty)),
@@ -2718,7 +2718,7 @@ pub(crate) fn check_fn_predicates(
     let infcx = tcx.infer_ctxt().build(ty::TypingMode::non_body_analysis());
     let param_env = tcx.param_env(rustc_owner);
 
-    for (clause, _span) in predicates.predicates {
+    for (clause, _span) in predicates.clauses {
         let instantiated_clause: ty::Clause<'_> = ty::EarlyBinder::bind(tcx, *clause)
             .instantiate(tcx, rustc_args)
             .skip_normalization();
@@ -2745,7 +2745,7 @@ pub(crate) fn check_fn_predicates(
                 recursion_depth: 0,
                 predicate: instantiated_clause.as_predicate(),
             });
-            if !ocx.try_evaluate_obligations().is_empty() {
+            if ocx.try_evaluate_obligations().has_errors() {
                 let trait_ref = pred.trait_ref;
                 let trait_name = tcx.def_path_str(trait_ref.def_id);
                 let args: Vec<String> = trait_ref
@@ -3239,7 +3239,7 @@ fn probe_method_sig_and_obligations<'tcx>(
     }
 
     if let Some((impl_def_id, impl_args)) = impl_info {
-        let impl_bounds = tcx.predicates_of(impl_def_id).instantiate(tcx, impl_args);
+        let impl_bounds = tcx.clauses_of(impl_def_id).instantiate(tcx, impl_args);
         for (clause, _) in impl_bounds {
             let obligation = rustc_trait_selection::traits::Obligation::new(
                 tcx,
@@ -3273,7 +3273,7 @@ fn probe_method_sig_and_obligations<'tcx>(
         }
     }
     let method_bounds = tcx
-        .predicates_of(method_def_id)
+        .clauses_of(method_def_id)
         .instantiate(tcx, method_args);
     let sized_trait = tcx.lang_items().sized_trait();
     for (clause, _) in method_bounds {
@@ -3428,8 +3428,8 @@ pub(crate) fn infer_fn_args(
     // Register the function's predicates as obligations and process them
     // to resolve associated type projections generically through the trait solver.
     let ocx = ObligationCtxt::new(&infcx);
-    let predicates = tcx.predicates_of(rustc_fn_def_id);
-    for (clause, _span) in predicates.predicates {
+    let predicates = tcx.clauses_of(rustc_fn_def_id);
+    for (clause, _span) in predicates.clauses {
         let instantiated_clause = ty::EarlyBinder::bind(tcx, *clause).instantiate(tcx, rustc_args);
         // Skip predicates that still involve unresolved Param types
         if instantiated_clause.has_param() {
@@ -3577,10 +3577,10 @@ pub(crate) fn fn_once_output_params(tcx: TyCtxt<'_>, fn_def_id: DefId) -> Vec<(u
     let rustc_fn_def_id = my_def_id_to_rustc_def_id(tcx, fn_def_id);
     let fn_once_output = tcx.require_lang_item(LangItem::FnOnceOutput, DUMMY_SP);
 
-    let predicates = tcx.predicates_of(rustc_fn_def_id);
+    let predicates = tcx.clauses_of(rustc_fn_def_id);
     let mut result = Vec::new();
 
-    for (clause, _span) in predicates.predicates {
+    for (clause, _span) in predicates.clauses {
         let clause = clause.kind().skip_binder();
         if let ty::ClauseKind::Projection(proj) = clause
             && proj.def_id() == fn_once_output
@@ -3792,7 +3792,7 @@ fn override_providers<S: CrateGeneratorState>(providers: &mut QueryProviders, ga
     // providers.generics_of = generated_generics_of;
     // providers.type_of = generated_type_of;
     // providers.fn_sig = generated_fn_sig;
-    // providers.predicates_of = generated_predicates_of;
+    // providers.clauses_of = generated_predicates_of;
     // providers.explicit_predicates_of = generated_explicit_predicates_of;
     // providers.codegen_fn_attrs = generated_codegen_fn_attrs;
     providers.mir_built = generated_mir_built::<S>;
@@ -5326,6 +5326,9 @@ fn mir_rvalue_to_rustc<'tcx>(
                 rustc_public::mir::CastKind::FnPtrToPtr => rustc_middle::mir::CastKind::FnPtrToPtr,
                 rustc_public::mir::CastKind::Transmute => rustc_middle::mir::CastKind::Transmute,
                 rustc_public::mir::CastKind::Subtype => rustc_middle::mir::CastKind::Subtype,
+                rustc_public::mir::CastKind::BoxDerefTransmute => {
+                    rustc_middle::mir::CastKind::BoxDerefTransmute
+                }
             };
             rustc_middle::mir::Rvalue::Cast(
                 kind,

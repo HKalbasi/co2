@@ -5,7 +5,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @main = unnamed_addr alias i32 (), ptr @f
 
 ; Function Attrs: mustprogress nofree norecurse nosync nounwind nonlazybind willreturn memory(none) uwtable
-define dso_local noundef i32 @f() unnamed_addr #0 {
+define dso_local noundef i32 @f() unnamed_addr #0 !guid !5 {
 start:
   ret i32 42
 }
@@ -20,3 +20,4 @@ attributes #0 = { mustprogress nofree norecurse nosync nounwind nonlazybind will
 !2 = !{i32 2, !"RtLibUseGOT", i32 1}
 !3 = !{i32 7, !"uwtable", i32 2}
 !4 = !{!"rustc version VERSION"}
+!5 = !{i64 -CGU_HASH785}

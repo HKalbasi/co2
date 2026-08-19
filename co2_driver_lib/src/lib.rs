@@ -881,6 +881,8 @@ pub fn compile_co2_source(
 
     install_pending_compile(mode, source_path, preprocessed);
 
+    let asm_output_args = rustc_args.clone();
+
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         if time_report::timing_enabled() {
             let after_hook: Box<
@@ -903,6 +905,7 @@ pub fn compile_co2_source(
             if co2_ast::diagnostics_were_emitted() {
                 co2_ast::panic_with_diagnostic_abort();
             }
+            fix_prealign_in_asm_output(&asm_output_args);
         }
         Err(payload) => {
             if co2_ast::is_diagnostic_abort(payload.as_ref()) {
@@ -944,6 +947,60 @@ impl Co2RustdocCallbacks {
     pub fn after_expansion(&mut self, tcx: rustc_middle::ty::TyCtxt<'_>) {
         self.inner.after_expansion(tcx);
     }
+}
+
+/// This function is a hack to make result compatible with gnu as assembler
+/// TODO: remove
+pub fn fix_prealign_in_asm_output(rustc_args: &[String]) {
+    let emit_asm = rustc_args.iter().any(|a| a.contains("emit=asm"));
+    if !emit_asm {
+        return;
+    }
+    let mut out = None;
+    let mut i = 0;
+    while i < rustc_args.len() {
+        if rustc_args[i] == "-o" {
+            if let Some(v) = rustc_args.get(i + 1) {
+                out = Some(v.clone());
+            }
+            break;
+        }
+        if let Some(v) = rustc_args[i].strip_prefix("-o") {
+            if !v.is_empty() {
+                out = Some(v.to_owned());
+            }
+            break;
+        }
+        i += 1;
+    }
+    let Some(path_str) = out else {
+        return;
+    };
+    let path = std::path::Path::new(&path_str);
+    if !path.exists() {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if !text.contains(".prefalign") {
+        return;
+    }
+    let fixed = text
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix(".prefalign") {
+                let num = rest.trim_start().split(',').next().unwrap_or("").trim();
+                if let Ok(n) = num.parse::<u32>() {
+                    return format!("\t.p2align\t{}", n);
+                }
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _ = std::fs::write(path, fixed);
 }
 
 fn install_pending_compile(
