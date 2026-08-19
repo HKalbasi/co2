@@ -62,6 +62,13 @@ fn pending_compile_cell() -> &'static Mutex<Option<PendingCompile>> {
 }
 
 static DUMP_MIR_ENABLED: AtomicBool = AtomicBool::new(false);
+static BORROWCK_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enables the borrow checker when the `CO2_BORROWCK` environment variable
+/// is set.
+pub fn set_borrowck_enabled() {
+    BORROWCK_ENABLED.store(std::env::var("CO2_BORROWCK").is_ok(), Ordering::Relaxed);
+}
 
 struct Co2GeneratorState {
     file_id: rustc_gen::FileId,
@@ -313,7 +320,10 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                     );
                     dump_mir_body(&mir_result.body, &name);
                 }
-                if !mir_result.is_error_recovery && !had_errors {
+                if BORROWCK_ENABLED.load(Ordering::Relaxed)
+                    && !mir_result.is_error_recovery
+                    && !had_errors
+                {
                     self.emit_borrowck_warnings(&ctx, &mir_result.body);
                 }
                 mir_result.body
@@ -845,6 +855,7 @@ pub fn compile_co2_file_for_miri(
     let dump_mir =
         rustc_args.iter().any(|a| a.contains("dump-mir")) || std::env::var("CO2_DUMP_MIR").is_ok();
     DUMP_MIR_ENABLED.store(dump_mir, Ordering::Relaxed);
+    set_borrowck_enabled();
     let cpp_args = extract_feature_defines(&rustc_args);
     let preprocessed = Arc::new(co2_preprocessor::preprocess(co2_file, &cpp_args));
     install_pending_compile(CompileMode::RUST, co2_file.to_path_buf(), preprocessed);
@@ -866,6 +877,7 @@ pub fn compile_co2_source(
     let dump_mir =
         rustc_args.iter().any(|a| a.contains("dump-mir")) || std::env::var("CO2_DUMP_MIR").is_ok();
     DUMP_MIR_ENABLED.store(dump_mir, Ordering::Relaxed);
+    set_borrowck_enabled();
 
     install_pending_compile(mode, source_path, preprocessed);
 

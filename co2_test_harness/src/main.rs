@@ -23,6 +23,7 @@ fn main() {
 }
 
 fn run_main() -> Result<()> {
+    unsafe { std::env::set_var("CO2_BORROWCK", "1") };
     let cli = Cli::parse();
     let root = workspace_root()?;
 
