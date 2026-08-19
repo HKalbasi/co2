@@ -782,7 +782,7 @@ fn parse_miri_rendered_diagnostics(stderr: &str) -> Vec<MiriRenderedDiagnostic> 
 
         if let (Some(line_no), Some((caret_start, caret_end))) = (location, caret) {
             diagnostics.push(MiriRenderedDiagnostic {
-                message: message.to_owned(),
+                message: message.trim().to_owned(),
                 line: line_no,
                 column_start: caret_start,
                 column_end: caret_end,

@@ -2060,10 +2060,7 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
                 "suspicious_runtime_symbol_definitions".to_owned(),
                 Level::Allow,
             ),
-            (
-                "invalid_runtime_symbol_definitions".to_owned(),
-                Level::Allow,
-            ),
+            ("invalid_runtime_symbol_definitions".to_owned(), Level::Warn),
         ]);
 
         if let Some(gate) = GENERATE_STATE.get() {
