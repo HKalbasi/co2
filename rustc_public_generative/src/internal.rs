@@ -22,6 +22,7 @@ use rustc_abi::ExternAbi;
 use rustc_ast::token::{CommentKind, DocFragmentKind, Token};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
 use rustc_ast::{Attribute, FloatTy, IntTy, Mutability as AstMutability, UintTy};
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::{FxHashMap, FxIndexMap};
 use rustc_data_structures::packed::Pu128;
@@ -34,7 +35,6 @@ use rustc_hir::def_id::{
     CRATE_DEF_ID, DefId as RustcDefId, LocalDefId, LocalDefIdMap, LocalModId, ModId,
 };
 use rustc_hir::definitions::{DefPathData, PerParentDisambiguatorState};
-use rustc_attr_ir::lang_items::LangItem;
 use rustc_hir::{HirId, ItemLocalId, ItemLocalMap, OwnerId};
 use rustc_hir_analysis::autoderef::{Autoderef, AutoderefKind};
 use rustc_index::{Idx, IndexVec};
@@ -3272,9 +3272,7 @@ fn probe_method_sig_and_obligations<'tcx>(
             return None;
         }
     }
-    let method_bounds = tcx
-        .clauses_of(method_def_id)
-        .instantiate(tcx, method_args);
+    let method_bounds = tcx.clauses_of(method_def_id).instantiate(tcx, method_args);
     let sized_trait = tcx.lang_items().sized_trait();
     for (clause, _) in method_bounds {
         // Skip implicit `Sized` bounds — method-level type params are implicitly

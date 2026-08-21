@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -151,7 +152,77 @@ fn preprocessor_diagnostic_span(
     if end == start && start < file.source.len() {
         end += 1;
     }
+
+    if let Some((logical_file, logical_line)) = &diagnostic.logical
+        && let Some(span) = translate_logical_span(
+            preprocessed,
+            *file_id,
+            file,
+            start..end,
+            logical_file,
+            *logical_line,
+        )
+    {
+        return span;
+    }
+
     Span::from_parts(*file_id, start..end)
+}
+
+/// Re-anchor a diagnostic span through a `#line` remap: keep the columns of
+/// the physical range but move to `logical_line` of the logical file,
+/// computing fresh byte offsets against that file's content. Returns `None`
+/// when the logical file is unknown, in which case the directive is ignored
+/// for span purposes and the physical span is used.
+fn translate_logical_span(
+    preprocessed: &PreprocessedSource,
+    physical_file_id: FileId,
+    physical: &SourceFile,
+    physical_range: Range<usize>,
+    logical_file: &str,
+    logical_line: u64,
+) -> Option<Span> {
+    let logical_path = absolute_path(Path::new(logical_file));
+    let (file_id, source): (FileId, Arc<str>) = if logical_path == physical.path {
+        (physical_file_id, physical.source.clone())
+    } else {
+        let (id, file) = preprocessed
+            .files()
+            .iter()
+            .find(|(_, file)| file.path == logical_path)?;
+        (*id, file.source.clone())
+    };
+
+    // Columns of the physical range within its own line.
+    let phys = &physical.source;
+    let phys_line_start = phys[..physical_range.start]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    let col_start = physical_range.start - phys_line_start;
+    let col_end = physical_range
+        .end
+        .saturating_sub(phys_line_start)
+        .max(col_start);
+
+    // Byte offset of the logical line ("line index as byte offset"), clamped
+    // to the last line of the logical file.
+    let log = &source;
+    let total_lines = 1 + log.bytes().filter(|b| *b == b'\n').count();
+    let target = logical_line.clamp(1, total_lines as u64) as usize;
+    let mut log_line_start = 0usize;
+    for _ in 1..target {
+        match log[log_line_start..].find('\n') {
+            Some(i) => log_line_start += i + 1,
+            None => break,
+        }
+    }
+
+    let start = (log_line_start + col_start).min(log.len());
+    let mut end = (log_line_start + col_end).min(log.len()).max(start);
+    if end == start && start < log.len() {
+        end += 1;
+    }
+    Some(Span::from_parts(file_id, start..end))
 }
 
 fn discover_system_include_paths() -> Vec<PathBuf> {

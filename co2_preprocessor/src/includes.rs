@@ -459,6 +459,7 @@ impl Preprocessor {
                 file: self.current_file(),
                 range,
                 message: format!("{include_path}: No such file or directory"),
+                logical: None,
             });
             false
         }
@@ -572,6 +573,7 @@ impl Preprocessor {
                     "'{include_path}' not found via #include_next \
                      (no system header after the compiler's wrapper)"
                 ),
+                logical: None,
             });
             false
         }

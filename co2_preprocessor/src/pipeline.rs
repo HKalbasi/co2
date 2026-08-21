@@ -33,17 +33,40 @@ use crate::SourceFile;
 /// has a single QLIT_QLIST() macro invocation spanning ~32000 lines).
 const MAX_PENDING_NEWLINES: usize = 100_000;
 
+/// Token-span remap established by a `#line` directive.
+///
+/// Content of `file` from physical line index `phys_line` onwards is reported
+/// as logical line `log_line` onwards of the target file; columns are kept and
+/// byte offsets are recomputed against the target file's content.
+#[derive(Debug, Clone)]
+struct LineTokenRemap {
+    /// Physical file the remap applies to.
+    file: PathBuf,
+    /// Logical target file tokens are reported against.
+    target: (PathBuf, FileId),
+    /// 0-based line index in `file` whose logical number is `log_line`.
+    phys_line: usize,
+    log_line: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PreprocessorDiagnostic {
     pub file: String,
     pub range: Range<usize>,
     pub message: String,
+    /// Logical (file, line) established by a preceding `#line` directive.
+    /// When present, the diagnostic is reported at this location instead of
+    /// the physical one; the byte span is recomputed against the logical
+    /// file's content. `None` when no `#line` remap is active.
+    pub logical: Option<(String, u64)>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct PendingExpansion {
     text: String,
     slices: Vec<LogicalSlice>,
+    /// Effective line number for each slice in `slices` (parallel).
+    lines: Vec<u64>,
 }
 
 impl PendingExpansion {
@@ -54,17 +77,19 @@ impl PendingExpansion {
     fn clear(&mut self) {
         self.text.clear();
         self.slices.clear();
+        self.lines.clear();
     }
 
-    fn push(&mut self, slice: &LogicalSlice) {
+    fn push(&mut self, slice: &LogicalSlice, line: u64) {
         if !self.text.is_empty() {
             self.text.push('\n');
         }
         self.text.push_str(&slice.text);
         self.slices.push(slice.clone());
+        self.lines.push(line);
     }
 
-    fn push_gap(&mut self, slice: &LogicalSlice) {
+    fn push_gap(&mut self, slice: &LogicalSlice, line: u64) {
         if !self.text.is_empty() {
             self.text.push('\n');
         }
@@ -73,6 +98,7 @@ impl PendingExpansion {
             source_boundaries: vec![slice.source_offset(0)],
             terminator: slice.terminator,
         });
+        self.lines.push(line);
     }
 
     fn text(&self) -> &str {
@@ -151,6 +177,22 @@ pub struct Preprocessor {
     /// Reusable set for directive-level macro expansion (handle_if, handle_elif,
     /// #error). Avoids allocating a new set per directive.
     directive_expanding: HashSet<String>,
+    /// Current effective line number for __LINE__ expansion (after #line directives).
+    /// Incremented per logical slice, reset on #line.
+    effective_line: u64,
+    /// Span state after a `#line` directive:
+    /// - `None`: no `#line` seen yet in this file; diagnostics report at the
+    ///   physical location.
+    /// - `Some(None)`: a `#line` named a file that could not be loaded; the
+    ///   directive is ignored for span purposes (it still affects `__LINE__`).
+    /// - `Some(Some((path, id)))`: diagnostics report against the registered
+    ///   logical file.
+    line_span_file: Option<Option<(PathBuf, FileId)>>,
+    /// Token-span remap established by `#line` (see [`LineTokenRemap`]).
+    line_token_remap: Option<LineTokenRemap>,
+    /// Cached line-start offset tables per registered file, used to translate
+    /// spans through `#line` remaps.
+    line_tables: HashMap<FileId, Arc<Vec<usize>>>,
 
     // ── Single-pass token output accumulators ──────────────────────────
     /// Concatenated raw preprocessed text (no normalization), for raw_src.
@@ -189,6 +231,10 @@ impl Preprocessor {
             include_resolve_cache: HashMap::new(),
             include_guard_macros: HashMap::new(),
             directive_expanding: HashSet::new(),
+            effective_line: 1,
+            line_span_file: None,
+            line_token_remap: None,
+            line_tables: HashMap::new(),
             raw_text: String::new(),
             output_tokens: Vec::new(),
             source_files: HashMap::new(),
@@ -212,6 +258,7 @@ impl Preprocessor {
                 file: self.filename.clone(),
                 range,
                 message: "Unterminated conditional directive".to_string(),
+                logical: None,
             });
         }
 
@@ -235,10 +282,21 @@ impl Preprocessor {
 
     fn preprocess_source(&mut self, source: &str, is_include: bool) {
         let saved_conditionals = is_include.then(|| std::mem::take(&mut self.conditionals));
+        let saved_line = is_include.then(|| self.effective_line);
+        let saved_span_file = is_include.then(|| self.line_span_file.take());
+        let saved_token_remap = is_include.then(|| self.line_token_remap.take());
+        if is_include {
+            self.effective_line = 1;
+        }
         let mut pending = PendingExpansion::default();
         let mut expanding = HashSet::new();
+        let mut next_line = self.effective_line;
 
         for slice in Self::logical_slices(source) {
+            let slice_line = next_line;
+            // Default increment for next slice; may be overridden by #line
+            let mut next_line_for_next = slice_line + 1;
+
             let trimmed = slice.text.trim();
             let is_directive = trimmed.starts_with('#')
                 && !trimmed.starts_with("#[")
@@ -263,9 +321,10 @@ impl Preprocessor {
                 && (is_conditional_directive || (is_include && is_state_only_directive))
             {
                 if is_conditional_directive || self.conditionals.is_active() {
-                    self.process_directive(&slice);
+                    self.process_directive_with_line(&slice, slice_line, &mut next_line_for_next);
                 }
                 self.emit_blank_slice(&slice);
+                next_line = next_line_for_next;
                 continue;
             }
 
@@ -282,7 +341,8 @@ impl Preprocessor {
                     self.flush_pending(&mut pending, &mut expanding);
                 }
 
-                let had_content = self.process_directive(&slice);
+                let had_content =
+                    self.process_directive_with_line(&slice, slice_line, &mut next_line_for_next);
                 if !had_content && is_include {
                     self.emit_blank_slice(&slice);
                 }
@@ -296,12 +356,22 @@ impl Preprocessor {
                 if !is_include {
                     self.emit_blank_slice(&slice);
                 }
+                next_line = next_line_for_next;
             } else if self.conditionals.is_active() {
-                self.accumulate_and_expand(&slice, &mut pending, &mut expanding);
+                self.accumulate_and_expand_with_line(
+                    &slice,
+                    slice_line,
+                    &mut pending,
+                    &mut expanding,
+                    &mut next_line_for_next,
+                );
+                next_line = next_line_for_next;
             } else if pending.is_empty() {
                 self.emit_blank_slice(&slice);
+                next_line = next_line_for_next;
             } else {
-                pending.push_gap(&slice);
+                pending.push_gap(&slice, slice_line);
+                next_line = next_line_for_next;
             }
         }
 
@@ -310,25 +380,40 @@ impl Preprocessor {
         if let Some(saved) = saved_conditionals {
             self.conditionals = saved;
         }
+        if let Some(saved) = saved_line {
+            self.effective_line = saved;
+        } else {
+            self.effective_line = next_line;
+        }
+        if let Some(saved) = saved_span_file {
+            self.line_span_file = saved;
+        }
+        if let Some(saved) = saved_token_remap {
+            self.line_token_remap = saved;
+        }
     }
 
-    fn accumulate_and_expand(
+    fn accumulate_and_expand_with_line(
         &mut self,
         slice: &LogicalSlice,
+        slice_line: u64,
         pending: &mut PendingExpansion,
         expanding: &mut HashSet<String>,
+        _next_line: &mut u64,
     ) {
         if pending.is_empty() {
             if Self::has_unbalanced_parens(&slice.text)
                 || self.ends_with_funclike_macro(&slice.text)
             {
-                pending.push(slice);
+                pending.push(slice, slice_line);
                 return;
             }
 
-            let expanded = self.macros.expand_line_reuse(&slice.text, expanding);
+            let expanded = self
+                .macros
+                .expand_line_with_line(&slice.text, slice_line, expanding);
             if self.ends_with_funclike_macro(&expanded) {
-                pending.push(slice);
+                pending.push(slice, slice_line);
             } else {
                 self.emit_text_from_slice(slice, expanded);
                 self.emit_newline();
@@ -337,7 +422,7 @@ impl Preprocessor {
         }
 
         let needs_more = Self::has_unbalanced_parens(pending.text());
-        pending.push(slice);
+        pending.push(slice, slice_line);
 
         if pending.line_count() > MAX_PENDING_NEWLINES {
             self.flush_pending(pending, expanding);
@@ -345,7 +430,7 @@ impl Preprocessor {
         }
 
         if needs_more {
-            let expanded = self.macros.expand_line_reuse(pending.text(), expanding);
+            let expanded = self.expand_pending_with_lines(pending, expanding);
             if !Self::has_unbalanced_parens(pending.text())
                 && !self.ends_with_funclike_macro(&expanded)
             {
@@ -359,18 +444,116 @@ impl Preprocessor {
             return;
         }
 
-        let expanded = self.macros.expand_line_reuse(pending.text(), expanding);
+        let expanded = self.expand_pending_with_lines(pending, expanding);
         if !self.ends_with_funclike_macro(&expanded) {
             self.emit_pending_output(pending, expanded);
             pending.clear();
         }
     }
 
+    fn expand_pending_with_lines(
+        &mut self,
+        pending: &PendingExpansion,
+        expanding: &mut HashSet<String>,
+    ) -> String {
+        // For pending groups we need per-slice line numbers for __LINE__.
+        // Do a pre-replacement of top-level __LINE__ occurrences using the
+        // correct line for each slice's byte range.
+        let text = pending.text();
+        if !text.contains("__LINE__") {
+            // Fast path: no __LINE__ – use first slice's line for any macro-body __LINE__
+            let line = pending.lines.first().copied().unwrap_or(1);
+            return self.macros.expand_line_with_line(text, line, expanding);
+        }
+        // Build cumulative offsets for each slice in joined text
+        let mut offsets = Vec::with_capacity(pending.slices.len());
+        let mut cum = 0usize;
+        for (idx, s) in pending.slices.iter().enumerate() {
+            offsets.push(cum);
+            cum += s.text.len();
+            if idx + 1 < pending.slices.len() {
+                cum += 1; // '\n'
+            }
+        }
+        let replaced = Self::replace_line_in_text(text, &offsets, &pending.lines);
+        let line = pending.lines.first().copied().unwrap_or(1);
+        self.macros
+            .expand_line_with_line(&replaced, line, expanding)
+    }
+
+    fn replace_line_in_text(text: &str, offsets: &[usize], lines: &[u64]) -> String {
+        let bytes = text.as_bytes();
+        let len = bytes.len();
+        let mut out = String::with_capacity(text.len() + 16);
+        let mut i = 0usize;
+        while i < len {
+            // Skip string/char literals verbatim
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                let quote = bytes[i];
+                out.push(quote as char);
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        out.push(bytes[i] as char);
+                        out.push(bytes[i + 1] as char);
+                        i += 2;
+                    } else if bytes[i] == quote {
+                        out.push(quote as char);
+                        i += 1;
+                        break;
+                    } else {
+                        out.push(bytes[i] as char);
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            if i + 8 <= len && &bytes[i..i + 8] == b"__LINE__" {
+                let before_ok = i == 0 || !Self::is_ident_cont_byte(bytes[i - 1]);
+                let after_ok = i + 8 >= len || !Self::is_ident_cont_byte(bytes[i + 8]);
+                if before_ok && after_ok {
+                    // Find which slice this offset belongs to
+                    let line = Self::line_for_offset(i, offsets, lines);
+                    out.push_str(&line.to_string());
+                    i += 8;
+                    continue;
+                }
+            }
+            // Also handle blue paint etc not needed here
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        out
+    }
+
+    fn line_for_offset(offset: usize, offsets: &[usize], lines: &[u64]) -> u64 {
+        if offsets.is_empty() {
+            return 1;
+        }
+        // Binary search for greatest offset <= target
+        let mut idx = 0usize;
+        for (i, &off) in offsets.iter().enumerate() {
+            if off <= offset {
+                idx = i;
+            } else {
+                break;
+            }
+        }
+        lines
+            .get(idx)
+            .copied()
+            .unwrap_or(*lines.first().unwrap_or(&1))
+    }
+
+    fn is_ident_cont_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
     fn flush_pending(&mut self, pending: &mut PendingExpansion, expanding: &mut HashSet<String>) {
         if pending.is_empty() {
             return;
         }
-        let expanded = self.macros.expand_line_reuse(pending.text(), expanding);
+        let expanded = self.expand_pending_with_lines(pending, expanding);
         self.emit_pending_output(pending, expanded);
         pending.clear();
     }
@@ -584,7 +767,12 @@ impl Preprocessor {
         self.include_stack.pop();
     }
 
-    fn process_directive(&mut self, slice: &LogicalSlice) -> bool {
+    fn process_directive_with_line(
+        &mut self,
+        slice: &LogicalSlice,
+        slice_line: u64,
+        next_line: &mut u64,
+    ) -> bool {
         let hash_pos = slice.text.find('#').unwrap_or(0);
         let after_hash_raw = &slice.text[hash_pos + 1..];
         let after_hash = after_hash_raw.trim_start();
@@ -616,6 +804,17 @@ impl Preprocessor {
         } else {
             (keyword, rest, rest_offset)
         };
+
+        // Handle #line and GCC linemarker (# <num>) before conditional checks
+        let is_line_directive = keyword == "line"
+            || (!keyword.is_empty() && keyword.bytes().all(|b| b.is_ascii_digit()));
+        if is_line_directive {
+            if self.conditionals.is_active() {
+                self.handle_line(slice, keyword, rest, slice_line, next_line);
+            }
+            return false;
+        }
+
         match keyword {
             "ifdef" | "ifndef" | "if" if !self.conditionals.is_active() => {
                 self.conditionals.push_if(
@@ -625,7 +824,7 @@ impl Preprocessor {
                 return false;
             }
             "elif" => {
-                self.handle_elif(rest);
+                self.handle_elif_with_line(rest, slice_line);
                 return false;
             }
             "else" => {
@@ -665,9 +864,10 @@ impl Preprocessor {
                 true,
                 self.slice_range(slice, keyword_offset, keyword_offset + keyword.len().max(1)),
             ),
-            "if" => self.handle_if(
+            "if" => self.handle_if_with_line(
                 rest,
                 self.slice_range(slice, keyword_offset, keyword_offset + keyword.len().max(1)),
+                slice_line,
             ),
             "pragma" => {
                 if let Some(raw) = self.handle_pragma(rest) {
@@ -677,9 +877,11 @@ impl Preprocessor {
                 return false;
             }
             "error" => {
-                let expanded = self
-                    .macros
-                    .expand_line_reuse(rest, &mut self.directive_expanding);
+                let expanded = self.macros.expand_line_with_line(
+                    rest,
+                    slice_line,
+                    &mut self.directive_expanding,
+                );
                 self.errors.push(PreprocessorDiagnostic {
                     file: self.current_file(),
                     range: self.slice_range(
@@ -688,6 +890,7 @@ impl Preprocessor {
                         keyword_offset + keyword.len().max(1),
                     ),
                     message: format!("#error {expanded}"),
+                    logical: self.logical_location(slice_line),
                 });
             }
             "warning" => {
@@ -699,12 +902,221 @@ impl Preprocessor {
                         keyword_offset + keyword.len().max(1),
                     ),
                     message: format!("#warning {rest}"),
+                    logical: self.logical_location(slice_line),
                 });
             }
             _ => {}
         }
 
         false
+    }
+
+    /// Logical location for a diagnostic at `line`, if a `#line` remap with a
+    /// loadable logical file is active in the current file.
+    fn logical_location(&self, line: u64) -> Option<(String, u64)> {
+        let (path, _) = self.line_span_file.as_ref()?.as_ref()?;
+        Some((path.display().to_string(), line))
+    }
+
+    /// Apply the span parts of a `#line` directive.
+    ///
+    /// Registers the logical file so diagnostics and token spans can be
+    /// reported against it, and anchors the token-span remap: physical lines
+    /// of the file being processed from the one following the directive are
+    /// numbered starting at `line`. A bare `#line N` keeps the previously
+    /// named file (or falls back to the file being processed). If the named
+    /// file cannot be loaded, the remap is ignored for span purposes (it still
+    /// affects `__LINE__`).
+    fn apply_line_span_remap(&mut self, filename: Option<String>, line: u64, slice_start: usize) {
+        let target: Option<(PathBuf, FileId)> = match filename {
+            Some(fname) => {
+                let resolved = super::includes::make_absolute(&PathBuf::from(&fname));
+                let t = self
+                    .try_ensure_file(&resolved)
+                    .map(|id| (resolved.clone(), id));
+                self.line_span_file = Some(t.clone());
+                t
+            }
+            None if self.line_span_file.is_none() => {
+                // No logical file named yet: report against the current file.
+                let current = self.current_path();
+                let t = self.try_ensure_file(&current).map(|id| (current, id));
+                self.line_span_file = Some(t.clone());
+                t
+            }
+            None => self
+                .line_span_file
+                .as_ref()
+                .and_then(|t| t.as_ref().cloned()),
+        };
+
+        let Some((target_path, target_id)) = target else {
+            // Logical file missing: ignore the directive for span purposes.
+            self.line_token_remap = None;
+            return;
+        };
+
+        // Anchor: start of the line following the directive in the current
+        // file's original source.
+        let current = self.current_path();
+        let Some(current_id) = self.try_ensure_file(&current) else {
+            self.line_token_remap = None;
+            return;
+        };
+        let Some(source) = self.source_files.get(&current_id).map(|f| f.source.clone()) else {
+            self.line_token_remap = None;
+            return;
+        };
+        let start = slice_start.min(source.len());
+        let Some(next_line_start) = source[start..].find('\n').map(|i| start + i + 1) else {
+            // Directive on the last line: nothing after it to remap.
+            self.line_token_remap = None;
+            return;
+        };
+        let table = self.line_table(current_id);
+        let phys_line = table
+            .partition_point(|&offset| offset <= next_line_start)
+            .saturating_sub(1);
+        self.line_token_remap = Some(LineTokenRemap {
+            file: current,
+            target: (target_path, target_id),
+            phys_line,
+            log_line: line.max(1),
+        });
+    }
+
+    /// Line-start offset table for a registered file, built on first use.
+    fn line_table(&mut self, id: FileId) -> Arc<Vec<usize>> {
+        if let Some(table) = self.line_tables.get(&id) {
+            return table.clone();
+        }
+        let mut table = vec![0usize];
+        if let Some(file) = self.source_files.get(&id) {
+            table.extend(
+                file.source
+                    .bytes()
+                    .enumerate()
+                    .filter(|(_, b)| *b == b'\n')
+                    .map(|(i, _)| i + 1),
+            );
+        }
+        let table = Arc::new(table);
+        self.line_tables.insert(id, table.clone());
+        table
+    }
+
+    /// Translate a span in `file_id`'s original coordinates through the active
+    /// `#line` remap: keep the columns within the line but re-anchor to the
+    /// corresponding logical line of the target file, recomputing byte offsets
+    /// against its content. Returns the range unchanged when no remap applies.
+    fn translate_token_range(&mut self, file_id: FileId, range: Range<usize>) -> Range<usize> {
+        let Some(remap) = self.line_token_remap.as_ref() else {
+            return range;
+        };
+        if self.file_index.get(&remap.file).copied() != Some(file_id) {
+            return range;
+        }
+        let phys_line_index = remap.phys_line;
+        let log_line_base = remap.log_line;
+        let target_id = remap.target.1;
+
+        let phys_table = self.line_table(file_id);
+        let tok_line = phys_table
+            .partition_point(|&offset| offset <= range.start)
+            .saturating_sub(1);
+        if tok_line < phys_line_index {
+            return range;
+        }
+        let line_start = phys_table[tok_line];
+        let col_start = range.start - line_start;
+        let col_end = range.end.saturating_sub(line_start).max(col_start);
+
+        // 0-based index of the logical line in the target file.
+        let log_line = log_line_base as usize - 1 + (tok_line - phys_line_index);
+        let target_table = self.line_table(target_id);
+        let target_len = self
+            .source_files
+            .get(&target_id)
+            .map(|f| f.source.len())
+            .unwrap_or(0);
+        let target_line_start = target_table[log_line.min(target_table.len() - 1)];
+        let start = (target_line_start + col_start).min(target_len);
+        let mut end = (target_line_start + col_end).min(target_len).max(start);
+        if end == start && start < target_len {
+            end += 1;
+        }
+        start..end
+    }
+
+    fn handle_line(
+        &mut self,
+        slice: &LogicalSlice,
+        keyword: &str,
+        rest: &str,
+        slice_line: u64,
+        next_line: &mut u64,
+    ) {
+        let (n, fname) = if keyword == "line" {
+            // Normal #line case: the arguments are macro-expanded per the
+            // standard (`#line MACRO [STRING]`).
+            let args = rest.trim_start();
+            if args.is_empty() {
+                return;
+            }
+            let expanded =
+                self.macros
+                    .expand_line_with_line(args, slice_line, &mut self.directive_expanding);
+            (
+                Self::extract_line_number(&expanded),
+                Self::extract_line_filename(&expanded),
+            )
+        } else {
+            // GCC linemarker: keyword is the line number.
+            (
+                keyword.parse::<u64>().ok(),
+                Self::extract_line_filename(rest),
+            )
+        };
+        let Some(n) = n else {
+            return;
+        };
+        *next_line = n;
+        self.apply_line_span_remap(fname.clone(), n, slice.source_offset(0));
+        if let Some(fname) = fname {
+            self.macros.set_file(format!("\"{fname}\""));
+        }
+    }
+
+    /// Extract the leading decimal line number from `#line` arguments.
+    fn extract_line_number(args: &str) -> Option<u64> {
+        let first = args.split_whitespace().next()?;
+        let digits: String = first.chars().take_while(|c| c.is_ascii_digit()).collect();
+        digits.parse().ok()
+    }
+
+    fn extract_line_filename(args: &str) -> Option<String> {
+        // Find first '"' and matching '"'
+        let bytes = args.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'"' {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b'"' {
+                    if bytes[end] == b'\\' && end + 1 < bytes.len() {
+                        end += 2;
+                    } else {
+                        end += 1;
+                    }
+                }
+                if end < bytes.len() {
+                    return Some(args[start..end].to_string());
+                }
+                break;
+            }
+            i += 1;
+        }
+        None
     }
 
     fn slice_range(&self, slice: &LogicalSlice, start: usize, end: usize) -> Range<usize> {
@@ -741,13 +1153,13 @@ impl Preprocessor {
         self.conditionals.push_if(condition, position);
     }
 
-    fn handle_if(&mut self, expr: &str, position: Range<usize>) {
+    fn handle_if_with_line(&mut self, expr: &str, position: Range<usize>, line: u64) {
         // First resolve `defined(X)` and `__has_*()` before macro expansion
         let resolved = self.resolve_defined_in_expr(expr);
         // Expand macros in the resolved expression (reuse directive_expanding set)
-        let expanded = self
-            .macros
-            .expand_line_reuse(&resolved, &mut self.directive_expanding);
+        let expanded =
+            self.macros
+                .expand_line_with_line(&resolved, line, &mut self.directive_expanding);
         // Resolve again after macro expansion, in case macros expanded to
         // __has_attribute(), __has_builtin(), __has_include(), etc.
         let expanded = self.resolve_defined_in_expr(&expanded);
@@ -757,11 +1169,11 @@ impl Preprocessor {
         self.conditionals.push_if(condition, position);
     }
 
-    fn handle_elif(&mut self, expr: &str) {
+    fn handle_elif_with_line(&mut self, expr: &str, line: u64) {
         let resolved = self.resolve_defined_in_expr(expr);
-        let expanded = self
-            .macros
-            .expand_line_reuse(&resolved, &mut self.directive_expanding);
+        let expanded =
+            self.macros
+                .expand_line_with_line(&resolved, line, &mut self.directive_expanding);
         // Resolve again after macro expansion (same reason as handle_if)
         let expanded = self.resolve_defined_in_expr(&expanded);
         let final_expr = Self::replace_remaining_idents_with_zero(&expanded);
@@ -815,6 +1227,7 @@ impl Preprocessor {
                 let source_end = map_pos_to_source(source_boundaries, source_text, raw, tok_end);
                 source_start..source_end
             };
+            let token_range = self.translate_token_range(file_idx, token_range);
             self.output_tokens
                 .push((token, Span::from_parts(file_idx, token_range)));
         }
@@ -825,12 +1238,12 @@ impl Preprocessor {
             start..end
         };
         for w in warnings {
-            let r = map_diag(w.range);
+            let r = self.translate_token_range(file_idx, map_diag(w.range));
             self.lexer_warnings
                 .push(Rich::custom(Span::from_parts(file_idx, r), w.message));
         }
         for e in errors {
-            let r = map_diag(e.range);
+            let r = self.translate_token_range(file_idx, map_diag(e.range));
             self.lexer_errors
                 .push(Rich::custom(Span::from_parts(file_idx, r), e.message));
         }
@@ -872,11 +1285,22 @@ impl Preprocessor {
 
     /// Ensure a source file is registered, returning its FileId.
     pub(super) fn ensure_file(&mut self, path: &Path) -> FileId {
+        self.try_ensure_file(path).unwrap_or_else(|| {
+            panic!(
+                "failed to read source file {}: {}",
+                path.display(),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "not found")
+            )
+        })
+    }
+
+    /// Like [`Self::ensure_file`], but returns `None` instead of panicking
+    /// when the file cannot be read.
+    pub(super) fn try_ensure_file(&mut self, path: &Path) -> Option<FileId> {
         if let Some(idx) = self.file_index.get(path).copied() {
-            return idx;
+            return Some(idx);
         }
-        let source = fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("failed to read source file {}: {e}", path.display()));
+        let source = fs::read_to_string(path).ok()?;
         let idx = global_file_id(path);
         self.source_files.insert(
             idx,
@@ -886,7 +1310,7 @@ impl Preprocessor {
             },
         );
         self.file_index.insert(path.to_path_buf(), idx);
-        idx
+        Some(idx)
     }
 }
 

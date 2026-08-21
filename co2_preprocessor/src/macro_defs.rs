@@ -179,10 +179,18 @@ impl MacroTable {
     /// for every line (the previous per-line allocation was a measurable
     /// overhead when preprocessing kernel headers with thousands of lines).
     pub fn expand_line_reuse(&self, line: &str, expanding: &mut HashSet<String>) -> String {
+        self.expand_line_with_line(line, 1, expanding)
+    }
+
+    /// Expand macros in a line of text with a known effective line number for __LINE__.
+    pub fn expand_line_with_line(
+        &self,
+        line: &str,
+        line_number: u64,
+        expanding: &mut HashSet<String>,
+    ) -> String {
         expanding.clear();
-        let result = self.expand_text(line, expanding);
-        // Strip blue paint markers from the final output.
-        // BLUE_PAINT_MARKER (0x01) prevents re-expansion per C11 §6.10.3.4.
+        let result = self.expand_text_with_line(line, line_number, expanding);
         if result.as_bytes().contains(&BLUE_PAINT_MARKER) {
             result.replace(BLUE_PAINT_MARKER as char, "")
         } else {
@@ -222,12 +230,13 @@ impl MacroTable {
     /// function-like macro name and the remaining source starts with '('.
     /// If so, expand the trailing macro call, consuming the arguments from the source.
     /// Returns the updated `expanded` text and new source position.
-    fn expand_trailing_func_macros(
+    fn expand_trailing_func_macros_with_line(
         &self,
         mut expanded: String,
         bytes: &[u8],
         mut i: usize,
         expanding: &mut HashSet<String>,
+        line_number: u64,
     ) -> (String, usize) {
         let len = bytes.len();
         loop {
@@ -248,8 +257,12 @@ impl MacroTable {
                     let trimmed_len = expanded.trim_end().len();
                     let prefix_len = trimmed_len - trail_ident.len();
                     expanded.truncate(prefix_len);
-                    let (trail_expanded, _) =
-                        self.expand_function_macro(&trail_mac_clone, &trail_args, expanding);
+                    let (trail_expanded, _) = self.expand_function_macro_with_line(
+                        &trail_mac_clone,
+                        &trail_args,
+                        expanding,
+                        line_number,
+                    );
                     expanded.push_str(&trail_expanded);
                     continue;
                 }
@@ -263,12 +276,13 @@ impl MacroTable {
     /// macro name and the remaining source starts with '('. If so, expand the
     /// function-like macro call, consuming the arguments from the source.
     /// Returns Some((expanded_text, new_pos)) if resolution succeeded, or None.
-    fn try_resolve_objlike_to_funclike(
+    fn try_resolve_objlike_to_funclike_with_line(
         &self,
         expanded: &str,
         bytes: &[u8],
         i: usize,
         expanding: &mut HashSet<String>,
+        line_number: u64,
     ) -> Option<(String, usize)> {
         let len = bytes.len();
         let expanded_trimmed = expanded.trim();
@@ -295,7 +309,8 @@ impl MacroTable {
         }
         let (args, end_pos) = self.parse_macro_args(bytes, j);
         let target_mac_clone = target_mac.clone();
-        let (func_expanded, _) = self.expand_function_macro(&target_mac_clone, &args, expanding);
+        let (func_expanded, _) =
+            self.expand_function_macro_with_line(&target_mac_clone, &args, expanding, line_number);
         Some((func_expanded, end_pos))
     }
 
@@ -303,7 +318,12 @@ impl MacroTable {
     /// currently being expanded to prevent infinite recursion.
     ///
     /// Operates on bytes for performance: avoids allocating Vec<char>.
-    fn expand_text(&self, text: &str, expanding: &mut HashSet<String>) -> String {
+    fn expand_text_with_line(
+        &self,
+        text: &str,
+        line_number: u64,
+        expanding: &mut HashSet<String>,
+    ) -> String {
         let mut result = String::with_capacity(text.len());
         let bytes = text.as_bytes();
         let len = bytes.len();
@@ -317,7 +337,14 @@ impl MacroTable {
             } else if b == BLUE_PAINT_MARKER {
                 i = Self::copy_blue_painted(bytes, i, &mut result);
             } else if is_ident_start_byte(b) {
-                i = self.expand_identifier(text, bytes, i, &mut result, expanding);
+                i = self.expand_identifier_with_line(
+                    text,
+                    bytes,
+                    i,
+                    &mut result,
+                    expanding,
+                    line_number,
+                );
             } else if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
                 i = Self::copy_block_comment(bytes, i, &mut result);
             } else if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
@@ -376,13 +403,14 @@ impl MacroTable {
     }
 
     /// Process an identifier: expand macros, handle builtins, or copy verbatim.
-    fn expand_identifier(
+    fn expand_identifier_with_line(
         &self,
         text: &str,
         bytes: &[u8],
         start: usize,
         result: &mut String,
         expanding: &mut HashSet<String>,
+        line_number: u64,
     ) -> usize {
         let len = bytes.len();
         let mut i = start + 1;
@@ -411,11 +439,8 @@ impl MacroTable {
             return i;
         }
 
-        // Byte-only preprocessor mode does not track display rows here.
-        // Keep __LINE__ parseable in ordinary code by folding it to a stable
-        // positive constant instead of zero.
         if ident == "__LINE__" {
-            result.push('1');
+            result.push_str(&line_number.to_string());
             return i;
         }
 
@@ -435,7 +460,16 @@ impl MacroTable {
         if !expanding.contains(ident)
             && let Some(mac) = self.macros.get(ident)
         {
-            return self.expand_macro_invocation(text, bytes, i, ident, mac, result, expanding);
+            return self.expand_macro_invocation_with_line(
+                text,
+                bytes,
+                i,
+                ident,
+                mac,
+                result,
+                expanding,
+                line_number,
+            );
         }
 
         // Not a macro, or already expanding (blue-painted).
@@ -495,7 +529,7 @@ impl MacroTable {
     }
 
     /// Expand a macro invocation (function-like or object-like).
-    fn expand_macro_invocation(
+    fn expand_macro_invocation_with_line(
         &self,
         _text: &str,
         bytes: &[u8],
@@ -504,6 +538,7 @@ impl MacroTable {
         mac: &MacroDef,
         result: &mut String,
         expanding: &mut HashSet<String>,
+        line_number: u64,
     ) -> usize {
         let len = bytes.len();
         if mac.is_function_like {
@@ -515,7 +550,7 @@ impl MacroTable {
                 let (args, end_pos) = self.parse_macro_args(bytes, j);
                 let mut i = end_pos;
                 let (expanded, body_ended_with_func_ident) =
-                    self.expand_function_macro(mac, &args, expanding);
+                    self.expand_function_macro_with_line(mac, &args, expanding, line_number);
                 // Per C11 §6.10.3.4, only connect trailing function-like macro
                 // identifiers with subsequent source `(` if the substituted body
                 // (before rescan) truly ended with that identifier. If the body
@@ -524,7 +559,13 @@ impl MacroTable {
                 // act as a barrier during left-to-right scanning, preventing FOO from
                 // connecting with `(` in the source.
                 let (expanded, new_i) = if body_ended_with_func_ident {
-                    self.expand_trailing_func_macros(expanded, bytes, i, expanding)
+                    self.expand_trailing_func_macros_with_line(
+                        expanded,
+                        bytes,
+                        i,
+                        expanding,
+                        line_number,
+                    )
                 } else {
                     (expanded, i)
                 };
@@ -548,15 +589,19 @@ impl MacroTable {
                 mac.is_variadic,
                 mac.has_named_variadic,
             );
-            self.expand_text(&body, expanding)
+            self.expand_text_with_line(&body, line_number, expanding)
         } else {
-            self.expand_text(&mac.body, expanding)
+            self.expand_text_with_line(&mac.body, line_number, expanding)
         };
         expanding.remove(ident);
 
-        if let Some((func_expanded, end_pos)) =
-            self.try_resolve_objlike_to_funclike(&expanded, bytes, i, expanding)
-        {
+        if let Some((func_expanded, end_pos)) = self.try_resolve_objlike_to_funclike_with_line(
+            &expanded,
+            bytes,
+            i,
+            expanding,
+            line_number,
+        ) {
             result.push_str(&func_expanded);
             return end_pos;
         }
@@ -565,7 +610,8 @@ impl MacroTable {
         // macro name (e.g. `#define i_cmp -c_default_cmp` expands to `-c_default_cmp`).
         // If the remaining source starts with `(`, we need to chain into function-like
         // expansion for the trailing identifier.
-        let (expanded, i) = self.expand_trailing_func_macros(expanded, bytes, i, expanding);
+        let (expanded, i) =
+            self.expand_trailing_func_macros_with_line(expanded, bytes, i, expanding, line_number);
 
         let next = if i < len { Some(bytes[i]) } else { None };
         Self::append_with_paste_guard(result, &expanded, next);
@@ -701,11 +747,12 @@ impl MacroTable {
     /// ended with tokens AFTER a function-like macro name (e.g., `FOO EMPTY()` from
     /// `#define DEFER(x) x EMPTY()`), those tokens act as a barrier preventing the
     /// function-like macro from connecting with `(` in the subsequent source tokens.
-    fn expand_function_macro(
+    fn expand_function_macro_with_line(
         &self,
         mac: &MacroDef,
         args: &[String],
         expanding: &mut HashSet<String>,
+        line_number: u64,
     ) -> (String, bool) {
         // Step 1-2: Prescan - expand ALL arguments (C11 §6.10.3.1).
         // Per the standard, arguments adjacent to # or ## use the RAW (unexpanded)
@@ -719,7 +766,7 @@ impl MacroTable {
         // expansion create additional arguments during rescanning.
         let expanded_args: Vec<String> = args
             .iter()
-            .map(|arg| self.expand_text(arg, expanding))
+            .map(|arg| self.expand_text_with_line(arg, line_number, expanding))
             .collect();
 
         // Step 3+4: Expand body — handle #/## and substitute params in one pass.
@@ -758,7 +805,7 @@ impl MacroTable {
 
         // Step 5: Rescan with the current macro name suppressed
         expanding.insert(mac.name.clone());
-        let result = self.expand_text(&body, expanding);
+        let result = self.expand_text_with_line(&body, line_number, expanding);
         expanding.remove(&mac.name);
 
         // Also check the post-rescan result: token pasting through indirection
