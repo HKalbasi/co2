@@ -142,9 +142,9 @@ impl Builder<'_, '_> {
     ///
     /// When the condition is a compile-time constant (`1`, `0`, `true`,
     /// `false`, a cast of one of those, or `!` of a constant), a direct
-    /// `Goto` to the taken branch is emitted and the unreachable branch is
-    /// skipped entirely, so later passes (notably the borrow checker) never
-    /// see the dead code.
+    /// `Goto` to the taken branch is emitted, but both branches are still
+    /// lowered: C labels have function scope, so code that looks dead may
+    /// be reachable via `goto` from elsewhere in the function.
     pub(crate) fn lower_condition(
         &mut self,
         cond: &HirExpr,
@@ -175,30 +175,16 @@ impl Builder<'_, '_> {
             });
 
         let then_start = self.blocks.len();
-        let then_exit = match constant {
-            Some(false) => None,
-            _ => {
-                then(self);
-                Some(self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span))
-            }
-        };
+        then(self);
+        let then_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
 
         let else_start = self.blocks.len();
-        let else_exit = match constant {
-            Some(true) => None,
-            _ => {
-                els(self);
-                Some(self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span))
-            }
-        };
+        els(self);
+        let else_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
 
         let join_bb = self.blocks.len();
-        if let Some(exit) = then_exit {
-            self.patch_goto_target(exit, join_bb);
-        }
-        if let Some(exit) = else_exit {
-            self.patch_goto_target(exit, join_bb);
-        }
+        self.patch_goto_target(then_exit, join_bb);
+        self.patch_goto_target(else_exit, join_bb);
         match constant {
             Some(true) => self.patch_goto_target(entry_bb, then_start),
             Some(false) => self.patch_goto_target(entry_bb, else_start),
