@@ -587,8 +587,12 @@ impl HirCtx<'_> {
         &self,
         mut receiver: HirExpr,
         adjustment: &rustc_public_generative::ReceiverAdjustment,
+        error_span: co2_ast::Span,
         span: RustSpan,
     ) -> HirExpr {
+        // A place reached through an immutable `Deref::deref` (e.g. `Arc`'s)
+        // can only be borrowed immutably.
+        let mut immutable_deref = false;
         for step in &adjustment.steps {
             match step {
                 rustc_public_generative::ReceiverAdjustmentStep::BuiltinDeref {
@@ -607,9 +611,11 @@ impl HirCtx<'_> {
                     sig,
                     target,
                     target_ref,
+                    deref_mut,
                     ..
                 } => {
                     let fn_def = rustc_public_generative::rustc_public::ty::FnDef(*method_def_id);
+                    immutable_deref = !deref_mut;
                     let resolved = ResolvedValue::Fn(fn_def, generic_args.0.clone());
                     let func_ty = resolved.ty();
                     let adjusted_receiver = sig
@@ -652,6 +658,12 @@ impl HirCtx<'_> {
                 rustc_public_generative::rustc_public::mir::Mutability::Not => Mutability::Not,
                 rustc_public_generative::rustc_public::mir::Mutability::Mut => Mutability::Mut,
             };
+            // Autoref `&mut` requires the receiver place to be mutable.
+            if mutability == Mutability::Mut
+                && (immutable_deref || addr_of_mutability(&receiver) == Mutability::Not)
+            {
+                self.terminate_with_error(error_span, "can't borrow mutable");
+            }
             receiver = HirExpr {
                 kind: HirExprKind::AddrOf(Box::new(receiver.clone())),
                 ty: Ty::new_ptr(receiver.ty, mutability),
@@ -667,12 +679,18 @@ impl HirCtx<'_> {
         receiver: &HirExpr,
         adjustment: Option<&rustc_public_generative::ReceiverAdjustment>,
         params: &[Spanned<Expression<LocalResolver>>],
+        error_span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
         local_map: &mut HashMap<usize, LocalId>,
     ) -> Result<Vec<HirExpr>, (co2_ast::Span, String)> {
         let mut lowered_args = Vec::with_capacity(params.len() + 1);
         let receiver = if let Some(adjustment) = adjustment {
-            self.apply_resolved_receiver_adjustment(receiver.clone(), adjustment, receiver.span)
+            self.apply_resolved_receiver_adjustment(
+                receiver.clone(),
+                adjustment,
+                error_span,
+                receiver.span,
+            )
         } else {
             sig.inputs()
                 .first()
@@ -728,6 +746,7 @@ impl HirCtx<'_> {
             receiver,
             Some(&resolved_method.receiver_adjustment),
             params,
+            method_span,
             locals,
             local_map,
         )?;
@@ -981,6 +1000,7 @@ impl HirCtx<'_> {
             &receiver,
             Some(&resolved_method.receiver_adjustment),
             params,
+            method_span,
             locals,
             local_map,
         )?;
@@ -3528,7 +3548,9 @@ fn readonly_constexpr_name(expr: &HirExpr, locals: &Arena<HirLocal>) -> Option<S
 fn addr_of_mutability(expr: &HirExpr) -> Mutability {
     match &expr.kind {
         HirExprKind::Deref(inner) => match inner.ty.kind() {
-            TyKind::RigidTy(RigidTy::RawPtr(_, mutability)) => mutability,
+            TyKind::RigidTy(
+                RigidTy::RawPtr(_, mutability) | RigidTy::Ref(_, _, mutability),
+            ) => mutability,
             _ => Mutability::Mut,
         },
         HirExprKind::Field { base, .. } => addr_of_mutability(base),

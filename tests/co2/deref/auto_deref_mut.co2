@@ -1,0 +1,30 @@
+//@ mode: co2
+//@ compile-fail
+
+use std::boxed::Box;
+use std::vec::Vec;
+use std::sync::Arc;
+use std::mem::drop;
+use std::ops::Deref;
+
+fn f1(b: Box<Vec<i32>>) {
+    b.len();
+    b.push(5);
+    drop(b);
+}
+
+fn f2(b: Arc<Vec<i32>>) {
+    b.len();
+    b.push(5);
+    //^^^^ error: can't borrow mutable
+    drop(b);
+}
+
+fn f3(b: Box<Vec<i32>>) {
+    ::<&Vec<i32>> c = b.deref();
+    c.push(5);
+    //^^^^ error: can't borrow mutable
+    drop(b);
+}
+
+fn main() {}

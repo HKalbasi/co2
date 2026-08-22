@@ -201,6 +201,10 @@ pub enum ReceiverAdjustmentStep {
         method_def_id: DefId,
         generic_args: GenericArgs,
         sig: FnSig,
+        /// Whether this step goes through `DerefMut::deref_mut` (mutable
+        /// receiver). When false, the dereferenced place can only be borrowed
+        /// immutably.
+        deref_mut: bool,
     },
 }
 

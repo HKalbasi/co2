@@ -2828,7 +2828,7 @@ pub(crate) fn resolve_method(
             let Some(item) = associated_fn_named(tcx, impl_def_id, method) else {
                 continue;
             };
-            for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, &step, step.ty) {
+            for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, param_env, &step, step.ty) {
                 if let Some(probe) = probe_inherent_method(
                     tcx,
                     &infcx,
@@ -2872,7 +2872,7 @@ pub(crate) fn resolve_method(
                 let Some(item) = associated_fn_named(tcx, trait_def_id, method) else {
                     continue;
                 };
-                for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, &step, step.ty) {
+                for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, param_env, &step, step.ty) {
                     if let Some(probe) = probe_trait_method(
                         tcx,
                         &infcx,
@@ -2926,6 +2926,9 @@ struct AutoderefStep<'tcx> {
     ty: ty::Ty<'tcx>,
     autoderefs: usize,
     steps: Vec<ReceiverAdjustmentStep>,
+    /// Rustc source/target types for each step, used to rebuild the steps with
+    /// `DerefMut` for mutable autoref.
+    step_tys: Vec<(ty::Ty<'tcx>, ty::Ty<'tcx>)>,
 }
 
 fn autoderef_steps<'tcx>(
@@ -2937,6 +2940,7 @@ fn autoderef_steps<'tcx>(
 ) -> Vec<AutoderefStep<'tcx>> {
     let mut out = Vec::new();
     let mut adjustment_steps = Vec::new();
+    let mut step_tys = Vec::new();
     let mut autoderef = Autoderef::new(infcx, param_env, owner, DUMMY_SP, receiver_ty)
         .include_raw_pointers()
         .silence_errors();
@@ -2960,13 +2964,18 @@ fn autoderef_steps<'tcx>(
                     source: rustc_public::rustc_internal::stable(source),
                     target: rustc_public::rustc_internal::stable(target),
                 },
-                AutoderefKind::Overloaded => overloaded_deref_step(tcx, source, target),
+                AutoderefKind::Overloaded => {
+                    overloaded_deref_step(tcx, param_env, source, target, rustc_hir::Mutability::Not)
+                        .expect("Deref is always implemented for overloaded deref")
+                }
             });
+            step_tys.push((source, target));
         }
         out.push(AutoderefStep {
             ty,
             autoderefs,
             steps: adjustment_steps.clone(),
+            step_tys: step_tys.clone(),
         });
     }
     out
@@ -2974,17 +2983,29 @@ fn autoderef_steps<'tcx>(
 
 fn overloaded_deref_step<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     source: ty::Ty<'tcx>,
     target: ty::Ty<'tcx>,
-) -> ReceiverAdjustmentStep {
-    let deref_trait = tcx.require_lang_item(LangItem::Deref, DUMMY_SP);
+    mutbl: rustc_hir::Mutability,
+) -> Option<ReceiverAdjustmentStep> {
+    // Mutable receivers go through `DerefMut::deref_mut`; if the type only
+    // implements `Deref`, the dereferenced place stays immutable.
+    let (lang_item, method_name) = match mutbl {
+        rustc_hir::Mutability::Not => (LangItem::Deref, "deref"),
+        rustc_hir::Mutability::Mut => (LangItem::DerefMut, "deref_mut"),
+    };
+    let deref_trait = tcx.lang_items().get(lang_item)?;
+    if mutbl.is_mut()
+        && !rustc_ty_implements_trait(tcx, param_env, source, deref_trait)
+    {
+        return None;
+    }
     let deref_method = tcx
         .associated_items(deref_trait)
         .in_definition_order()
         .find(|item| {
-            matches!(item.kind, ty::AssocKind::Fn { .. }) && item.name().as_str() == "deref"
-        })
-        .expect("Deref trait must define deref")
+            matches!(item.kind, ty::AssocKind::Fn { .. }) && item.name().as_str() == method_name
+        })?
         .def_id;
     let trait_args = tcx.mk_args(&[source.into()]);
     let method_args = ty::GenericArgs::for_item(tcx, deref_method, |param, _| {
@@ -2997,14 +3018,51 @@ fn overloaded_deref_step<'tcx>(
     });
     let sig = tcx.fn_sig(deref_method).instantiate(tcx, method_args);
     let sig = tcx.instantiate_bound_regions_with_erased(sig.skip_normalization());
-    ReceiverAdjustmentStep::OverloadedDeref {
+    Some(ReceiverAdjustmentStep::OverloadedDeref {
         source: rustc_public::rustc_internal::stable(source),
         target: rustc_public::rustc_internal::stable(target),
         target_ref: rustc_public::rustc_internal::stable(sig.output()),
         method_def_id: rustc_def_to_my_def(tcx, deref_method),
         generic_args: stable_generic_args(tcx, method_args),
         sig: rustc_public::rustc_internal::stable(sig),
-    }
+        deref_mut: mutbl.is_mut(),
+    })
+}
+
+/// Rewrites every overloaded-deref step to go through `DerefMut::deref_mut`.
+/// Steps whose type does not implement `DerefMut` keep the immutable `Deref`
+/// version, so downstream borrow checking can reject `&mut` through them.
+fn mutable_deref_steps<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    step: &AutoderefStep<'tcx>,
+) -> Vec<ReceiverAdjustmentStep> {
+    step.steps
+        .iter()
+        .zip(&step.step_tys)
+        .map(|(s, &(source, target))| match s {
+            ReceiverAdjustmentStep::OverloadedDeref { .. } => {
+                overloaded_deref_step(tcx, param_env, source, target, rustc_hir::Mutability::Mut)
+                    .unwrap_or_else(|| s.clone())
+            }
+            _ => s.clone(),
+        })
+        .collect()
+}
+
+/// Whether `ty` implements the given trait, using fresh inference for generics.
+fn rustc_ty_implements_trait<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    ty: ty::Ty<'tcx>,
+    trait_def_id: RustcDefId,
+) -> bool {
+    let infcx = tcx.infer_ctxt().build(ty::TypingMode::non_body_analysis());
+    // Deref/DerefMut only have `Self` as a generic parameter.
+    let args = tcx.mk_args(&[ty.into()]);
+    infcx
+        .type_implements_trait(trait_def_id, args, param_env)
+        .must_apply_modulo_regions()
 }
 
 fn inherent_receiver_def_id(ty: ty::Ty<'_>) -> Option<RustcDefId> {
@@ -3085,6 +3143,7 @@ fn associated_fn_named(
 
 fn receiver_adjustments<'tcx>(
     tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     step: &AutoderefStep<'tcx>,
     ty: ty::Ty<'tcx>,
 ) -> Vec<(ty::Ty<'tcx>, ReceiverAdjustment)> {
@@ -3110,7 +3169,7 @@ fn receiver_adjustments<'tcx>(
         ty::Ty::new_ref(tcx, tcx.lifetimes.re_erased, ty, rustc_hir::Mutability::Mut),
         ReceiverAdjustment {
             autoderefs: step.autoderefs,
-            steps: step.steps.clone(),
+            steps: mutable_deref_steps(tcx, param_env, step),
             autoref: Some(rustc_public::mir::Mutability::Mut),
             mut_ptr_to_const_ptr: false,
         },
