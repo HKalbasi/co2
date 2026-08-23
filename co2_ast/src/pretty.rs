@@ -1100,8 +1100,15 @@ impl<R: TypeResolver> PrettyPrint for Spanned<RustTy<R>> {
                     }
                 });
             }
-            RustTy::Ref { mutable, inner } => {
+            RustTy::Ref {
+                lifetime,
+                mutable,
+                inner,
+            } => {
                 pp.node(if *mutable { "RefMut" } else { "Ref" }, &sp, |pp| {
+                    if let Some((name, span)) = lifetime {
+                        pp.leaf(&format!("'{name}"), &fmt_span(span, pp.config));
+                    }
                     inner.pretty_print(pp);
                 });
             }

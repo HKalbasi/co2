@@ -368,9 +368,16 @@ fn rust_ty_to_pretty<R: TypeResolver>(ty: &RustTy<R>) -> String {
                 .join(", ");
             format!("({inner})")
         }
-        RustTy::Ref { mutable, inner } => {
+        RustTy::Ref {
+            lifetime,
+            mutable,
+            inner,
+        } => {
+            let lifetime = lifetime
+                .as_ref()
+                .map_or_else(String::new, |(name, _)| format!("'{name} "));
             let mutability = if *mutable { "mut " } else { "" };
-            format!("&{mutability}{}", rust_ty_to_pretty(&inner.0))
+            format!("&{lifetime}{mutability}{}", rust_ty_to_pretty(&inner.0))
         }
         RustTy::Ptr { mutable, inner } => {
             let mutability = if *mutable { "mut " } else { "const " };
@@ -1145,6 +1152,7 @@ pub enum RustTy<R: TypeResolver> {
     Path(Spanned<R::ResolvedRustPath>),
     Tuple(Vec<Spanned<RustTy<R>>>),
     Ref {
+        lifetime: Option<Spanned<String>>,
         mutable: bool,
         inner: Box<Spanned<RustTy<R>>>,
     },

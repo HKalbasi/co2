@@ -1,0 +1,18 @@
+//@ mode: co2
+//@ compile-fail
+
+fn f1(x: &i32) -> i32 {
+    return x;
+        // ^ error: return type mismatch: expected i32, got &i32
+}
+
+fn p1(x: &i32) -> i32 {
+    return *x;
+}
+
+fn f2(x: &'static i32) -> usize {
+    return x;
+        // ^ error: return type mismatch: expected usize, got &i32
+}
+
+fn main() {}

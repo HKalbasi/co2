@@ -379,17 +379,32 @@ impl HirCtx<'_> {
                     Mutability::Not
                 },
             ),
-            RustTy::Ref { mutable, inner } => Ty::new_ref(
-                rustc_public_generative::rustc_public::ty::Region {
-                    kind: RegionKind::ReStatic,
-                },
-                self.lower_rust_ty(*inner),
-                if mutable {
-                    Mutability::Mut
-                } else {
-                    Mutability::Not
-                },
-            ),
+            RustTy::Ref {
+                lifetime,
+                mutable,
+                inner,
+            } => {
+                let region = match lifetime.as_ref() {
+                    None => Region {
+                        kind: RegionKind::ReStatic,
+                    },
+                    Some((name, _)) if name == "static" => Region {
+                        kind: RegionKind::ReStatic,
+                    },
+                    Some((name, lt_span)) => {
+                        self.terminate_with_error(*lt_span, &format!("unknown lifetime '{name}"))
+                    }
+                };
+                Ty::new_ref(
+                    region,
+                    self.lower_rust_ty(*inner),
+                    if mutable {
+                        Mutability::Mut
+                    } else {
+                        Mutability::Not
+                    },
+                )
+            }
             RustTy::Tuple(elems) => Ty::new_tuple(
                 &elems
                     .into_iter()

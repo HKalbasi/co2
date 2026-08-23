@@ -541,9 +541,22 @@ impl CrateSigCtx<'_> {
                     rust_span,
                 )
             }
-            co2_ast::RustTy::Ref { mutable, inner } => {
+            co2_ast::RustTy::Ref {
+                lifetime,
+                mutable,
+                inner,
+            } => {
+                let lifetime = match lifetime.as_ref() {
+                    None => rustc_public_generative::HirLifetime::Static,
+                    Some((name, _)) if name == "static" => {
+                        rustc_public_generative::HirLifetime::Static
+                    }
+                    Some((name, lt_span)) => Self::terminate_with_spanned_error((
+                        *lt_span,
+                        format!("unknown lifetime '{name}"),
+                    )),
+                };
                 let inner = self.lower_rust_ty(*inner);
-                // FIXME: lifetime
                 HirTy::new_ref(
                     inner,
                     if mutable {
@@ -551,7 +564,7 @@ impl CrateSigCtx<'_> {
                     } else {
                         Mutability::Not
                     },
-                    rustc_public_generative::HirLifetime::Static,
+                    lifetime,
                     rust_span,
                 )
             }
@@ -865,7 +878,21 @@ impl LocalResolverBase {
                     rust_span,
                 )
             }
-            co2_ast::RustTy::Ref { mutable, inner } => {
+            co2_ast::RustTy::Ref {
+                lifetime,
+                mutable,
+                inner,
+            } => {
+                let lifetime = match lifetime.as_ref() {
+                    None => rustc_public_generative::HirLifetime::Static,
+                    Some((name, _)) if name == "static" => {
+                        rustc_public_generative::HirLifetime::Static
+                    }
+                    Some((name, lt_span)) => self.terminate_with_spanned_error((
+                        *lt_span,
+                        format!("unknown lifetime '{name}"),
+                    )),
+                };
                 let inner = self.hir_ty_of_rust_ty(*inner);
                 HirTy::new_ref(
                     inner,
@@ -874,7 +901,7 @@ impl LocalResolverBase {
                     } else {
                         Mutability::Not
                     },
-                    rustc_public_generative::HirLifetime::Static,
+                    lifetime,
                     rust_span,
                 )
             }

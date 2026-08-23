@@ -1972,9 +1972,20 @@ where
             .map_with(|r, e| (r, e.span()));
 
         let reference = just(Token::Amp)
-            .ignore_then(mut_token().to(true).or_not().map(|m| m.is_some()))
-            .then(rec.clone())
-            .map(|(mutable, inner)| RustTy::Ref {
+            .ignore_then(
+                select! { Token::Lifetime(name) => name }
+                    .map_with(|name, e| (name, e.span()))
+                    .or_not(),
+            )
+            .then(
+                mut_token()
+                    .to(true)
+                    .or_not()
+                    .map(|m| m.is_some())
+                    .then(rec.clone()),
+            )
+            .map(|(lifetime, (mutable, inner))| RustTy::Ref {
+                lifetime,
                 mutable,
                 inner: Box::new(inner),
             })
@@ -2696,9 +2707,20 @@ where
             .map_with(|r, e| (r, e.span()));
 
         let reference = just(Token::Amp)
-            .ignore_then(mut_token().to(true).or_not().map(|m| m.is_some()))
-            .then(rec.clone())
-            .map(|(mutable, inner)| RustTy::Ref {
+            .ignore_then(
+                select! { Token::Lifetime(name) => name }
+                    .map_with(|name, e| (name, e.span()))
+                    .or_not(),
+            )
+            .then(
+                mut_token()
+                    .to(true)
+                    .or_not()
+                    .map(|m| m.is_some())
+                    .then(rec.clone()),
+            )
+            .map(|(lifetime, (mutable, inner))| RustTy::Ref {
+                lifetime,
                 mutable,
                 inner: Box::new(inner),
             })

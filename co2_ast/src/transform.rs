@@ -591,7 +591,12 @@ impl<A: TypeResolver> DoTransform for RustTy<A> {
         match self {
             RustTy::Path(path) => RustTy::Path(b.transform_path(path)),
             RustTy::Tuple(elems) => RustTy::Tuple(elems.transform(b)),
-            RustTy::Ref { mutable, inner } => RustTy::Ref {
+            RustTy::Ref {
+                lifetime,
+                mutable,
+                inner,
+            } => RustTy::Ref {
+                lifetime: lifetime.clone(),
                 mutable: *mutable,
                 inner: inner.transform(b),
             },
