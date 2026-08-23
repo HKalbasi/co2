@@ -15,4 +15,28 @@ fn f2(x: &'static i32) -> usize {
         // ^ error: return type mismatch: expected usize, got &i32
 }
 
+fn f3(x: &i32) -> usize {
+    usize y = 0;
+    y += x;
+//  ^^^^^^ error: binary op type mismatch: expected usize, got &i32
+    return y;
+}
+
+fn f4(x: &i32) -> bool {
+    usize y = 0;
+    return x == y;
+//         ^^^^^^ error: binary op type mismatch: expected &i32, got usize
+}
+
+fn f5(x: &i32) -> i32 {
+    int y = 1;
+    return y << x;
+//         ^^^^^^ error: binary op type mismatch: expected i32, got &i32
+}
+
+fn f6(x: &i32, y: &i32) {
+    ::<&i32> z = x + y;
+//               ^^^^^ error: can not use `+` on type &i32 and &i32
+}
+
 fn main() {}

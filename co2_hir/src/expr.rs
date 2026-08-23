@@ -23,8 +23,8 @@ use crate::resolver::{HirCtx, ResolvedValue};
 use crate::stmt::HirStmt;
 use crate::ty::{
     adt_field_tys, array_elem_ty, callable_sig, common_numeric_ty, enum_payload_ty,
-    integer_promote_ty, is_array_ty, is_maybe_uninit_fn_ptr_ty, is_numeric_ty, needs_implicit_cast,
-    resolve_field_path_in_adt, ty_matches_expected, variant_idx,
+    integer_promote_ty, is_array_ty, is_integer_ty, is_maybe_uninit_fn_ptr_ty, is_numeric_ty,
+    needs_implicit_cast, resolve_field_path_in_adt, ty_matches_expected, variant_idx,
 };
 use crate::{decl::CTy, decl::hir_ty_to_ty, ty::is_condition_ty};
 use crate::{initializer_tree::InitializerTree, ty::common_ternary_ty};
@@ -368,6 +368,27 @@ impl HirBinOp {
             self,
             HirBinOp::Eq | HirBinOp::Lt | HirBinOp::Le | HirBinOp::Ne | HirBinOp::Ge | HirBinOp::Gt
         )
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            HirBinOp::Add => "+",
+            HirBinOp::Sub => "-",
+            HirBinOp::Mul => "*",
+            HirBinOp::Div => "/",
+            HirBinOp::Rem => "%",
+            HirBinOp::BitOr => "|",
+            HirBinOp::BitXor => "^",
+            HirBinOp::BitAnd => "&",
+            HirBinOp::Eq => "==",
+            HirBinOp::Ne => "!=",
+            HirBinOp::Lt => "<",
+            HirBinOp::Le => "<=",
+            HirBinOp::Gt => ">",
+            HirBinOp::Ge => ">=",
+            HirBinOp::Shl => "<<",
+            HirBinOp::Shr => ">>",
+        }
     }
 }
 
@@ -3033,7 +3054,10 @@ impl HirCtx<'_> {
         self.array_to_pointer_decay_if_array(&mut lhs);
         self.array_to_pointer_decay_if_array(&mut rhs);
 
-        if matches!(op, HirBinOp::Shl | HirBinOp::Shr) {
+        if matches!(op, HirBinOp::Shl | HirBinOp::Shr)
+            && is_integer_ty(lhs.ty)
+            && is_integer_ty(rhs.ty)
+        {
             let promoted = self.promote_integer_ty(lhs.ty);
             let common_ty = enum_payload_ty(promoted.clone()).unwrap_or(promoted);
             if !is_assignment {
@@ -3155,7 +3179,11 @@ impl HirCtx<'_> {
             }
         }
 
-        if op.is_comparison() && lhs.ty != rhs.ty {
+        if op.is_comparison()
+            && lhs.ty != rhs.ty
+            && is_condition_ty(lhs.ty)
+            && is_condition_ty(rhs.ty)
+        {
             let common_ty = Ty::usize_ty();
             lhs = HirExpr {
                 kind: HirExprKind::Cast(Box::new(lhs.clone())),
@@ -3169,11 +3197,27 @@ impl HirCtx<'_> {
             };
         }
 
-        if lhs.ty != rhs.ty && !is_assignment {
+        if lhs.ty != rhs.ty {
+            let coercible =
+                is_assignment && is_numeric_ty(lhs.ty) && is_numeric_ty(rhs.ty);
+            if !coercible {
+                return Err(spanned_error(
+                    parser_span,
+                    format!(
+                        "binary op type mismatch: expected {}, got {}",
+                        self.format_ty(lhs.ty),
+                        self.format_ty(rhs.ty)
+                    ),
+                ));
+            }
+        }
+
+        if !op.is_comparison() && !is_numeric_ty(lhs.ty) {
             return Err(spanned_error(
                 parser_span,
                 format!(
-                    "binary op type mismatch: expected {}, got {}",
+                    "can not use `{}` on type {} and {}",
+                    op.as_str(),
                     self.format_ty(lhs.ty),
                     self.format_ty(rhs.ty)
                 ),
