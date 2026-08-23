@@ -659,6 +659,9 @@ impl MacroTable {
             if bytes[j].is_ascii_alphanumeric()
                 || bytes[j] == b'.'
                 || bytes[j] == b'_'
+                || (bytes[j] == b'\''
+                    && j + 1 < len
+                    && (bytes[j + 1].is_ascii_alphanumeric() || bytes[j + 1] == b'_'))
                 || ((bytes[j] == b'+' || bytes[j] == b'-')
                     && j > i
                     && matches!(bytes[j - 1], b'e' | b'E' | b'p' | b'P'))
@@ -712,6 +715,11 @@ impl MacroTable {
                     args.push(arg_slice.trim().to_string());
                     i += 1;
                     arg_start = i;
+                }
+                b if b.is_ascii_digit() => {
+                    // Skip the whole pp-number so digit separators (`'`) and
+                    // suffixes are not mistaken for char literals or commas.
+                    i = Self::copy_ppnumber(bytes, i, &mut String::new());
                 }
                 b'"' | b'\'' => {
                     // Skip past string/char literal (they are part of the argument

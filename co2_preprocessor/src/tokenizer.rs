@@ -345,6 +345,29 @@ impl<'a> Tokenizer<'a> {
 
             let b = self.bytes[self.pos];
 
+            // C23/C++14 digit separator: a `'` inside a pp-number (between
+            // digits) is skipped rather than starting a character literal.
+            if b == b'\''
+                && matches!(
+                    self.state,
+                    State::ZeroLeading
+                        | State::DecimalInteger
+                        | State::HexInteger
+                        | State::OctalInteger
+                        | State::BinaryInteger
+                        | State::DecimalFloatFraction
+                        | State::DecimalFloatExponent
+                        | State::HexFloatFraction
+                        | State::HexFloatExponent
+                )
+                && self.pos + 1 < self.len
+                && (self.bytes[self.pos + 1].is_ascii_alphanumeric()
+                    || self.bytes[self.pos + 1] == b'_')
+            {
+                self.pos += 1;
+                continue;
+            }
+
             match self.state {
                 State::Start => {
                     if b.is_ascii_whitespace() && b != b'\n' {

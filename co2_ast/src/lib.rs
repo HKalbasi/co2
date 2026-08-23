@@ -1494,7 +1494,10 @@ pub fn co2_test_symbol_suffix(module_path: &[String], name: &str) -> String {
 }
 
 pub fn parse_unsigned_integer_constant(text: &str) -> Option<u128> {
-    let stripped: String = text.chars().filter(|&c| c != '_').collect();
+    let stripped: String = text
+        .chars()
+        .filter(|&c| c != '_' && c != '\'')
+        .collect();
     let text = &stripped;
 
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
