@@ -480,7 +480,7 @@ impl Resolver {
             (
                 Ty::from_rigid_kind(RigidTy::Uint(UintTy::U64)),
                 "leading_zeros",
-                &["__builtin_clzll"],
+                &["__builtin_clzl", "__builtin_clzll"],
             ),
             (
                 Ty::from_rigid_kind(RigidTy::Uint(UintTy::U32)),
@@ -490,7 +490,17 @@ impl Resolver {
             (
                 Ty::from_rigid_kind(RigidTy::Uint(UintTy::U64)),
                 "trailing_zeros",
-                &["__builtin_ctzll"],
+                &["__builtin_ctzl", "__builtin_ctzll"],
+            ),
+            (
+                Ty::from_rigid_kind(RigidTy::Uint(UintTy::U32)),
+                "count_ones",
+                &["__builtin_popcount"],
+            ),
+            (
+                Ty::from_rigid_kind(RigidTy::Uint(UintTy::U64)),
+                "count_ones",
+                &["__builtin_popcountl", "__builtin_popcountll"],
             ),
         ];
         for &(receiver_ty, method, aliases) in builtin_mappings {

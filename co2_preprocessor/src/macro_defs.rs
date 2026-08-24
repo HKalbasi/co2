@@ -717,9 +717,22 @@ impl MacroTable {
                     arg_start = i;
                 }
                 b if b.is_ascii_digit() => {
-                    // Skip the whole pp-number so digit separators (`'`) and
-                    // suffixes are not mistaken for char literals or commas.
-                    i = Self::copy_ppnumber(bytes, i, &mut String::new());
+                    // C23 `u8'...'` char/string literal: the `8` is part of the
+                    // `u8` prefix, not a pp-number. Avoid consuming `8'h'` as
+                    // pp-number (`8` + `'` digit separator) which would leave
+                    // the closing `'` to be mis-parsed.
+                    if bytes[i] == b'8'
+                        && i >= 1
+                        && bytes[i - 1] == b'u'
+                        && i + 1 < len
+                        && (bytes[i + 1] == b'\'' || bytes[i + 1] == b'"')
+                    {
+                        i += 1;
+                    } else {
+                        // Skip the whole pp-number so digit separators (`'`) and
+                        // suffixes are not mistaken for char literals or commas.
+                        i = Self::copy_ppnumber(bytes, i, &mut String::new());
+                    }
                 }
                 b'"' | b'\'' => {
                     // Skip past string/char literal (they are part of the argument

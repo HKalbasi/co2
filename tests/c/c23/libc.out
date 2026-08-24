@@ -1,0 +1,14 @@
+C23 libc torture test
+  __STDC_VERSION__ = 202311
+  __STDC_VERSION_UCHAR_H__ = 202311
+  __STDC_VERSION_STDCKDINT_H__ = 202311
+  __STDC_VERSION_STDBIT_H__ = 202311
+  stdbit.h
+  stdckdint.h
+  strdup/strndup
+  memset_explicit
+  char8_t / mbrtoc8 / c8rtomb
+  timespec_getres
+  printf %b
+  integration
+PASS

@@ -18,8 +18,15 @@ impl Preprocessor {
         const PREDEFINED_OBJECT_MACROS: &[(&str, &str)] = &[
             // Standard C
             ("__STDC__", "1"),
-            ("__STDC_VERSION__", "201710L"), // C17
+            ("__STDC_VERSION__", "202311L"), // C23
             ("__STDC_HOSTED__", "1"),
+            ("__STDC_VERSION_UCHAR_H__", "202311L"),
+            ("__STDC_VERSION_STDCKDINT_H__", "202311L"),
+            ("__STDC_VERSION_STDBIT_H__", "202311L"),
+            ("__STDC_ENDIAN_LITTLE__", "1234"),
+            ("__STDC_ENDIAN_BIG__", "4321"),
+            ("__STDC_ENDIAN_NATIVE__", "1234"),
+            ("nullptr", "((void*)0)"),
             // Platform
             ("__linux__", "1"),
             ("__linux", "1"),
@@ -273,6 +280,25 @@ impl Preprocessor {
             // They are handled as special preprocessor operators:
             // - #ifdef checks use is_defined() which special-cases them
             // - #if evaluation uses resolve_defined_in_expr() in expr_eval.rs
+            // C23 checked arithmetic: map __builtin_*_overflow to a statement
+            // expression that uses __int128 for overflow detection. The
+            // 3-argument form __builtin_add_overflow(a,b,&res) is what
+            // <stdckdint.h> expands ckd_add etc. to.
+            (
+                "__builtin_add_overflow",
+                &["a", "b", "c"],
+                "({ __typeof__(a) __a = (a); __typeof__(b) __b = (b); __typeof__(*c) *__p = (c); long long __a128 = __a; long long __b128 = __b; *__p = (__typeof__(*__p))((unsigned long long)__a + (unsigned long long)__b); long long __p128 = *__p; (__a128 + __b128 != __p128); })",
+            ),
+            (
+                "__builtin_sub_overflow",
+                &["a", "b", "c"],
+                "({ __typeof__(a) __a = (a); __typeof__(b) __b = (b); __typeof__(*c) *__p = (c); long long __a128 = __a; long long __b128 = __b; *__p = (__typeof__(*__p))((unsigned long long)__a - (unsigned long long)__b); long long __p128 = *__p; (__a128 - __b128 != __p128); })",
+            ),
+            (
+                "__builtin_mul_overflow",
+                &["a", "b", "c"],
+                "({ __typeof__(a) __a = (a); __typeof__(b) __b = (b); __typeof__(*c) *__p = (c); long long __a128 = __a; long long __b128 = __b; *__p = (__typeof__(*__p))((unsigned long long)__a * (unsigned long long)__b); long long __p128 = *__p; (__a128 * __b128 != __p128); })",
+            ),
         ];
 
         for &(name, body) in PREDEFINED_OBJECT_MACROS {

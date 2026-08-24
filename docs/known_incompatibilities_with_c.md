@@ -25,6 +25,7 @@ int array_decl[(intptr_t)some_pointer]; // Valid (although not useful) in C, com
 ## Incompatibilities which seems doesn't worth the effort to fix
 
 * non-UTF8 source files are not supported (not required by the C standard).
+* `int main() {}` without `return 0;` is UB and is not guaranteed to return zero. Just add the `return 0;` yourself.
 
 ## Semantic difference between C and CO2
 

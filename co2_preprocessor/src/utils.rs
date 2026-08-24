@@ -182,7 +182,7 @@ pub fn bytes_to_str(bytes: &[u8], start: usize, end: usize) -> &str {
 #[inline(always)]
 pub fn literal_prefix_len(bytes: &[u8], start: usize) -> usize {
     match bytes.get(start..) {
-        Some([b'u', b'8', b'"', ..]) => 2,
+        Some([b'u', b'8', b'"' | b'\'', ..]) => 2,
         Some([b'u' | b'U' | b'L', b'"' | b'\'', ..]) => 1,
         _ => 0,
     }
