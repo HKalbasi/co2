@@ -830,6 +830,12 @@ fn shared_rust_flags() -> Vec<String> {
     flags
 }
 
+/// Resolve the C linker driver via the shared compiler detection
+/// (`$CO2_CC`, else first of `cc`/`gcc`/`clang` on PATH).
+fn resolve_c_compiler() -> String {
+    co2_preprocessor::detect_c_compiler().unwrap_or_else(|| "cc".to_owned())
+}
+
 fn compile_asm_to_object(input: &Path, output: &Path, pic: bool, time_report: bool) {
     let assembler = std::env::var("CO2_AS").unwrap_or_else(|_| "gcc".to_owned());
     let mut cmd = Command::new(&assembler);
@@ -1024,7 +1030,7 @@ fn link_objects(
         process::exit(1);
     }
 
-    let mut link_cmd = Command::new("cc");
+    let mut link_cmd = Command::new(resolve_c_compiler());
     for object in objects {
         link_cmd.arg(object);
     }
@@ -1194,7 +1200,7 @@ const CO2C_LINK_STD_STUB: &str = r#"#![no_main]
 "#;
 
 fn link_shared_objects(objects: &[PathBuf], linker_args: &[String], output: Option<&Path>) {
-    let mut cmd = Command::new("cc");
+    let mut cmd = Command::new(resolve_c_compiler());
     cmd.arg("-shared");
 
     for object in objects {

@@ -1,5 +1,7 @@
 #!/usr/bin/env nu
 
+source "host-include-dirs.nu"
+
 def main [--version: string] {
     cd $env.FILE_PWD
     cd ..
@@ -16,10 +18,13 @@ def main [--version: string] {
 
     print "Testing rustup bundle in bwrap container..."
 
-    ^bwrap ...[
+    # Bind the host's C header directories so co2cc can find system headers.
+    let include_dirs = (host-include-dirs)
+    print $"Binding include dirs: ($include_dirs)"
+
+    mut binds = [
         --ro-bind /usr/lib /usr/lib
         --ro-bind /usr/bin /usr/bin
-        --ro-bind /usr/include /usr/include
         --ro-bind /lib /lib
         --ro-bind /etc /etc
         --ro-bind /lib64 /lib64
@@ -41,6 +46,16 @@ def main [--version: string] {
         --ro-bind $toolchain_dir $toolchain_dir
         --ro-bind ./bundler/bundle-smoke-test.nu /test/bundle-smoke-test.nu
         --chdir /test
+    ]
+    for dir in $include_dirs {
+        $binds = ($binds | append [--ro-bind $dir $dir] | flatten)
+    }
+    # Debian/Ubuntu keep gcc's cc1 in /usr/libexec; bind it when it exists.
+    if ("/usr/libexec" | path exists) {
+        $binds = ($binds | append [--ro-bind /usr/libexec /usr/libexec] | flatten)
+    }
+
+    ^bwrap ...$binds ...[
         nu /test/bundle-smoke-test.nu
     ]
 }

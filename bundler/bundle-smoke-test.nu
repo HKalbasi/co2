@@ -66,6 +66,14 @@ print "co2cc version OK"
 
 print "Testing C compilation..."
 
+# Diagnostics: make header-resolution failures debuggable from CI logs.
+let gcc_path = (do { bash -c 'command -v gcc || true' } | complete | get stdout | str trim)
+if ($gcc_path | is-empty) {
+    print "WARNING: gcc not found on PATH"
+} else {
+    print $"gcc on PATH: ($gcc_path)"
+}
+
 "
 #include <stdio.h>
 #include <stdint.h>

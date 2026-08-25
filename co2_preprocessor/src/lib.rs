@@ -225,23 +225,46 @@ fn translate_logical_span(
     Some(Span::from_parts(file_id, start..end))
 }
 
-fn discover_system_include_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+/// Detect an available C compiler driver, honoring `$CO2_CC`.
+/// Returns the first of `cc`/`gcc`/`clang` found on PATH.
+pub fn detect_c_compiler() -> Option<String> {
+    if let Ok(cc) = std::env::var("CO2_CC") {
+        return Some(cc);
+    }
+    let candidates = ["cc", "gcc", "clang"];
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        for candidate in candidates {
+            if dir.join(candidate).is_file() {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    None
+}
 
-    let Ok(output) = std::process::Command::new("gcc")
-        .args(["-E", "-Wp,-v", "-"])
+fn discover_system_include_paths() -> Vec<PathBuf> {
+    // Probe whichever C compiler is installed; gcc and clang both print their
+    // `#include <...>` search list to stderr under `-E -v`.
+    let Some(compiler) = detect_c_compiler() else {
+        return Vec::new();
+    };
+
+    let Ok(output) = std::process::Command::new(&compiler)
+        .args(["-E", "-v", "-"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .output()
     else {
-        return paths;
+        return Vec::new();
     };
 
     if !output.status.success() {
-        return paths;
+        return Vec::new();
     }
 
+    let mut paths = Vec::new();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let mut in_system_section = false;
 
