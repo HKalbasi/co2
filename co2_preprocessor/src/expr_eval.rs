@@ -307,7 +307,7 @@ impl Preprocessor {
         // Use the preprocessor's include path resolution
         let found = if is_next {
             let current_file = self.include_stack.last().cloned();
-            self.resolve_include_next_path(header_name, current_file.as_ref())
+            self.resolve_include_next_path(header_name, current_file.as_ref(), is_system)
                 .is_some()
         } else {
             self.resolve_include_path(header_name, is_system).is_some()

@@ -475,7 +475,7 @@ impl Preprocessor {
         let path = path.trim();
 
         // Parse the include path
-        let (include_path, _is_system, was_macro_expanded) = if path.starts_with('<') {
+        let (include_path, is_system, was_macro_expanded) = if path.starts_with('<') {
             let end = path.find('>').unwrap_or(path.len());
             (path[1..end].to_string(), true, false)
         } else if let Some(rest) = path.strip_prefix('"') {
@@ -507,7 +507,7 @@ impl Preprocessor {
 
         // Resolve using include_next semantics
         if let Some(resolved_path) =
-            self.resolve_include_next_path(&include_path, current_file.as_ref())
+            self.resolve_include_next_path(&include_path, current_file.as_ref(), is_system)
         {
             // Check for #pragma once
             if self.pragma_once_files.contains(&resolved_path) {
@@ -586,40 +586,50 @@ impl Preprocessor {
         &self,
         include_path: &str,
         current_file: Option<&PathBuf>,
+        is_system: bool,
     ) -> Option<PathBuf> {
-        // Collect all search paths in order:
-        // -iquote -> -I -> -isystem -> default system
-        let all_paths: Vec<&Path> = self
-            .quote_include_paths
-            .iter()
-            .chain(self.include_paths.iter())
-            .chain(self.isystem_include_paths.iter())
-            .chain(self.system_include_paths.iter())
-            .map(std::path::PathBuf::as_path)
-            .collect();
-
-        // Canonicalize the current file path for comparison
-        let current_file_canon = current_file.and_then(|f| std::fs::canonicalize(f).ok());
+        // Collect all search paths in order. For <...>, do not include -iquote paths.
+        let all_paths: Vec<&Path> = if is_system {
+            self.include_paths
+                .iter()
+                .chain(self.isystem_include_paths.iter())
+                .chain(self.system_include_paths.iter())
+                .map(std::path::PathBuf::as_path)
+                .collect()
+        } else {
+            self.quote_include_paths
+                .iter()
+                .chain(self.include_paths.iter())
+                .chain(self.isystem_include_paths.iter())
+                .chain(self.system_include_paths.iter())
+                .map(std::path::PathBuf::as_path)
+                .collect()
+        };
 
         // Find which search path contains the current file by checking if
         // search_path/include_path resolves to the same file as the current file.
         // This correctly handles subdirectory includes (e.g., sys/types.h).
         let mut found_current = false;
-        if let Some(ref cur_canon) = current_file_canon {
+        if let Some(current_file) = current_file {
+            let current_file_abs = make_absolute(current_file);
+            let current_file_canon = std::fs::canonicalize(current_file).ok();
             for search_path in &all_paths {
                 let candidate = search_path.join(include_path);
-                if candidate.is_file()
-                    && let Ok(candidate_canon) = std::fs::canonicalize(&candidate)
-                    && &candidate_canon == cur_canon
-                {
-                    found_current = true;
-                    continue;
-                }
-                if found_current {
-                    let candidate = search_path.join(include_path);
-                    if candidate.is_file() {
-                        return Some(make_absolute(&candidate));
+                if candidate.is_file() {
+                    let candidate_abs = make_absolute(&candidate);
+                    let candidate_canon = std::fs::canonicalize(&candidate).ok();
+                    let same_file = candidate_abs == current_file_abs
+                        || matches!(
+                            (&current_file_canon, &candidate_canon),
+                            (Some(cur), Some(cand)) if cur == cand
+                        );
+                    if same_file {
+                        found_current = true;
+                        continue;
                     }
+                }
+                if found_current && candidate.is_file() {
+                    return Some(make_absolute(&candidate));
                 }
             }
         }
@@ -627,13 +637,19 @@ impl Preprocessor {
         // Fallback: if we couldn't find the current file in any search path,
         // search all paths but skip any that resolve to the current file.
         if !found_current {
+            let current_file_abs = current_file.map(|f| make_absolute(f));
+            let current_file_canon = current_file.and_then(|f| std::fs::canonicalize(f).ok());
             for search_path in &all_paths {
                 let candidate = search_path.join(include_path);
                 if candidate.is_file() {
-                    // Use canonicalize for comparison to detect same-file
-                    let candidate_canon = std::fs::canonicalize(&candidate).ok();
-                    if let (Some(cur), Some(cand)) = (&current_file_canon, &candidate_canon)
-                        && cur == cand
+                    if let Some(current_file_abs) = current_file_abs.as_ref() {
+                        let candidate_abs = make_absolute(&candidate);
+                        if current_file_abs == &candidate_abs {
+                            continue;
+                        }
+                    }
+                    if let (Some(cur), Ok(cand)) = (&current_file_canon, std::fs::canonicalize(&candidate))
+                        && cur.as_path() == cand.as_path()
                     {
                         continue;
                     }
