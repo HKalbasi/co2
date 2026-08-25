@@ -4,6 +4,7 @@
 //! - Object-like macros: `#define FOO value`
 //! - Function-like macros: `#define MAX(a,b) ((a)>(b)?(a):(b))`
 //! - Variadic macros: `#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)`
+//! - `__VA_OPT__(content)` in variadic macros (C23 §6.10.5.2)
 //! - Stringification: `#param`
 //! - Token pasting: `a ## b`
 //!
@@ -884,13 +885,27 @@ impl MacroTable {
         let mut i = 0;
         let mut pending_param_idx: Option<usize> = None;
         let mut pending_va_args: bool = false;
+        // Set when an empty `__VA_OPT__()` forms the left operand of ##: the
+        // paste must not glue the preceding token with the right operand
+        // (C23 placemarker semantics, approximated with a space separator).
+        let mut pending_va_opt_absent: bool = false;
 
         while i < len {
             match &tokens[i] {
                 MacroBodyToken::HashHash => {
                     // ── Token Paste ────────────────────────────────────
                     // Left side: check pending resolved param first
-                    if pending_va_args {
+                    if pending_va_opt_absent {
+                        // Empty __VA_OPT__ was the left operand: keep the
+                        // neighbors separated instead of pasting them.
+                        pending_va_opt_absent = false;
+                        while result.ends_with(' ') || result.ends_with('\t') {
+                            result.pop();
+                        }
+                        if !result.is_empty() && !result.ends_with('\n') {
+                            result.push(' ');
+                        }
+                    } else if pending_va_args {
                         pending_va_args = false;
                         let va_args_raw = self.get_va_args(params, args);
                         let va_args = strip_blue_paint(&va_args_raw);
@@ -981,6 +996,37 @@ impl MacroTable {
                                 } else {
                                     result.push_str(&va_args);
                                 }
+                            }
+                            MacroBodyToken::Ident(id) if id == "__VA_OPT__" && is_variadic => {
+                                // Right operand of ##: paste uses only the
+                                // first pp-token of __VA_OPT__'s expansion
+                                // (C23 §6.10.5.3); empty yields nothing.
+                                let mut open = i + 1;
+                                while open < len && is_whitespace_token(&tokens[open]) {
+                                    open += 1;
+                                }
+                                if matches!(tokens.get(open), Some(MacroBodyToken::LParen))
+                                    && let Some(close) = find_matching_paren(tokens, open)
+                                {
+                                    if va_args_present(params, expanded_args, has_named_variadic) {
+                                        let inner = self.expand_body(
+                                            &tokens[open + 1..close],
+                                            params,
+                                            args,
+                                            expanded_args,
+                                            is_variadic,
+                                            has_named_variadic,
+                                        );
+                                        if let Some(first) = first_pp_token(&inner) {
+                                            result.push_str(first);
+                                        }
+                                    }
+                                    i = close + 1;
+                                } else {
+                                    result.push_str(id);
+                                    i += 1;
+                                }
+                                continue;
                             }
                             _ => {
                                 let text = super::macro_token::token_text(&tokens[i]);
@@ -1080,6 +1126,50 @@ impl MacroTable {
                 }
 
                 MacroBodyToken::Ident(s) => {
+                    // ── __VA_OPT__(content) (C23 §6.10.5.2) ────────────
+                    // Expands to the substituted content when the variable
+                    // arguments are present and non-empty; otherwise nothing.
+                    if s == "__VA_OPT__" && is_variadic {
+                        let mut open = i + 1;
+                        while open < len && is_whitespace_token(&tokens[open]) {
+                            open += 1;
+                        }
+                        if matches!(tokens.get(open), Some(MacroBodyToken::LParen))
+                            && let Some(close) = find_matching_paren(tokens, open)
+                        {
+                            if lookahead_hash_hash(tokens, close + 1) {
+                                // Left operand of ##: substitute content now.
+                                // When present, paste uses its trailing ident via
+                                // the extract_trailing_ident fallback; when absent,
+                                // mark it so ## does not glue neighbors together.
+                                if va_args_present(params, expanded_args, has_named_variadic) {
+                                    let inner = self.expand_body(
+                                        &tokens[open + 1..close],
+                                        params,
+                                        args,
+                                        expanded_args,
+                                        is_variadic,
+                                        has_named_variadic,
+                                    );
+                                    result.push_str(&inner);
+                                } else {
+                                    pending_va_opt_absent = true;
+                                }
+                            } else if va_args_present(params, expanded_args, has_named_variadic) {
+                                let inner = self.expand_body(
+                                    &tokens[open + 1..close],
+                                    params,
+                                    args,
+                                    expanded_args,
+                                    is_variadic,
+                                    has_named_variadic,
+                                );
+                                result.push_str(&inner);
+                            }
+                            i = close + 1;
+                            continue;
+                        }
+                    }
                     result.push_str(s);
                     i += 1;
                 }
@@ -1309,6 +1399,81 @@ fn is_whitespace_token(token: &MacroBodyToken) -> bool {
         MacroBodyToken::Other(s) => s.chars().all(|c| c.is_ascii_whitespace()),
         _ => false,
     }
+}
+
+/// Check whether the next non-whitespace token at `start` is `##`.
+fn lookahead_hash_hash(tokens: &[MacroBodyToken], start: usize) -> bool {
+    let mut j = start;
+    while j < tokens.len() && is_whitespace_token(&tokens[j]) {
+        j += 1;
+    }
+    matches!(tokens.get(j), Some(MacroBodyToken::HashHash))
+}
+
+/// Determine whether the variable arguments are present and contain at least
+/// one preprocessing token after macro expansion (C23 §6.10.5.2 __VA_OPT__
+/// rule). Per C23 §6.10.4, the trailing arguments merged into the variable
+/// arguments include their separating comma tokens, so two or more variable
+/// arguments are never empty even when each of them expands to nothing.
+/// A lone argument that expands to nothing stays empty, so the check runs on
+/// `expanded_args`.
+fn va_args_present(params: &[String], expanded_args: &[String], has_named_variadic: bool) -> bool {
+    let start = if has_named_variadic {
+        params.len().saturating_sub(1)
+    } else {
+        params.len()
+    };
+    match expanded_args.get(start..) {
+        None | Some([]) => false,
+        // Exactly one variable argument: empty iff it expands to no tokens.
+        Some([only]) => !only.trim().is_empty(),
+        // Two or more: their separating commas count as tokens themselves.
+        Some(_) => true,
+    }
+}
+
+/// Extract the first preprocessing token from `s` (after leading whitespace).
+/// Used for ## pasting where a `__VA_OPT__(content)` operand contributes only
+/// its first token (C23 §6.10.5.3).
+fn first_pp_token(s: &str) -> Option<&str> {
+    let t = s.trim_start();
+    let bytes = t.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut end = 1;
+    if is_ident_start_byte(bytes[0]) {
+        while end < bytes.len() && is_ident_cont_byte(bytes[end]) {
+            end += 1;
+        }
+    } else if bytes[0].is_ascii_digit() {
+        while end < bytes.len() && (is_ident_cont_byte(bytes[end]) || bytes[end] == b'.') {
+            end += 1;
+        }
+    }
+    Some(&t[..end])
+}
+
+/// Scan forward from `open_idx` (a `LParen`) for its matching `RParen`,
+/// tracking nesting depth of LParen/RParen tokens.
+/// Returns the index of the matching `RParen`, or `None` if unbalanced.
+fn find_matching_paren(tokens: &[MacroBodyToken], open_idx: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut k = open_idx + 1;
+    while k < tokens.len() {
+        match tokens[k] {
+            MacroBodyToken::LParen => depth += 1,
+            MacroBodyToken::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k);
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
 }
 
 /// Stringify a macro argument per C11 6.10.3.2.
