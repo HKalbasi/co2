@@ -605,30 +605,33 @@ impl Preprocessor {
                 .map(std::path::PathBuf::as_path)
                 .collect()
         };
+        let current_file_abs = current_file.map(|f| make_absolute(f));
+        let current_file_canon = current_file.and_then(|f| std::fs::canonicalize(f).ok());
 
         // Find which search path contains the current file by checking if
         // search_path/include_path resolves to the same file as the current file.
         // This correctly handles subdirectory includes (e.g., sys/types.h).
         let mut found_current = false;
-        if let Some(current_file) = current_file {
-            let current_file_abs = make_absolute(current_file);
-            let current_file_canon = std::fs::canonicalize(current_file).ok();
+        if let Some(current_file_abs) = current_file_abs.as_ref() {
             for search_path in &all_paths {
                 let candidate = search_path.join(include_path);
-                if candidate.is_file() {
-                    let candidate_abs = make_absolute(&candidate);
-                    let candidate_canon = std::fs::canonicalize(&candidate).ok();
-                    let same_file = candidate_abs == current_file_abs
-                        || matches!(
-                            (&current_file_canon, &candidate_canon),
-                            (Some(cur), Some(cand)) if cur == cand
-                        );
-                    if same_file {
-                        found_current = true;
-                        continue;
-                    }
+                if !candidate.is_file() {
+                    continue;
                 }
-                if found_current && candidate.is_file() {
+
+                let candidate_abs = make_absolute(&candidate);
+                let candidate_canon = std::fs::canonicalize(&candidate).ok();
+                let same_file = &candidate_abs == current_file_abs
+                    || matches!(
+                        (current_file_canon.as_ref(), &candidate_canon),
+                        (Some(cur), Some(cand)) if cur == cand
+                    );
+                if same_file {
+                    found_current = true;
+                    continue;
+                }
+
+                if found_current {
                     return Some(make_absolute(&candidate));
                 }
             }
@@ -637,8 +640,6 @@ impl Preprocessor {
         // Fallback: if we couldn't find the current file in any search path,
         // search all paths but skip any that resolve to the current file.
         if !found_current {
-            let current_file_abs = current_file.map(|f| make_absolute(f));
-            let current_file_canon = current_file.and_then(|f| std::fs::canonicalize(f).ok());
             for search_path in &all_paths {
                 let candidate = search_path.join(include_path);
                 if candidate.is_file() {
