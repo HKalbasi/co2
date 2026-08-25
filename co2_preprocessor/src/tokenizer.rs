@@ -300,7 +300,14 @@ impl<'a> Tokenizer<'a> {
             "short" => Token::Short,
             "signed" | "__signed__" => Token::Signed,
             "sizeof" => Token::Sizeof,
-            "typeof" | "__typeof" | "__typeof__" => Token::Typeof,
+            "typeof"
+            | "__typeof"
+            | "__typeof__"
+            // typeof_unqual is not really typeof, but we don't support qual yet so everything is unqual.
+            | "typeof_unqual"
+            | "__typeof_unqual__" => {
+                Token::Typeof
+            }
             "alignof" | "_Alignof" => Token::Alignof,
             "alignas" | "_Alignas" => Token::Alignas,
             "__builtin_offsetof" => Token::Offsetof,

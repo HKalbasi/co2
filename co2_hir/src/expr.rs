@@ -3198,8 +3198,7 @@ impl HirCtx<'_> {
         }
 
         if lhs.ty != rhs.ty {
-            let coercible =
-                is_assignment && is_numeric_ty(lhs.ty) && is_numeric_ty(rhs.ty);
+            let coercible = is_assignment && is_numeric_ty(lhs.ty) && is_numeric_ty(rhs.ty);
             if !coercible {
                 return Err(spanned_error(
                     parser_span,
@@ -3592,9 +3591,9 @@ fn readonly_constexpr_name(expr: &HirExpr, locals: &Arena<HirLocal>) -> Option<S
 fn addr_of_mutability(expr: &HirExpr) -> Mutability {
     match &expr.kind {
         HirExprKind::Deref(inner) => match inner.ty.kind() {
-            TyKind::RigidTy(
-                RigidTy::RawPtr(_, mutability) | RigidTy::Ref(_, _, mutability),
-            ) => mutability,
+            TyKind::RigidTy(RigidTy::RawPtr(_, mutability) | RigidTy::Ref(_, _, mutability)) => {
+                mutability
+            }
             _ => Mutability::Mut,
         },
         HirExprKind::Field { base, .. } => addr_of_mutability(base),

@@ -2828,7 +2828,9 @@ pub(crate) fn resolve_method(
             let Some(item) = associated_fn_named(tcx, impl_def_id, method) else {
                 continue;
             };
-            for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, param_env, &step, step.ty) {
+            for (adjusted_self_ty, adjustment) in
+                receiver_adjustments(tcx, param_env, &step, step.ty)
+            {
                 if let Some(probe) = probe_inherent_method(
                     tcx,
                     &infcx,
@@ -2872,7 +2874,9 @@ pub(crate) fn resolve_method(
                 let Some(item) = associated_fn_named(tcx, trait_def_id, method) else {
                     continue;
                 };
-                for (adjusted_self_ty, adjustment) in receiver_adjustments(tcx, param_env, &step, step.ty) {
+                for (adjusted_self_ty, adjustment) in
+                    receiver_adjustments(tcx, param_env, &step, step.ty)
+                {
                     if let Some(probe) = probe_trait_method(
                         tcx,
                         &infcx,
@@ -2964,10 +2968,14 @@ fn autoderef_steps<'tcx>(
                     source: rustc_public::rustc_internal::stable(source),
                     target: rustc_public::rustc_internal::stable(target),
                 },
-                AutoderefKind::Overloaded => {
-                    overloaded_deref_step(tcx, param_env, source, target, rustc_hir::Mutability::Not)
-                        .expect("Deref is always implemented for overloaded deref")
-                }
+                AutoderefKind::Overloaded => overloaded_deref_step(
+                    tcx,
+                    param_env,
+                    source,
+                    target,
+                    rustc_hir::Mutability::Not,
+                )
+                .expect("Deref is always implemented for overloaded deref"),
             });
             step_tys.push((source, target));
         }
@@ -2995,9 +3003,7 @@ fn overloaded_deref_step<'tcx>(
         rustc_hir::Mutability::Mut => (LangItem::DerefMut, "deref_mut"),
     };
     let deref_trait = tcx.lang_items().get(lang_item)?;
-    if mutbl.is_mut()
-        && !rustc_ty_implements_trait(tcx, param_env, source, deref_trait)
-    {
+    if mutbl.is_mut() && !rustc_ty_implements_trait(tcx, param_env, source, deref_trait) {
         return None;
     }
     let deref_method = tcx
