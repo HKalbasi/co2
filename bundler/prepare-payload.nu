@@ -14,27 +14,6 @@ def --env checkpoint [message: string] {
     $env.__CHECKPOINT_LAST = ($now | into string)
 }
 
-# Download a URL to a file, retrying on transient network failures (e.g. `nu::shell::io::timed_out`).
-def retry-download [url: string, dest: path, attempts: int = 5] {
-    for attempt in 1..$attempts {
-        let ok = (try {
-            http get --raw $url | save -f $dest
-            true
-        } catch { |err|
-            let reason = ($err | get -o msg | default "unknown error")
-            print $"Download attempt ($attempt)/($attempts) failed: ($reason)"
-            false
-        })
-        if $ok {
-            return
-        }
-        if $attempt < $attempts {
-            sleep 3sec
-        }
-    }
-    error make { msg: $"Failed to download ($url) after ($attempts) attempts" }
-}
-
 # Build co2-multicall and prepare the payload directory with all libraries
 # and rust stdlib crates. Returns the path to the prepared payload directory.
 def --env prepare-payload [--version: string] {
@@ -135,59 +114,6 @@ def --env prepare-payload [--version: string] {
         mkdir $dest_src
         cp -r $library_src $dest_src
     }
-
-    checkpoint "Bundling musl headers"
-
-    let musl_version = "1.2.6"
-    let musl_sha256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
-    let musl_tarball = $"target/musl-($musl_version).tar.gz"
-
-    if ($musl_tarball | path exists) {
-        let cached_sha = (open --raw $musl_tarball | hash sha256)
-        if $cached_sha != $musl_sha256 {
-            print $"Cached musl tarball SHA mismatch, redownloading..."
-            rm -f $musl_tarball
-        } else {
-            print "Using cached musl tarball"
-        }
-    }
-
-    if not ($musl_tarball | path exists) {
-        print $"Downloading musl ($musl_version)..."
-        retry-download $"https://musl.libc.org/releases/musl-($musl_version).tar.gz" $musl_tarball
-        let actual_sha = (open --raw $musl_tarball | hash sha256)
-        if $actual_sha != $musl_sha256 {
-            error make { msg: $"musl tarball SHA mismatch after download: expected ($musl_sha256), got ($actual_sha)" }
-        }
-    }
-
-    let include_dir = ($payload_dir | path join "include")
-    mkdir $include_dir
-
-    tar -xzf $musl_tarball -C $include_dir --strip-components=2 $"musl-($musl_version)/include/"
-    rm -f ($include_dir | path join "alltypes.h.in")
-
-    mkdir ($include_dir | path join "bits")
-    # Extract generic bits first (as fallback), then x86_64-specific bits on top
-    tar -xzf $musl_tarball -C ($include_dir | path join "bits") --strip-components=4 $"musl-($musl_version)/arch/generic/bits/"
-    tar -xzf $musl_tarball -C ($include_dir | path join "bits") --strip-components=4 $"musl-($musl_version)/arch/x86_64/bits/"
-    # Strip .in suffix from template headers (alltypes.h.in is processed separately below)
-    for f in (glob ($include_dir | path join "bits" "*.in") | uniq) {
-        if not ($f | str ends-with "alltypes.h.in") {
-            mv $f ($f | str replace ".in" "")
-        }
-    }
-    rm -f ($include_dir | path join "bits" "alltypes.h.in")
-
-    let arch_types_file = (mktemp)
-    let generic_types_file = (mktemp)
-    let sed_script_file = (mktemp)
-    let alltypes_out = ($include_dir | path join "bits" "alltypes.h")
-    tar -xzf $musl_tarball --to-stdout $"musl-($musl_version)/arch/x86_64/bits/alltypes.h.in" | save -f $arch_types_file --raw
-    tar -xzf $musl_tarball --to-stdout $"musl-($musl_version)/include/alltypes.h.in" | save -f $generic_types_file --raw
-    tar -xzf $musl_tarball --to-stdout $"musl-($musl_version)/tools/mkalltypes.sed" | save -f $sed_script_file --raw
-    ^bash -c $"cat ($arch_types_file) ($generic_types_file) | sed -f ($sed_script_file) > ($alltypes_out)"
-    rm -f $arch_types_file $generic_types_file $sed_script_file
 
     let env_template = ($env.FILE_PWD | path join "env.sh")
     open $env_template | str replace "@CO2_VERSION@" $version | save -f ($payload_dir | path join "env.sh")

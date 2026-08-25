@@ -19,6 +19,7 @@ def main [--version: string] {
     ^bwrap ...[
         --ro-bind /usr/lib /usr/lib
         --ro-bind /usr/bin /usr/bin
+        --ro-bind /usr/include /usr/include
         --ro-bind /lib /lib
         --ro-bind /etc /etc
         --ro-bind /lib64 /lib64

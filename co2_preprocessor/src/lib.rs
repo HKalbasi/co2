@@ -228,14 +228,6 @@ fn translate_logical_span(
 fn discover_system_include_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Bundled musl include path (highest priority).
-    if let Ok(cache_dir) = std::env::var("CO2_CACHE_DIR") {
-        let bundled_include = PathBuf::from(cache_dir).join("include");
-        if bundled_include.is_dir() {
-            paths.push(bundled_include);
-        }
-    }
-
     let Ok(output) = std::process::Command::new("gcc")
         .args(["-E", "-Wp,-v", "-"])
         .stdin(std::process::Stdio::null())
