@@ -3,6 +3,8 @@
 //@ run-stdout: 0 1 2 3 54 73 74 75\n12\n54\nenum to int: 1
 
 #include <stdio.h>
+#include <limits.h>
+#include <stdlib.h>
 
 enum fred
 {
@@ -55,6 +57,9 @@ enum Epositive {
     epos_one, epos_two
 };
 
+enum Emin { emin_a = INT_MIN };
+int *emin_p; enum Emin *emin_q;
+
 int main()
 {
    enum fred frod;
@@ -69,6 +74,10 @@ int main()
 
    /* Following should compile without warning.  */
    printf ("enum to int: %u\n", deref_uintptr(&epos));
+
+   enum Emin x = emin_a;
+   emin_q = &x;
+   if (*(1 ? emin_q : emin_p) > 0) abort();
 
    return 0;
 }

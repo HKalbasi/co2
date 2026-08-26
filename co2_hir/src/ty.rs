@@ -332,6 +332,20 @@ pub(crate) fn common_ternary_ty(lhs_ty: Ty, rhs_ty: Ty) -> Option<Ty> {
         if lhs_is_void_pointee || rhs_is_void_pointee {
             return Some(Ty::new_ptr(Ty::new_tuple(&[]), common_mutability));
         }
+
+        let lhs_stripped = strip_pat_ty(lhs_pointee);
+        let rhs_stripped = strip_pat_ty(rhs_pointee);
+
+        if let Some(underlying) = enum_payload_ty(lhs_stripped) {
+            if underlying == rhs_stripped {
+                return Some(Ty::new_ptr(rhs_stripped, common_mutability));
+            }
+        }
+        if let Some(underlying) = enum_payload_ty(rhs_stripped) {
+            if underlying == lhs_stripped {
+                return Some(Ty::new_ptr(lhs_stripped, common_mutability));
+            }
+        }
     }
     None
 }
