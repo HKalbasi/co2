@@ -2304,7 +2304,9 @@ impl HirCtx<'_> {
                         if !is_place_expr(&inner) {
                             if matches!(
                                 inner.kind,
-                                HirExprKind::Aggregate { .. } | HirExprKind::Zeroed
+                                HirExprKind::Aggregate { .. }
+                                    | HirExprKind::UnionAggregate { .. }
+                                    | HirExprKind::Zeroed
                             ) {
                                 return Ok(HirExpr {
                                     kind: HirExprKind::AddrOf(Box::new(inner.clone())),
