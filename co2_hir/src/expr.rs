@@ -33,6 +33,22 @@ fn spanned_error(span: co2_ast::Span, msg: impl Into<String>) -> (co2_ast::Span,
     (span, msg.into())
 }
 
+fn is_adt_overload(ty: Ty, resolver: &co2_crate_sig::LocalResolver) -> bool {
+    if is_maybe_uninit_fn_ptr_ty(ty).is_some() {
+        return false;
+    }
+    if let rustc_public_generative::rustc_public::ty::TyKind::RigidTy(
+        rustc_public_generative::rustc_public::ty::RigidTy::Adt(adt, _),
+    ) = ty.kind()
+    {
+        if enum_payload_ty(ty).is_some() {
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
 fn invalid_span() -> Span {
     Span::from_parts(co2_ast::FileId::INVALID, 0..0)
 }
@@ -3068,6 +3084,18 @@ impl HirCtx<'_> {
         }
         self.array_to_pointer_decay_if_array(&mut lhs);
         self.array_to_pointer_decay_if_array(&mut rhs);
+
+        // Operator overloading is not supported for ADT types like `String`.
+        // Check early before other diagnostics to prefer this message over
+        // generic type-mismatch errors (e.g. `s += s"foo"` where rhs is &str).
+        if is_adt_overload(lhs.ty, &self.decl_resolver)
+            || is_adt_overload(rhs.ty, &self.decl_resolver)
+        {
+            return Err(spanned_error(
+                parser_span,
+                "operator overloading is not supported",
+            ));
+        }
 
         if matches!(op, HirBinOp::Shl | HirBinOp::Shr)
             && is_integer_ty(lhs.ty)

@@ -1,0 +1,23 @@
+//@ mode: co2
+//@ compile-fail
+
+use std::string::String;
+
+#include <stdbool.h>
+
+fn f1() {
+    String s = String::new();
+    bool b = s == s;
+        //   ^^^^^^ error: operator overloading is not supported
+}
+
+fn f2() {
+    String s = String::new();
+    s += s"foo";
+//  ^^^^^^^^^^^ error: operator overloading is not supported
+}
+
+fn main() {
+    f1();
+    f2();
+}

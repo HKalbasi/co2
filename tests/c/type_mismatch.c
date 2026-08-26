@@ -88,7 +88,7 @@ void ternary_mismatch(int cond) {
 void binary_mismatch(void) {
     struct A a = { 1 };
     (void)(a + 1);
-//        ^^^^^^^ error: binary op type mismatch: expected co2(struct A), got i32
+//        ^^^^^^^ error: operator overloading is not supported
 }
 
 void anonymous_assignment_mismatch(void) {
