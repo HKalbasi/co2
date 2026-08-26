@@ -2524,6 +2524,19 @@ impl HirCtx<'_> {
                 let args = Box::new(self.lower_expr(*args, locals, local_map)?);
                 let ty =
                     self.lower_type_name_in_scope(type_name, parser_span, locals, local_map)?;
+                let check_ty = if matches!(ty.kind(), TyKind::RigidTy(RigidTy::Adt(_, _))) {
+                    Ty::from_rigid_kind(RigidTy::RawPtr(ty, Mutability::Mut))
+                } else {
+                    ty
+                };
+                if !self.decl_resolver.is_va_arg_safe(check_ty) {
+                    self.terminate_with_error(
+                        parser_span,
+                        &format!(
+                            "second argument to 'va_arg' is not va_arg safe"
+                        ),
+                    );
+                }
                 Ok(HirExpr {
                     kind: HirExprKind::VaArg(args),
                     ty,

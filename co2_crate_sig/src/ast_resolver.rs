@@ -256,6 +256,11 @@ impl LocalResolver {
         guard.hir_ctx.normalize_ty_defaults(ty)
     }
 
+    pub fn is_va_arg_safe(&self, ty: Ty) -> bool {
+        let guard = self.base.borrow();
+        guard.hir_ctx.type_is_va_arg_safe(self.current_owner, ty)
+    }
+
     pub fn new(base: Rc<RefCell<LocalResolverBase>>) -> Self {
         let struct_tags = base.borrow().global_struct_tags.clone();
         let locals = base.borrow().global_locals.clone();

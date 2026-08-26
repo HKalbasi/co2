@@ -2697,6 +2697,11 @@ pub(crate) fn type_is_copy(tcx: TyCtxt<'_>, owner: DefId, ty: MirTy) -> bool {
     type_implements_trait(tcx, owner, ty, copy_trait)
 }
 
+pub(crate) fn type_is_va_arg_safe(tcx: TyCtxt<'_>, owner: DefId, ty: MirTy) -> bool {
+    let va_trait = rustc_def_to_my_def(tcx, tcx.require_lang_item(LangItem::VaArgSafe, DUMMY_SP));
+    type_implements_trait(tcx, owner, ty, va_trait)
+}
+
 /// Check that the trait bounds on a function's generic parameters
 /// are satisfied with the given concrete generic arguments.
 /// Returns `Ok(())` if all bounds are satisfied, or an error message otherwise.

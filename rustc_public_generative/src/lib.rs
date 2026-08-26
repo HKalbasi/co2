@@ -295,6 +295,10 @@ impl<'tcx> HirStructureCtx<'tcx> {
         internal::type_is_copy(self.tcx, owner, ty)
     }
 
+    pub fn type_is_va_arg_safe(&self, owner: DefId, ty: rustc_public::ty::Ty) -> bool {
+        internal::type_is_va_arg_safe(self.tcx, owner, ty)
+    }
+
     pub fn normalize_ty_defaults(&self, ty: rustc_public::ty::Ty) -> rustc_public::ty::Ty {
         internal::normalize_ty_defaults(self.tcx, ty)
     }
