@@ -610,6 +610,24 @@ fn parse_args(args: &[String]) -> Result<CcArgs, ParseArgsError> {
     })
 }
 
+fn sanitize_crate_name(stem: &str) -> String {
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "co2c_out".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 fn build_rustc_object_args(
     input: &Path,
     output: Option<&Path>,
@@ -621,8 +639,7 @@ fn build_rustc_object_args(
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("co2c_out")
-        .replace('-', "_");
+        .map_or_else(|| "co2c_out".to_owned(), sanitize_crate_name);
 
     let emit = if emit_llvm {
         "--emit=llvm-bc".to_owned()
@@ -677,8 +694,7 @@ fn build_rustc_asm_args(
     let stem = input
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("co2c_out")
-        .replace('-', "_");
+        .map_or_else(|| "co2c_out".to_owned(), sanitize_crate_name);
 
     let emit = if emit_llvm {
         "--emit=llvm-ir".to_owned()
