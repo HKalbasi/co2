@@ -1378,6 +1378,43 @@ impl Preprocessor {
                         continue;
                     }
                 }
+                Token::LBracket if i + 1 < tokens.len() && tokens[i + 1].0 == Token::LBracket => {
+                    // C23 attribute specifier `[[ attr-list ]]`: treat it like
+                    // `__attribute__((attr))`. Supported weak/alias forms are
+                    // converted to Rust-style attributes; the rest are ignored.
+                    // Disambiguated from other double-bracket constructs (e.g.
+                    // co2/Rust nested array types like `[[u8; N]; M]`) by
+                    // validating that the enclosed tokens actually form an
+                    // attribute list; anything else is left untouched.
+                    if let Some(spec_end) = Self::skip_balanced_double_bracket(tokens, i + 2) {
+                        // Content between the outer brackets: excludes both
+                        // opening brackets (i, i+1) and both closing ones
+                        // (spec_end-2, spec_end-1).
+                        let inner = &tokens[i + 2..spec_end - 2];
+                        let stripped_ns = Self::strip_attr_namespace_prefixes(inner);
+                        let is_attr_list = !inner.is_empty() && Self::is_c23_attribute_list(inner);
+                        if is_attr_list && Self::attribute_is_weak_or_alias(&stripped_ns) {
+                            let inner_content = Self::attribute_inner_content(&stripped_ns);
+                            let groups = Self::split_attr_groups(inner_content);
+                            let mut replacement: Vec<(Token, usize, usize)> = Vec::new();
+                            for group in &groups {
+                                replacement.push((Token::Hash, start, end));
+                                replacement.push((Token::LBracket, start, end));
+                                replacement.extend(group.iter().cloned());
+                                replacement.push((Token::RBracket, start, end));
+                            }
+                            tokens.splice(i..spec_end, replacement);
+                            i += 1;
+                            continue;
+                        }
+                        if is_attr_list {
+                            let _ = tokens.drain(i..spec_end);
+                            // i stays the same — next token shifted to position i
+                            continue;
+                        }
+                        // Not an attribute: fall through to examine the next token.
+                    }
+                }
                 Token::Ident(name)
                     if name == "__extension__" || name == "_Complex" || name == "_Noreturn" =>
                 {
@@ -1413,6 +1450,86 @@ impl Preprocessor {
             i += 1;
         }
         None // unbalanced
+    }
+
+    /// Find the end of a C23 attribute specifier `[[ ... ]]`.
+    /// `start` is the index just past the opening `[[`. Tracks balanced
+    /// brackets inside the specifier and returns the index just past the
+    /// matching `]]`, or None if unterminated.
+    fn skip_balanced_double_bracket(
+        tokens: &[(Token, usize, usize)],
+        start: usize,
+    ) -> Option<usize> {
+        let mut depth: i32 = 2; // both opening brackets are open
+        let mut i = start;
+        while i < tokens.len() {
+            match tokens[i].0 {
+                Token::LBracket => depth += 1,
+                Token::RBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1); // past the closing `]]`
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None // unterminated
+    }
+
+    /// Remove `namespace ::` prefixes (e.g. `gnu::weak`, `clang::unsequenced`)
+    /// from C23 attribute tokens so `[[gnu::weak]]` maps onto the same
+    /// supported attribute set as `__attribute__((weak))`.
+    fn strip_attr_namespace_prefixes(
+        tokens: &[(Token, usize, usize)],
+    ) -> Vec<(Token, usize, usize)> {
+        let mut out = Vec::with_capacity(tokens.len());
+        let mut i = 0;
+        while i < tokens.len() {
+            if matches!(tokens[i].0, Token::Ident(_))
+                && matches!(tokens.get(i + 1).map(|t| &t.0), Some(Token::ColonColon))
+            {
+                i += 2;
+                continue;
+            }
+            out.push(tokens[i].clone());
+            i += 1;
+        }
+        out
+    }
+
+    /// Check whether `tokens` forms a valid C23 attribute-list: one or more
+    /// comma-separated attributes, each consisting of optional `ident ::`
+    /// namespace prefixes, an identifier name, and optionally a balanced
+    /// parenthesized argument clause. Used to disambiguate `[[ ... ]]`
+    /// attribute specifiers from other double-bracket token sequences such as
+    /// co2/Rust nested array types (`[[u8; N]; M]`) or nested array literals.
+    fn is_c23_attribute_list(tokens: &[(Token, usize, usize)]) -> bool {
+        let mut i = 0;
+        loop {
+            // Optional namespace prefixes before the attribute name.
+            while matches!(tokens.get(i).map(|t| &t.0), Some(Token::Ident(_)))
+                && matches!(tokens.get(i + 1).map(|t| &t.0), Some(Token::ColonColon))
+            {
+                i += 2;
+            }
+            match tokens.get(i).map(|t| &t.0) {
+                Some(Token::Ident(_)) => i += 1,
+                _ => return false,
+            }
+            // Optional balanced argument clause, e.g. deprecated("msg").
+            if matches!(tokens.get(i).map(|t| &t.0), Some(Token::LParen))
+                && let Some(end) = Self::skip_balanced_parens(tokens, i)
+            {
+                i = end;
+            }
+            match tokens.get(i) {
+                None => return true,
+                Some((Token::Comma, _, _)) => i += 1,
+                Some(_) => return false,
+            }
+        }
     }
 
     /// Returns true if the `__attribute__` body (the tokens between the outer
