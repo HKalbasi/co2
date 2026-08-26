@@ -1403,6 +1403,28 @@ impl<R: TypeResolver> Declarator<R> {
     }
 }
 
+impl Declarator<StatelessResolver> {
+    pub fn is_unsized_array(&self) -> bool {
+        match self {
+            Declarator::ArrayDeclarator {
+                declarator,
+                subscription,
+            } => {
+                if subscription.0.is_unsized() {
+                    true
+                } else {
+                    declarator.0.is_unsized_array()
+                }
+            }
+            Declarator::PointerDeclarator { declarator, .. }
+            | Declarator::FunctionDeclarator { declarator, .. } => {
+                declarator.0.is_unsized_array()
+            }
+            Declarator::Identifier(_) | Declarator::Abstract => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum DeclarationSpecifier<R: TypeResolver> {
     TypeSpecifier(Spanned<TypeSpecifier<R>>),

@@ -564,6 +564,7 @@ fn deduplicate_tu_items(
         StaticUninitOrFuncDecl,
         ExternFunction,
         ExternVarDecl,
+        StaticUninitUnsized,
         StaticUninit,
         Typedef,
         FunctionDeclaration,
@@ -602,9 +603,18 @@ fn deduplicate_tu_items(
                 ) => Some(ExternVarDecl),
                 (
                     StaticInitialized,
-                    StaticUninit | ExternVarDecl | ExternVarDeclOrFuncDecl | StaticUninitOrFuncDecl,
+                    StaticUninit
+                    | StaticUninitUnsized
+                    | ExternVarDecl
+                    | ExternVarDeclOrFuncDecl
+                    | StaticUninitOrFuncDecl,
                 ) => Some(StaticInitialized),
-                (StaticUninit, StaticUninit | ExternVarDecl) => Some(StaticUninit),
+                (StaticUninit, StaticUninit | StaticUninitUnsized | ExternVarDecl) => {
+                    Some(StaticUninit)
+                },
+                (StaticUninitUnsized, StaticUninitUnsized | ExternVarDecl | ExternVarDeclOrFuncDecl | StaticUninitOrFuncDecl) => {
+                    Some(StaticUninitUnsized)
+                },
                 (ExternVarDeclOrFuncDecl, ExternVarDeclOrFuncDecl) => Some(ExternVarDeclOrFuncDecl),
                 (StaticUninitOrFuncDecl, StaticUninitOrFuncDecl | ExternVarDeclOrFuncDecl) => {
                     Some(StaticUninitOrFuncDecl)
@@ -705,6 +715,8 @@ fn deduplicate_tu_items(
                         }
                     } else if is_extern {
                         ExternVarDecl
+                    } else if decl.0.declarator.0.is_unsized_array() {
+                        StaticUninitUnsized
                     } else {
                         StaticUninit
                     };
