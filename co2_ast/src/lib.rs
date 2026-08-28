@@ -1417,9 +1417,7 @@ impl Declarator<StatelessResolver> {
                 }
             }
             Declarator::PointerDeclarator { declarator, .. }
-            | Declarator::FunctionDeclarator { declarator, .. } => {
-                declarator.0.is_unsized_array()
-            }
+            | Declarator::FunctionDeclarator { declarator, .. } => declarator.0.is_unsized_array(),
             Declarator::Identifier(_) | Declarator::Abstract => false,
         }
     }

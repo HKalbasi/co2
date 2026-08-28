@@ -611,10 +611,14 @@ fn deduplicate_tu_items(
                 ) => Some(StaticInitialized),
                 (StaticUninit, StaticUninit | StaticUninitUnsized | ExternVarDecl) => {
                     Some(StaticUninit)
-                },
-                (StaticUninitUnsized, StaticUninitUnsized | ExternVarDecl | ExternVarDeclOrFuncDecl | StaticUninitOrFuncDecl) => {
-                    Some(StaticUninitUnsized)
-                },
+                }
+                (
+                    StaticUninitUnsized,
+                    StaticUninitUnsized
+                    | ExternVarDecl
+                    | ExternVarDeclOrFuncDecl
+                    | StaticUninitOrFuncDecl,
+                ) => Some(StaticUninitUnsized),
                 (ExternVarDeclOrFuncDecl, ExternVarDeclOrFuncDecl) => Some(ExternVarDeclOrFuncDecl),
                 (StaticUninitOrFuncDecl, StaticUninitOrFuncDecl | ExternVarDeclOrFuncDecl) => {
                     Some(StaticUninitOrFuncDecl)

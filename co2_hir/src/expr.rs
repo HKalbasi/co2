@@ -33,12 +33,12 @@ fn spanned_error(span: co2_ast::Span, msg: impl Into<String>) -> (co2_ast::Span,
     (span, msg.into())
 }
 
-fn is_adt_overload(ty: Ty, resolver: &co2_crate_sig::LocalResolver) -> bool {
+fn is_adt_overload(ty: Ty) -> bool {
     if is_maybe_uninit_fn_ptr_ty(ty).is_some() {
         return false;
     }
     if let rustc_public_generative::rustc_public::ty::TyKind::RigidTy(
-        rustc_public_generative::rustc_public::ty::RigidTy::Adt(adt, _),
+        rustc_public_generative::rustc_public::ty::RigidTy::Adt(_, _),
     ) = ty.kind()
     {
         if enum_payload_ty(ty).is_some() {
@@ -2550,9 +2550,7 @@ impl HirCtx<'_> {
                 if !self.decl_resolver.is_va_arg_safe(check_ty) {
                     self.terminate_with_error(
                         parser_span,
-                        &format!(
-                            "second argument to 'va_arg' is not va_arg safe"
-                        ),
+                        &format!("second argument to 'va_arg' is not va_arg safe"),
                     );
                 }
                 Ok(HirExpr {
@@ -3088,9 +3086,7 @@ impl HirCtx<'_> {
         // Operator overloading is not supported for ADT types like `String`.
         // Check early before other diagnostics to prefer this message over
         // generic type-mismatch errors (e.g. `s += s"foo"` where rhs is &str).
-        if is_adt_overload(lhs.ty, &self.decl_resolver)
-            || is_adt_overload(rhs.ty, &self.decl_resolver)
-        {
+        if is_adt_overload(lhs.ty) || is_adt_overload(rhs.ty) {
             return Err(spanned_error(
                 parser_span,
                 "operator overloading is not supported",
