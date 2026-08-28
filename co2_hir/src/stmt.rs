@@ -11,7 +11,9 @@ use crate::HirDecl;
 use crate::expr::{HirExpr, HirExprKind, coerce_expr_to_type};
 use crate::item::{HirLocal, LabelId, LocalId};
 use crate::resolver::HirCtx;
-use crate::ty::{is_condition_ty, is_integer_ty, needs_implicit_cast, ty_matches_expected};
+use crate::ty::{
+    integer_promote_ty, is_condition_ty, is_integer_ty, needs_implicit_cast, ty_matches_expected,
+};
 
 #[derive(Clone, Debug)]
 pub enum HirStmt {
@@ -388,7 +390,16 @@ impl HirCtx<'_> {
                         ),
                     );
                 }
-                let discr_ty = discr.ty;
+                let discr_ty = integer_promote_ty(discr.ty);
+                let discr_init = if discr_ty != discr.ty {
+                    HirExpr {
+                        kind: HirExprKind::Cast(Box::new(discr)),
+                        ty: discr_ty,
+                        span,
+                    }
+                } else {
+                    discr
+                };
                 let discr_local = locals.alloc(HirLocal {
                     name: format!("__switch_discr{}", locals.len()),
                     ty: discr_ty,
@@ -397,7 +408,7 @@ impl HirCtx<'_> {
                 });
                 out.push(HirStmt::Decl(HirDecl {
                     local: discr_local,
-                    initializer: Some(discr),
+                    initializer: Some(discr_init),
                     span,
                 }));
 

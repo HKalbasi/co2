@@ -53,5 +53,15 @@ int main(void) {
     if (ch == 'A') { } else return 24;
     if ((ch > 'a') != 0) return 25;
 
+    signed char i26 = -1;
+    switch (i26) {
+        case 255: return 26;
+    }
+    int i27 = -1;
+    switch (i27) {
+        case 0xffffffff: break;
+        default: return 27;
+    }
+
     return 0;
 }
