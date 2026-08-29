@@ -13,7 +13,8 @@ mod ty;
 pub(crate) use ctx::CrateSigCtx;
 
 pub use ast_resolver::{
-    DefOrLocal, LocalResolver, LocalResolverBase, MethodResolutionKind, RegisteredArrayLenConst,
+    DefOrLocal, LocalResolver, LocalResolverBase, MethodResolutionKind, PendingExtern,
+    RegisteredArrayLenConst, expr_contains_label_address, initializer_contains_label_address,
 };
 pub use attr::{Co2Attr, co2_attrs_to_generated};
 pub use lowering::{WellknownDefs, lower_crate_sig};

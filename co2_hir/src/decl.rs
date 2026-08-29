@@ -4,7 +4,9 @@ use co2_ast::{
     Constant, Declaration, DeclarationSpecifier, Declarator, Expression, InitDeclarator,
     Initializer, RustTy, Span, Spanned, StorageClassSpecifier, TypeName, TypeQualifier,
 };
-use co2_crate_sig::{CompressedTypeSpecifier, LocalResolver, LogicalAdtFieldKind};
+use co2_crate_sig::{
+    CompressedTypeSpecifier, LocalResolver, LogicalAdtFieldKind, initializer_contains_label_address,
+};
 use co2_parser::parse_expression_tokens;
 use la_arena::Arena;
 use rustc_public_generative::{
@@ -562,6 +564,30 @@ impl HirCtx<'_> {
                         .expect("declaration should have at least one specifier");
                     let _ = self.base_ty_of_decl(declaration_specifiers, parser_span);
                     return Ok(());
+                }
+                // Block-scope `extern`/`static`/function are not locals:
+                // `extern` aliases a global, `static` was hoisted, plain `int f();` implies extern linkage.
+                let is_extern = declaration_specifiers
+                    .iter()
+                    .any(|s| matches!(s.0, DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Extern, _))));
+                let is_static = declaration_specifiers
+                    .iter()
+                    .any(|s| matches!(s.0, DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Static, _))));
+                let is_func = declarators
+                    .iter()
+                    .any(|d| d.0.declarator.0.is_function());
+                if is_extern || is_func {
+                    return Ok(());
+                }
+                if is_static {
+                    let has_label_addr = declarators.iter().any(|d| {
+                        d.0.initializer
+                            .as_ref()
+                            .is_some_and(|init| initializer_contains_label_address(&init.0))
+                    });
+                    if !has_label_addr {
+                        return Ok(());
+                    }
                 }
                 let is_auto_decl = has_auto_decl_specs(&declaration_specifiers);
                 for init in declarators {

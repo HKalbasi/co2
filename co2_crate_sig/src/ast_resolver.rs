@@ -29,7 +29,7 @@ use crate::{
     ty::{CTy, PrimitiveTy},
 };
 
-fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
+pub fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
     match expr {
         Expression::LabelAddress(_) => true,
         Expression::Field(base, _)
@@ -105,7 +105,7 @@ fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
     }
 }
 
-fn initializer_contains_label_address<R: TypeResolver>(
+pub fn initializer_contains_label_address<R: TypeResolver>(
     initializer: &co2_ast::Initializer<R>,
 ) -> bool {
     match initializer {
@@ -116,9 +116,45 @@ fn initializer_contains_label_address<R: TypeResolver>(
     }
 }
 
+fn resolve_or_create_block_extern(
+    base: &mut LocalResolverBase,
+    module_path: &[String],
+    name: String,
+    specs: Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>>,
+    declarator: Declarator<LocalResolver>,
+    span: co2_ast::Span,
+) -> DefId {
+    if let Some((def_id, _)) = base.resolver.resolve_relative(module_path, &name) {
+        return def_id;
+    }
+    if let Some(pending) = base.pending_extern.get(&name) {
+        return pending.def_id;
+    }
+    let def_id = base
+        .hir_ctx
+        .allocate_def_id(base.foreign_mod, &DefData::ValueNs(name.clone()));
+    base.pending_extern.insert(
+        name.clone(),
+        PendingExtern {
+            def_id,
+            specs,
+            declarator,
+            span,
+        },
+    );
+    def_id
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct StructAndEnumData {
     pub struct_tags: im::HashMap<String, DefId>,
+}
+
+pub struct PendingExtern {
+    pub def_id: DefId,
+    pub specs: Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>>,
+    pub declarator: Declarator<LocalResolver>,
+    pub span: co2_ast::Span,
 }
 
 pub struct LocalResolverBase {
@@ -141,6 +177,8 @@ pub struct LocalResolverBase {
         InitDeclarator<LocalResolver>,
         co2_ast::Span,
     )>,
+    pub pending_extern: HashMap<String, PendingExtern>,
+    pub foreign_mod: DefId,
     pub array_len_consts: HashMap<usize, RegisteredArrayLenConst>,
     pub array_len_const_exprs: HashMap<usize, co2_ast::Spanned<Expression<LocalResolver>>>,
     pub hir_ctx: &'static HirStructureCtx<'static>,
@@ -938,6 +976,7 @@ impl co2_ast::TypeResolver for LocalResolver {
             } => {
                 let is_typedef = declaration_specifiers.iter().any(|d| d.0.is_typedef());
                 let is_static = declaration_specifiers.iter().any(|d| d.0.is_static());
+                let is_extern = declaration_specifiers.iter().any(|d| d.0.is_extern());
                 let is_constexpr = declaration_specifiers.iter().any(|d| d.0.is_constexpr());
                 if is_typedef && is_static {
                     todo!("Emit good error");
@@ -1001,8 +1040,29 @@ impl co2_ast::TypeResolver for LocalResolver {
                                 TypeQueryResult::Expr,
                             ),
                         );
-                    } else if decl.0.declarator.0.is_function() {
-                        // TODO: detect if we need to emit an extern function here.
+                    } else if is_extern || decl.0.declarator.0.is_function() {
+                        let def_id = {
+                            let mut base = next.base.borrow_mut();
+                            let module_path = next.module_path.clone();
+                            resolve_or_create_block_extern(
+                                &mut base,
+                                &module_path,
+                                name.1.clone(),
+                                declaration_specifiers.clone(),
+                                decl.0.declarator.0.clone(),
+                                decl.1,
+                            )
+                        };
+                        next.locals.borrow_mut().insert(
+                            name.1.clone(),
+                            (
+                                DefOrLocal::Def {
+                                    def_id,
+                                    generic_args: vec![],
+                                },
+                                TypeQueryResult::Expr,
+                            ),
+                        );
                     } else {
                         if is_constexpr
                             && let Some((co2_ast::Initializer::Expr(expr), _span)) =

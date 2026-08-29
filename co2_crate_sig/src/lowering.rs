@@ -66,6 +66,73 @@ fn has_const_qualifier_in_decl_specs(
     })
 }
 
+fn strip_storage_specs(
+    specs: Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>>,
+) -> Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>> {
+    specs
+        .into_iter()
+        .filter(|(spec, _)| {
+            !matches!(
+                spec,
+                DeclarationSpecifier::StorageSpecifier((
+                    StorageClassSpecifier::Typedef
+                    | StorageClassSpecifier::Extern
+                    | StorageClassSpecifier::Static
+                    | StorageClassSpecifier::Constexpr,
+                    _
+                ))
+            )
+        })
+        .collect()
+}
+
+fn emit_foreign_item(
+    ctx: &mut CrateSigCtx<'_>,
+    id: DefId,
+    name: String,
+    ty: CTy,
+    span: rustc_public_generative::rustc_public::ty::Span,
+    foreign_items: &mut Vec<ForeignModItem>,
+) {
+    match ty {
+        CTy::Ty(ty) => {
+            ctx.resolver
+                .borrow_mut()
+                .global_value_tys
+                .insert(id, ty.clone());
+            foreign_items.push(ForeignModItem::ForeignStatic {
+                name,
+                id,
+                ty,
+                mutable: true,
+                span,
+            });
+        }
+        CTy::UnsizedArray(elem_ty) => {
+            let ty = HirTy::new_array(elem_ty, HirTyConst::Literal(0), span);
+            ctx.resolver
+                .borrow_mut()
+                .global_value_tys
+                .insert(id, ty.clone());
+            foreign_items.push(ForeignModItem::ForeignStatic {
+                name,
+                id,
+                ty,
+                mutable: true,
+                span,
+            });
+        }
+        CTy::Function(sig) => {
+            foreign_items.push(ForeignModItem::ForeignFunction {
+                name,
+                id: FnDef(id),
+                sig,
+                span,
+            });
+        }
+    }
+}
+
 /// Step 1 of attribute lowering: raw C/rust-style attributes
 /// (`co2_ast::RustAttribute`) into co2-internal [`Co2Attr`]s. This may carry
 /// attributes with no rustc equivalent (e.g. `Alias`).
@@ -1870,13 +1937,15 @@ pub fn lower_crate_sig(
         clone_trait: resolver.resolve("core::clone::Clone").unwrap().0,
         copy_trait: resolver.resolve("core::marker::Copy").unwrap().0,
         clone_trait_fn: resolver.resolve("core::clone::Clone::clone").unwrap().0,
-        resolver: Rc::new(RefCell::new(LocalResolverBase {
+            resolver: Rc::new(RefCell::new(LocalResolverBase {
             resolver,
             local_counter: 0,
             fake_defs_counter: 0,
             array_len_const_counter: 0,
             pending_typedefs: vec![],
             pending_static: vec![],
+            pending_extern: HashMap::new(),
+            foreign_mod,
             array_len_consts: HashMap::new(),
             array_len_const_exprs: HashMap::new(),
             hir_ctx: unsafe {
@@ -2080,6 +2149,26 @@ pub fn lower_crate_sig(
                 );
             }
         }
+    }
+
+    // Block-scope `extern` without prior file-scope declaration (e.g. `extern int puts(...);` inside a function).
+    let pending_extern = std::mem::take(&mut ctx.resolver.borrow_mut().pending_extern);
+    for (name, pending) in pending_extern {
+        let crate::ast_resolver::PendingExtern {
+            def_id: id,
+            specs: specifiers,
+            declarator,
+            span: parser_span,
+        } = pending;
+        let span = ctx.co2_span_to_rustc(parser_span);
+        let cleaned = strip_storage_specs(specifiers);
+        let base_const = has_const_qualifier_in_decl_specs(&cleaned);
+        let base = ctx.base_ty_of_decl(cleaned, parser_span);
+        let (decl_name, ty, _array_len) =
+            ctx.lower_value_decl_ctype(base.clone(), base_const, (declarator, parser_span));
+        // `decl_name` should match `name`; use `id` directly.
+        let _ = decl_name;
+        emit_foreign_item(&mut ctx, id, name, ty, span, &mut foreign_items);
     }
 
     let structs = ctx.resolver.borrow_mut().emit_structs().collect::<Vec<_>>();
