@@ -1,0 +1,7 @@
+custom.o: \
+  $DIR/main.c \
+  $DIR/other.h
+
+$DIR/main.c:
+
+$DIR/other.h:

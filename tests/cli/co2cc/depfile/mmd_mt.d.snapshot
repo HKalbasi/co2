@@ -1,0 +1,3 @@
+my_target.o: \
+  $DIR/main.c \
+  $DIR/other.h

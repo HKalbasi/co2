@@ -20,6 +20,7 @@ enum LinkOutputKind {
 
 struct DepFileArgs {
     generate: bool,
+    exclude_system: bool,
     phony: bool,
     output: Option<PathBuf>,
     target: Option<String>,
@@ -104,6 +105,7 @@ Options:
   -masm=<flavor>       Use given assembly style (att/intel) for -S output
   -ftime-report        Print timing report
   -MD                  Generate make dependency file
+  -MMD                 Like -MD but ignore system headers
   -MP                  Add phony targets to dependency file
   -MF <file>           Write dependency output to <file>
   -MT <target>         Use <target> as the rule name in dependency file
@@ -258,7 +260,12 @@ fn run_co2c(args: &CcArgs) {
             co2_driver_lib::time_report::enable_timing();
         }
         let preprocessed = Arc::new(co2_preprocessor::preprocess(&resolved, &args.cpp_args));
-        write_dep_file(&preprocessed, args.output.as_deref(), &args.dep_args);
+        write_dep_file(
+            &preprocessed,
+            args.output.as_deref(),
+            &args.dep_args,
+            &args.cpp_args,
+        );
         if args.time_report {
             co2_driver_lib::time_report::mark_preprocess_done();
         }
@@ -323,7 +330,12 @@ fn run_co2c(args: &CcArgs) {
             co2_driver_lib::time_report::enable_timing();
         }
         let preprocessed = Arc::new(co2_preprocessor::preprocess(&resolved, &args.cpp_args));
-        write_dep_file(&preprocessed, args.output.as_deref(), &args.dep_args);
+        write_dep_file(
+            &preprocessed,
+            args.output.as_deref(),
+            &args.dep_args,
+            &args.cpp_args,
+        );
         if args.time_report {
             co2_driver_lib::time_report::mark_preprocess_done();
         }
@@ -433,6 +445,7 @@ fn parse_args(args: &[String]) -> Result<CcArgs, ParseArgsError> {
     let mut linker_args = Vec::new();
     let mut dep_args = DepFileArgs {
         generate: false,
+        exclude_system: false,
         phony: false,
         output: None,
         target: None,
@@ -482,6 +495,10 @@ fn parse_args(args: &[String]) -> Result<CcArgs, ParseArgsError> {
             }
             "-MD" => {
                 dep_args.generate = true;
+            }
+            "-MMD" => {
+                dep_args.generate = true;
+                dep_args.exclude_system = true;
             }
             "-MP" => {
                 dep_args.phony = true;
@@ -902,7 +919,11 @@ fn compile_c_to_object(
         cmd.arg("-ftime-report");
     }
     if dep_args.generate {
-        cmd.arg("-MD");
+        if dep_args.exclude_system {
+            cmd.arg("-MMD");
+        } else {
+            cmd.arg("-MD");
+        }
     }
     if dep_args.phony {
         cmd.arg("-MP");
@@ -1251,10 +1272,28 @@ fn quote_for_make(s: &str) -> String {
     out
 }
 
+fn system_include_dirs(cpp_args: &[String]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if !cpp_args.iter().any(|a| a == "-nostdinc") {
+        dirs.extend(co2_preprocessor::discover_system_include_paths());
+    }
+    dirs.extend(cpp_args.iter().enumerate().filter_map(|(i, arg)| {
+        if arg == "-isystem" {
+            cpp_args.get(i + 1).map(PathBuf::from)
+        } else {
+            arg.strip_prefix("-isystem")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        }
+    }));
+    dirs
+}
+
 fn write_dep_file(
     preprocessed: &co2_preprocessor::PreprocessedSource,
     obj_output: Option<&Path>,
     dep_args: &DepFileArgs,
+    cpp_args: &[String],
 ) {
     if !dep_args.generate {
         return;
@@ -1291,6 +1330,10 @@ fn write_dep_file(
     // Sort for deterministic output (files() iter order is arbitrary)
     let mut deps = deps;
     deps.sort();
+    if dep_args.exclude_system {
+        let system_dirs = system_include_dirs(cpp_args);
+        deps.retain(|dep| !system_dirs.iter().any(|d| Path::new(dep).starts_with(d)));
+    }
 
     let mut content = format!("{target}:");
     for dep in &deps {

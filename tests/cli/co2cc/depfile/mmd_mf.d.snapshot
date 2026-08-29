@@ -1,0 +1,3 @@
+main.o: \
+  $DIR/main.c \
+  $DIR/other.h

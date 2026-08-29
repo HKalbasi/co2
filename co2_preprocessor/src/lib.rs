@@ -243,7 +243,7 @@ pub fn detect_c_compiler() -> Option<String> {
     None
 }
 
-fn discover_system_include_paths() -> Vec<PathBuf> {
+pub fn discover_system_include_paths() -> Vec<PathBuf> {
     // Probe whichever C compiler is installed; gcc and clang both print their
     // `#include <...>` search list to stderr under `-E -v`.
     let Some(compiler) = detect_c_compiler() else {
