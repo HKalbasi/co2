@@ -952,30 +952,40 @@ impl HirCtx<'_> {
                 span: actual.span,
             })
             .or_else(|| {
+                let wrap = |idx: usize| HirExpr {
+                    kind: HirExprKind::UnionAggregate {
+                        active_field: idx,
+                        arg: Box::new(HirExpr {
+                            kind: HirExprKind::Cast(Box::new(actual.clone())),
+                            ty: field_tys[idx],
+                            span: actual.span,
+                        }),
+                    },
+                    ty: expected,
+                    span: actual.span,
+                };
                 field_tys
                     .iter()
-                    .position(|field_ty| match (field_ty.kind(), actual.ty.kind()) {
-                        (
-                            TyKind::RigidTy(RigidTy::RawPtr(exp_ty, _)),
-                            TyKind::RigidTy(RigidTy::RawPtr(act_ty, _)),
-                        ) => {
-                            exp_ty.kind().is_unit()
-                                || act_ty.kind().is_unit()
-                                || ty_matches_expected(exp_ty, act_ty)
-                        }
-                        _ => false,
+                    .position(|field_ty| {
+                        matches!(
+                            (field_ty.kind(), actual.ty.kind()),
+                            (TyKind::RigidTy(RigidTy::RawPtr(_, _)), TyKind::RigidTy(RigidTy::RawPtr(_, _)))
+                        ) && needs_implicit_cast(*field_ty, actual.ty)
                     })
-                    .map(|active_field| HirExpr {
-                        kind: HirExprKind::UnionAggregate {
-                            active_field,
-                            arg: Box::new(HirExpr {
-                                kind: HirExprKind::Cast(Box::new(actual.clone())),
-                                ty: field_tys[active_field],
-                                span: actual.span,
-                            }),
-                        },
-                        ty: expected,
-                        span: actual.span,
+                    .map(&wrap)
+                    .or_else(|| {
+                        // Null pointer constant (integer 0) -> any pointer member (C17 6.3.2.3p3)
+                        if !matches!(&actual.kind, HirExprKind::ConstInt(0) if is_integer_ty(actual.ty)) {
+                            return None;
+                        }
+                        field_tys.iter().position(|field_ty| {
+                            matches!(
+                                field_ty.kind(),
+                                TyKind::RigidTy(RigidTy::RawPtr(_, _))
+                                    | TyKind::RigidTy(RigidTy::FnPtr(_))
+                                    | TyKind::RigidTy(RigidTy::FnDef(_, _))
+                            ) || is_maybe_uninit_fn_ptr_ty(*field_ty).is_some()
+                        }).map(&wrap)
                     })
             })
     }

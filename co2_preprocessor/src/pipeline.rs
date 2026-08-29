@@ -1337,12 +1337,10 @@ impl Preprocessor {
                     // skip attribute call: __attribute__ (( ... ))
                     // or __attribute (( ... ))
                     if let Some(body_end) = Self::skip_balanced_parens(tokens, i + 1) {
-                        // Check if body contains __transparent_union__
-                        let has_transparent = tokens[i + 1..body_end]
-                            .iter()
-                            .any(|(t, _, _)| {
-                                matches!(t, Token::Ident(n) if n == "__transparent_union__")
-                            });
+                        // Check if body contains __transparent_union__ / transparent_union
+                        let has_transparent = tokens[i + 1..body_end].iter().any(|(t, _, _)| {
+                            matches!(t, Token::Ident(n) if n == "__transparent_union__" || n == "transparent_union")
+                        });
                         if has_transparent {
                             tokens[i] = (Token::TransparentUnionAttr, start, end);
                             let _ = tokens.drain(i + 1..body_end);
@@ -1424,6 +1422,22 @@ impl Preprocessor {
                 _ => {}
             }
             i += 1;
+        }
+        // Normalize `} __transparent_union__ ident` -> `} ident __transparent_union__`
+        // so that `typedef union { ... } __attribute__((transparent_union)) SA;`
+        // is seen as `typedef union { ... } SA __attribute__((transparent_union));`
+        // which the parser already handles (attribute after declarator).
+        let mut j = 0;
+        while j + 2 < tokens.len() {
+            if tokens[j].0 == Token::RBrace
+                && tokens[j + 1].0 == Token::TransparentUnionAttr
+                && matches!(tokens[j + 2].0, Token::Ident(_))
+            {
+                tokens.swap(j + 1, j + 2);
+                j += 3;
+            } else {
+                j += 1;
+            }
         }
     }
 
