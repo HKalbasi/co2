@@ -525,10 +525,13 @@ impl LocalResolverBase {
         let data = self.struct_manager.definitions.get(&def).unwrap();
         assert!(data.emitted_fields.is_none(), "Redefinition happened");
         let mut anon_field_count = 0;
-        let mut emitted_fields = Vec::new();
-        let mut logical_fields = Vec::new();
+        let mut emitted_fields: Vec<StructField> = Vec::new();
+        let mut logical_fields: Vec<LogicalAdtFieldInfo> = Vec::new();
         let mut open_bitfield_storage: Option<OpenBitfieldStorage> = None;
         let mut abs_bit = 0usize;
+        let mut struct_max_align_bits = 8usize;
+        let mut last_field_was_zero = false;
+        let mut abs_before_last_zero = 0usize;
         let total_declarators = fields
             .iter()
             .map(|(field, _)| field.declarators.len())
@@ -625,10 +628,13 @@ impl LocalResolverBase {
                         }
                         if matches!(struct_kind, StructOrUnionKind::Union) {
                             abs_bit = 0;
+                            last_field_was_zero = true;
                         } else {
                             // The zero-width field forces the next field to a
                             // fresh boundary aligned to this field's type.
+                            abs_before_last_zero = abs_bit;
                             abs_bit = round_up_bit(abs_bit, storage_bits);
+                            last_field_was_zero = true;
                         }
                         continue;
                     }
@@ -654,10 +660,21 @@ impl LocalResolverBase {
                             });
                             (index, 0usize)
                         } else {
-                            // GCC SysV: a bit-field may not span more units of
-                            // alignment of its type than the type itself; if it
-                            // would, advance to the next type boundary.
-                            let candidate = if abs_bit / storage_bits
+                            // GCC SysV: try to share current open unit if
+                            // it has room, even crossing aligned boundary;
+                            // otherwise advance to next aligned storage unit.
+                            let candidate = if let Some(open) = &open_bitfield_storage {
+                                let rel = abs_bit.saturating_sub(open.storage_start_bit);
+                                if rel + bit_width <= open.storage_bits {
+                                    abs_bit
+                                } else if abs_bit / storage_bits
+                                    != (abs_bit + bit_width - 1) / storage_bits
+                                {
+                                    round_up_bit(abs_bit, storage_bits)
+                                } else {
+                                    abs_bit
+                                }
+                            } else if abs_bit / storage_bits
                                 != (abs_bit + bit_width - 1) / storage_bits
                             {
                                 round_up_bit(abs_bit, storage_bits)
@@ -681,6 +698,11 @@ impl LocalResolverBase {
                         };
 
                     if !name.is_empty() {
+                        // Only named bitfields contribute to struct alignment (anonymous
+                        // fields do not affect GCC's reported align). Use the
+                        // declared type's alignment, not the (possibly reused)
+                        // storage unit's current size.
+                        struct_max_align_bits = struct_max_align_bits.max(storage_bits);
                         let actual_storage_ty = match &open_bitfield_storage {
                             Some(open) => open.storage_ty.clone(),
                             None => storage_ty.clone(),
@@ -697,13 +719,64 @@ impl LocalResolverBase {
                             },
                         });
                     }
+                    last_field_was_zero = false;
                     continue;
                 }
 
                 if let Some(open) = open_bitfield_storage.take() {
-                    // The storage unit's physical footprint is fully occupied
-                    // as far as Rust is concerned.
-                    abs_bit = open.storage_start_bit + open.storage_bits;
+                    // GCC SysV: a non-bit-field may be placed inside the
+                    // tail padding of the last bit-field allocation unit.
+                    // The next member's offset is `ceil(high_water, align)`,
+                    // not `start + allocation_size`.  Shrink the Rust
+                    // storage field to the smallest uint covering the used
+                    // bits so Rust's `repr(C)` places the next field at the
+                    // GCC-compatible offset (ponytail: zero-size align
+                    // field for max alignment if strict ABI needed).
+                    let used_bits = abs_bit.saturating_sub(open.storage_start_bit);
+                    if used_bits < open.storage_bits {
+                        // Anonymous storages can be byte-precise (no bitfield
+                        // access needed), named storages use power-of-two
+                        // integer types to keep MIR simple (ponytail: byte
+                        // array for named 17-24 would need MIR array handling).
+                        let is_anon = !logical_fields.iter().any(|lf| {
+                            matches!(
+                                &lf.kind,
+                                LogicalAdtFieldKind::Bitfield { storage_index, .. }
+                                if *storage_index == open.index && !lf.name.is_empty()
+                            )
+                        });
+                        if is_anon {
+                            let bytes = (used_bits + 7) / 8;
+                            if bytes > 0 {
+                                let inner = HirTy::unsigned_ty(UintTy::U8, open.storage_ty.span);
+                                let new_ty = HirTy::new_array(
+                                    inner,
+                                    HirTyConst::Literal(bytes),
+                                    open.storage_ty.span,
+                                );
+                                emitted_fields[open.index].ty = new_ty;
+                            }
+                        } else if let Some(needed) = smallest_uint_bits_covering(used_bits) {
+                            if needed < open.storage_bits {
+                                let new_ty = unsigned_ty_for_bits(needed, open.storage_ty.span);
+                                emitted_fields[open.index].ty = new_ty.clone();
+                                for lf in logical_fields.iter_mut() {
+                                    if let LogicalAdtFieldKind::Bitfield {
+                                        storage_index,
+                                        storage_ty,
+                                        ..
+                                    } = &mut lf.kind
+                                    {
+                                        if *storage_index == open.index {
+                                            *storage_ty = new_ty.clone();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Keep `abs_bit` at high water (GCC) — do not extend to
+                    // `start + storage_bits`.
                 }
                 if is_unsized {
                     let is_last = seen_declarators == total_declarators;
@@ -729,12 +802,106 @@ impl LocalResolverBase {
                 if matches!(struct_kind, StructOrUnionKind::Union) {
                     abs_bit = 0;
                 } else if let Some((member_size, member_align)) = self.bit_layout_of_ty(&ty) {
+                    struct_max_align_bits = struct_max_align_bits.max(member_align);
                     abs_bit = round_up_bit(abs_bit, member_align) + member_size;
                 }
                 logical_fields.push(LogicalAdtFieldInfo {
                     name,
                     ty,
                     kind: LogicalAdtFieldKind::Direct { physical_index },
+                });
+                last_field_was_zero = false;
+            }
+        }
+
+        // Pad for trailing :0 (e.g. `int :2; long :0;` -> size 8 not 1)
+        if last_field_was_zero && !matches!(struct_kind, StructOrUnionKind::Union) {
+            let needed_bytes = (abs_bit + 7) / 8;
+            let current_bytes = (abs_before_last_zero + 7) / 8;
+            // current emitted size may be smaller than current_bytes due to shrinking,
+            // use max to be safe
+            let mut emitted_bytes = 0usize;
+            for f in &emitted_fields {
+                if let Some((sz, al)) = self.bit_layout_of_ty(&f.ty) {
+                    emitted_bytes = round_up_bit(emitted_bytes * 8, al) / 8 + sz / 8;
+                }
+            }
+            let cur = emitted_bytes.max(current_bytes);
+            if needed_bytes > cur {
+                let pad_bytes = needed_bytes - cur;
+                let inner = HirTy::unsigned_ty(UintTy::U8, _span);
+                let pad_ty = HirTy::new_array(inner, HirTyConst::Literal(pad_bytes), _span);
+                let id = self
+                    .hir_ctx
+                    .allocate_def_id(def, &DefData::ValueNs("__co2_trailing_pad".to_owned()));
+                emitted_fields.push(StructField {
+                    id,
+                    name: "__co2_trailing_pad".to_owned(),
+                    ty: pad_ty,
+                    span: _span,
+                    visibility: Visibility::Public,
+                });
+            }
+        }
+
+        // Shrink any trailing bitfield storage to its high-water size
+        // (e.g. `unsigned a:3` followed by `char` + `unsigned b:1` should
+        // use 1-byte storages, not 4-byte, to match GCC's tight packing).
+        if let Some(open) = open_bitfield_storage.take() {
+            let used = abs_bit.saturating_sub(open.storage_start_bit);
+            if used < open.storage_bits {
+                if let Some(needed) = smallest_uint_bits_covering(used) {
+                    if needed < open.storage_bits {
+                        let new_ty = unsigned_ty_for_bits(needed, open.storage_ty.span);
+                        emitted_fields[open.index].ty = new_ty.clone();
+                        for lf in logical_fields.iter_mut() {
+                            if let LogicalAdtFieldKind::Bitfield {
+                                storage_index,
+                                storage_ty,
+                                ..
+                            } = &mut lf.kind
+                            {
+                                if *storage_index == open.index {
+                                    *storage_ty = new_ty.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Preserve overall struct alignment when the bitfield storage
+        // was shrunk to its high-water size: Rust would otherwise lower
+        // the struct's alignment (e.g. 1-bit `unsigned` + `char` should
+        // still be align 4).  Add a zero-sized array with the required
+        // alignment to keep GCC's ABI without adding size unless padding
+        // is needed.
+        if !matches!(struct_kind, StructOrUnionKind::Union) && !emitted_fields.is_empty() {
+            let effective_max = if let Some(pack) = self.struct_manager.current_pack {
+                let pack_bits = (pack as usize) * 8;
+                struct_max_align_bits.min(pack_bits)
+            } else {
+                struct_max_align_bits
+            };
+            let mut emitted_max = 8usize;
+            for f in &emitted_fields {
+                if let Some((_, a)) = self.bit_layout_of_ty(&f.ty) {
+                    emitted_max = emitted_max.max(a);
+                }
+            }
+            if effective_max > emitted_max {
+                let elem_ty = unsigned_ty_for_bits(effective_max, _span);
+                let phantom_ty = HirTy::new_array(elem_ty, HirTyConst::Literal(0), _span);
+                let id = self
+                    .hir_ctx
+                    .allocate_def_id(def, &DefData::ValueNs("__co2_align_phantom".to_owned()));
+                emitted_fields.push(StructField {
+                    id,
+                    name: "__co2_align_phantom".to_owned(),
+                    ty: phantom_ty,
+                    span: _span,
+                    visibility: Visibility::Public,
                 });
             }
         }
