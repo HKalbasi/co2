@@ -16,6 +16,16 @@ void f3(int a, int b) {
   //^^^^ error: subscript requires one pointer and one integer operand
 }
 
+void f4(int* a, long* b) {
+    a - b;
+  //^^^^^ error: type error: subtracting pointers of incompatible type `i32` and `i64` is invalid
+}
+
+void f5(int* a, void* b) {
+    a - b;
+  //^^^^^ error: type error: subtracting pointers of incompatible type `i32` and `()` is invalid
+}
+
 int main() {
     return 0;
 }

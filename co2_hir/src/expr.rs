@@ -3203,6 +3203,24 @@ impl HirCtx<'_> {
                         });
                     }
                     (true, true) if !is_assignment => {
+                        let lhs_pointee = match lhs.ty.kind() {
+                            TyKind::RigidTy(RigidTy::RawPtr(ty, _)) => ty,
+                            _ => unreachable!(),
+                        };
+                        let rhs_pointee = match rhs.ty.kind() {
+                            TyKind::RigidTy(RigidTy::RawPtr(ty, _)) => ty,
+                            _ => unreachable!(),
+                        };
+                        if lhs_pointee != rhs_pointee {
+                            return Err(spanned_error(
+                                parser_span,
+                                format!(
+                                    "type error: subtracting pointers of incompatible type `{}` and `{}` is invalid",
+                                    self.format_ty(lhs_pointee),
+                                    self.format_ty(rhs_pointee),
+                                ),
+                            ));
+                        }
                         return Ok(HirExpr {
                             kind: HirExprKind::PtrDiff {
                                 lhs: Box::new(lhs),
