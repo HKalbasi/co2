@@ -1176,8 +1176,9 @@ impl HirCtx<'_> {
                 then_expr,
                 else_expr,
             } => {
+                let then_branch = then_expr.as_deref().unwrap_or(cond);
                 if self.eval_const_expr_in_scope(cond, locals, local_map)? != 0 {
-                    self.eval_const_expr_in_scope(then_expr, locals, local_map)
+                    self.eval_const_expr_in_scope(then_branch, locals, local_map)
                 } else {
                     self.eval_const_expr_in_scope(else_expr, locals, local_map)
                 }

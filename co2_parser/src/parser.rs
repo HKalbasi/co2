@@ -1709,23 +1709,25 @@ where
         // C grammar: logical-OR-expression ? expression : conditional-expression
         // The "then" branch is a full expression (comma operator allowed);
         // the "else" branch is conditional-expression (no top-level comma).
+        // GNU elvis: `a ?: b` ≡ `a ? a : b` but `a` eval'd once; middle may be omitted.
+        // then branch is a full expression, else is conditional-expression.
         let conditional_expr = logical_or_expr
             .clone()
             .then(
                 just(Token::Question)
-                    .ignore_then(expression(rec.clone()))
+                    .ignore_then(expression(rec.clone()).or_not())
                     .then_ignore(just(Token::Colon))
                     .then(rec.clone())
-                    .map(|(then_expr, else_expr)| (then_expr, else_expr))
+                    .map(|(then_opt, else_expr)| (then_opt, else_expr))
                     .or_not(),
             )
             .map(|(cond, then_else)| {
-                if let Some((then_expr, else_expr)) = then_else {
+                if let Some((then_opt, else_expr)) = then_else {
                     let span = cond.1;
                     (
                         Expression::Conditional {
                             cond: Box::new(cond),
-                            then_expr: Box::new(then_expr),
+                            then_expr: then_opt.map(Box::new),
                             else_expr: Box::new(else_expr),
                         },
                         span,

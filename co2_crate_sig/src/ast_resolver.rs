@@ -66,7 +66,9 @@ fn expr_contains_label_address<R: TypeResolver>(expr: &Expression<R>) -> bool {
             else_expr,
         } => {
             expr_contains_label_address(&cond.0)
-                || expr_contains_label_address(&then_expr.0)
+                || then_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_contains_label_address(&e.0))
                 || expr_contains_label_address(&else_expr.0)
         }
         Expression::CompoundLiteral { initializer, .. } => {

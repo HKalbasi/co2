@@ -757,7 +757,9 @@ impl<R: TypeResolver> PrettyPrint for Spanned<Expression<R>> {
             } => {
                 pp.node("Conditional", &sp, |pp| {
                     cond.pretty_print(pp);
-                    then_expr.pretty_print(pp);
+                    if let Some(then_expr) = then_expr {
+                        then_expr.pretty_print(pp);
+                    }
                     else_expr.pretty_print(pp);
                 });
             }

@@ -457,7 +457,9 @@ fn expr_contains_local(expr: &Expression<LocalResolver>) -> bool {
             else_expr,
         } => {
             expr_contains_local(&cond.0)
-                || expr_contains_local(&then_expr.0)
+                || then_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_contains_local(&e.0))
                 || expr_contains_local(&else_expr.0)
         }
         Expression::CompoundLiteral {

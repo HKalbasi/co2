@@ -136,7 +136,7 @@ pub enum Expression<R: TypeResolver> {
     ),
     Conditional {
         cond: Box<Spanned<Expression<R>>>,
-        then_expr: Box<Spanned<Expression<R>>>,
+        then_expr: Option<Box<Spanned<Expression<R>>>>,
         else_expr: Box<Spanned<Expression<R>>>,
     },
     CompoundLiteral {

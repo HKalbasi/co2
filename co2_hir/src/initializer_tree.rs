@@ -306,8 +306,13 @@ pub(crate) fn eval_const_int(expr: &HirExpr) -> Option<i128> {
             then_expr,
             else_expr,
         } => {
-            if eval_const_int(cond)? != 0 {
-                eval_const_int(then_expr)
+            let cond = eval_const_int(cond)?;
+            if cond != 0 {
+                if let Some(then_expr) = then_expr {
+                    eval_const_int(then_expr)
+                } else {
+                    Some(cond)
+                }
             } else {
                 eval_const_int(else_expr)
             }

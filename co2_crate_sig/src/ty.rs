@@ -1210,8 +1210,9 @@ impl LocalResolverBase {
                 then_expr,
                 else_expr,
             } => {
+                let then_branch = then_expr.as_deref().unwrap_or(cond);
                 if self.eval_const_expr(cond)? != 0 {
-                    self.eval_const_expr(then_expr)
+                    self.eval_const_expr(then_branch)
                 } else {
                     self.eval_const_expr(else_expr)
                 }
@@ -1386,11 +1387,12 @@ impl LocalResolverBase {
                 }
             },
             Expression::Conditional {
+                cond,
                 then_expr,
                 else_expr,
-                ..
             } => {
-                let then_ty = self.const_int_ty_of_expr(then_expr)?;
+                let then_branch = then_expr.as_deref().unwrap_or(cond);
+                let then_ty = self.const_int_ty_of_expr(then_branch)?;
                 let else_ty = self.const_int_ty_of_expr(else_expr)?;
                 Some(common_const_int_ty(then_ty, else_ty))
             }

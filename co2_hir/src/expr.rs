@@ -316,7 +316,7 @@ pub enum HirExprKind {
     ArrayToPointer(Box<HirExpr>),
     Conditional {
         cond: Box<HirExpr>,
-        then_expr: Box<HirExpr>,
+        then_expr: Option<Box<HirExpr>>,
         else_expr: Box<HirExpr>,
     },
     StatementExpr {
@@ -2627,37 +2627,63 @@ impl HirCtx<'_> {
                 then_expr,
                 else_expr,
             } => {
-                let cond = self.lower_condition(*cond, locals, local_map)?;
-                let mut then_expr = self.lower_expr(*then_expr, locals, local_map)?;
+                let cond_span = cond.1;
+                let mut cond_val = self.lower_expr(*cond, locals, local_map)?;
+                self.array_to_pointer_decay_if_array(&mut cond_val);
+                self.fn_def_to_c_fn_ptr_decay_if_fn_def(&mut cond_val);
+
+                let then_expr = if let Some(then_expr) = then_expr {
+                    let mut then_expr = self.lower_expr(*then_expr, locals, local_map)?;
+                    self.array_to_pointer_decay_if_array(&mut then_expr);
+                    self.fn_def_to_c_fn_ptr_decay_if_fn_def(&mut then_expr);
+                    Some(then_expr)
+                } else {
+                    // elvis: validate cond is scalar-like using cond's own span
+                    if !is_condition_ty(cond_val.ty) {
+                        self.terminate_with_error(
+                            cond_span,
+                            &format!(
+                                "condition must be scalar-like, got {}",
+                                self.format_ty(cond_val.ty),
+                            ),
+                        );
+                    }
+                    None
+                };
+
                 let mut else_expr = self.lower_expr(*else_expr, locals, local_map)?;
-
-                self.array_to_pointer_decay_if_array(&mut then_expr);
                 self.array_to_pointer_decay_if_array(&mut else_expr);
-
-                self.fn_def_to_c_fn_ptr_decay_if_fn_def(&mut then_expr);
                 self.fn_def_to_c_fn_ptr_decay_if_fn_def(&mut else_expr);
 
-                let common_ty = if then_expr.is_null_like() {
+                let then_or_cond = then_expr.as_ref().unwrap_or(&cond_val);
+
+                let common_ty = if then_or_cond.is_null_like() {
                     else_expr.ty
                 } else if else_expr.is_null_like() {
-                    then_expr.ty
-                } else if let Some(common_ty) = self.ternary_common_ty(then_expr.ty, else_expr.ty) {
+                    then_or_cond.ty
+                } else if let Some(common_ty) = self.ternary_common_ty(then_or_cond.ty, else_expr.ty) {
                     common_ty
                 } else {
                     self.terminate_with_error(
                         parser_span,
                         &format!(
                             "ternary operator branches have mismatched types: expected {}, got {}",
-                            self.format_ty(then_expr.ty),
+                            self.format_ty(then_or_cond.ty),
                             self.format_ty(else_expr.ty),
                         ),
                     );
                 };
 
+                let cond_stored = if then_expr.is_some() {
+                    self.condition_to_bool(cond_val, cond_span)
+                } else {
+                    cond_val
+                };
+
                 Ok(HirExpr {
                     kind: HirExprKind::Conditional {
-                        cond: Box::new(cond),
-                        then_expr: Box::new(self.emit_cast(then_expr, common_ty)),
+                        cond: Box::new(cond_stored),
+                        then_expr: then_expr.map(|then_expr| Box::new(self.emit_cast(then_expr, common_ty))),
                         else_expr: Box::new(self.emit_cast(else_expr, common_ty)),
                     },
                     ty: common_ty,

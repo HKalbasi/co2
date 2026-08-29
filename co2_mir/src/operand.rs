@@ -7,7 +7,8 @@ use rustc_public_generative::{
             AggregateKind, BorrowKind, CastKind, ConstOperand, MutBorrowKind, Mutability,
             Operand as MirOperand, PointerCoercion, ProjectionElem as MirProjection, RawPtrKind,
             Rvalue, Safety, SourceInfo, Statement as MirStatement,
-            StatementKind as MirStatementKind, WithRetag,
+            StatementKind as MirStatementKind, SwitchTargets, Terminator as MirTerminator,
+            TerminatorKind, WithRetag,
         },
         ty::{
             FloatTy, GenericArgKind, GenericArgs, IntTy, MirConst, Region, RegionKind, RigidTy,
@@ -1023,7 +1024,13 @@ impl Builder<'_, '_> {
                 cond,
                 then_expr,
                 else_expr,
-            } => self.lower_conditional_expr(cond, then_expr, else_expr, expr.span, expr.ty),
+            } => self.lower_conditional_expr(
+                cond,
+                then_expr.as_deref(),
+                else_expr,
+                expr.span,
+                expr.ty,
+            ),
             HirExprKind::StatementExpr { statements, tail } => {
                 for stmt in statements {
                     self.lower_stmt(stmt);
@@ -2174,42 +2181,105 @@ impl Builder<'_, '_> {
     fn lower_conditional_expr(
         &mut self,
         cond: &HirExpr,
-        then_expr: &HirExpr,
+        then_expr: Option<&HirExpr>,
         else_expr: &HirExpr,
         span: RustSpan,
         ty: Ty,
     ) -> MirOperand {
         let result_local = self.new_temp(ty, Mutability::Mut, span);
-        self.lower_condition(
-            cond,
-            span,
-            |b| {
-                let op = b.lower_expr_to_operand(then_expr);
-                b.stmts.push(MirStatement {
-                    kind: MirStatementKind::Assign(
-                        place(result_local),
-                        Rvalue::Use(op, WithRetag::Yes),
-                    ),
-                    source_info: SourceInfo {
-                        span: then_expr.span,
-                        scope: b.current_scope(),
-                    },
-                });
+        if let Some(then_expr) = then_expr {
+            self.lower_condition(
+                cond,
+                span,
+                |b| {
+                    let op = b.lower_expr_to_operand(then_expr);
+                    b.stmts.push(MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(result_local),
+                            Rvalue::Use(op, WithRetag::Yes),
+                        ),
+                        source_info: SourceInfo {
+                            span: then_expr.span,
+                            scope: b.current_scope(),
+                        },
+                    });
+                },
+                |b| {
+                    let op = b.lower_expr_to_operand(else_expr);
+                    b.stmts.push(MirStatement {
+                        kind: MirStatementKind::Assign(
+                            place(result_local),
+                            Rvalue::Use(op, WithRetag::Yes),
+                        ),
+                        source_info: SourceInfo {
+                            span: else_expr.span,
+                            scope: b.current_scope(),
+                        },
+                    });
+                },
+            );
+            return MirOperand::Copy(place(result_local));
+        }
+        // GNU elvis `a ?: b` : `a` evaluated once, condition local reused as then
+        let cond_operand = self.lower_expr_to_operand(cond);
+        let cond_tmp = self.new_temp(cond.ty, Mutability::Mut, cond.span);
+        self.stmts.push(MirStatement {
+            kind: MirStatementKind::Assign(place(cond_tmp), Rvalue::Use(cond_operand, WithRetag::Yes)),
+            source_info: SourceInfo {
+                span: cond.span,
+                scope: self.current_scope(),
             },
-            |b| {
-                let op = b.lower_expr_to_operand(else_expr);
-                b.stmts.push(MirStatement {
-                    kind: MirStatementKind::Assign(
-                        place(result_local),
-                        Rvalue::Use(op, WithRetag::Yes),
-                    ),
-                    source_info: SourceInfo {
-                        span: else_expr.span,
-                        scope: b.current_scope(),
-                    },
-                });
+        });
+        let cond_copy = MirOperand::Copy(place(cond_tmp));
+        let bool_operand = self.lower_cast(cond_copy.clone(), cond.ty, Ty::bool_ty(), span);
+        let entry_kind = TerminatorKind::SwitchInt {
+            discr: bool_operand,
+            targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
+        };
+        let entry_bb = self.blocks.len();
+        self.blocks.push(rustc_public_generative::rustc_public::mir::BasicBlock {
+            statements: std::mem::take(&mut self.stmts),
+            terminator: MirTerminator {
+                kind: entry_kind,
+                source_info: SourceInfo {
+                    span,
+                    scope: self.current_scope(),
+                },
             },
-        );
+        });
+        let then_start = self.blocks.len();
+        {
+            let then_op = self.lower_cast(cond_copy.clone(), cond.ty, ty, span);
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(then_op, WithRetag::Yes)),
+                source_info: SourceInfo {
+                    span: cond.span,
+                    scope: self.current_scope(),
+                },
+            });
+        }
+        let then_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
+        let else_start = self.blocks.len();
+        {
+            let else_op = self.lower_expr_to_operand(else_expr);
+            let else_op = if else_expr.ty == ty {
+                else_op
+            } else {
+                self.lower_cast(else_op, else_expr.ty, ty, span)
+            };
+            self.stmts.push(MirStatement {
+                kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(else_op, WithRetag::Yes)),
+                source_info: SourceInfo {
+                    span: else_expr.span,
+                    scope: self.current_scope(),
+                },
+            });
+        }
+        let else_exit = self.push_terminator(TerminatorKind::Goto { target: usize::MAX }, span);
+        let join_bb = self.blocks.len();
+        self.patch_goto_target(then_exit, join_bb);
+        self.patch_goto_target(else_exit, join_bb);
+        self.patch_switch_targets(entry_bb, then_start, else_start);
         MirOperand::Copy(place(result_local))
     }
 
