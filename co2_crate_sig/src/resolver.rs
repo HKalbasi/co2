@@ -272,9 +272,7 @@ impl ModuleData {
                         for decl in declarators {
                             let decl = &decl.0.declarator.0;
                             if decl.is_function() {
-                                if matches!(decl, Declarator::FunctionDeclarator { .. })
-                                    && let Some(name) = extract_decl_name(decl)
-                                {
+                                if let Some(name) = extract_decl_name(decl) {
                                     function_type_aliases.insert(name);
                                 }
                                 continue;
