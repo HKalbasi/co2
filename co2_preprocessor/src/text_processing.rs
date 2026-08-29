@@ -56,7 +56,7 @@ impl Preprocessor {
 
     /// Apply line splicing and comment stripping while keeping byte-boundary
     /// information back to the original source.
-    pub(super) fn logical_slices(source: &str) -> Vec<LogicalSlice> {
+    pub(super) fn logical_slices(&self, source: &str) -> Vec<LogicalSlice> {
         let bytes = source.as_bytes();
         let len = bytes.len();
         let mut slices = Vec::new();
@@ -111,7 +111,11 @@ impl Preprocessor {
                     }
                 }
                 b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                    if i + 2 < len && matches!(bytes[i + 2], b'/' | b'!') {
+                    // Driver-based: co2cc strips ///,//! as normal //; co2rustc keeps them for doc attrs.
+                    let is_co2cc = std::env::var("CO2_APPLET_OVERRIDE").is_ok_and(|v| v == "co2cc")
+                        || std::env::args().next().is_some_and(|a| a.contains("co2cc"));
+                    let preserve = !is_co2cc;
+                    if preserve && i + 2 < len && matches!(bytes[i + 2], b'/' | b'!') {
                         while i < len && bytes[i] != b'\n' {
                             out.push(bytes[i]);
                             i += 1;

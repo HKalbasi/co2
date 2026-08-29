@@ -76,9 +76,9 @@ fn strip_storage_specs(
                 spec,
                 DeclarationSpecifier::StorageSpecifier((
                     StorageClassSpecifier::Typedef
-                    | StorageClassSpecifier::Extern
-                    | StorageClassSpecifier::Static
-                    | StorageClassSpecifier::Constexpr,
+                        | StorageClassSpecifier::Extern
+                        | StorageClassSpecifier::Static
+                        | StorageClassSpecifier::Constexpr,
                     _
                 ))
             )
@@ -95,7 +95,18 @@ fn emit_foreign_item(
     foreign_items: &mut Vec<ForeignModItem>,
 ) {
     match ty {
-        CTy::Ty(ty) => {
+        CTy::Function(sig) => foreign_items.push(ForeignModItem::ForeignFunction {
+            name,
+            id: FnDef(id),
+            sig,
+            span,
+        }),
+        _ => {
+            let ty = match ty {
+                CTy::Ty(ty) => ty,
+                CTy::UnsizedArray(elem) => HirTy::new_array(elem, HirTyConst::Literal(0), span),
+                CTy::Function(_) => unreachable!(),
+            };
             ctx.resolver
                 .borrow_mut()
                 .global_value_tys
@@ -105,28 +116,6 @@ fn emit_foreign_item(
                 id,
                 ty,
                 mutable: true,
-                span,
-            });
-        }
-        CTy::UnsizedArray(elem_ty) => {
-            let ty = HirTy::new_array(elem_ty, HirTyConst::Literal(0), span);
-            ctx.resolver
-                .borrow_mut()
-                .global_value_tys
-                .insert(id, ty.clone());
-            foreign_items.push(ForeignModItem::ForeignStatic {
-                name,
-                id,
-                ty,
-                mutable: true,
-                span,
-            });
-        }
-        CTy::Function(sig) => {
-            foreign_items.push(ForeignModItem::ForeignFunction {
-                name,
-                id: FnDef(id),
-                sig,
                 span,
             });
         }
@@ -1937,7 +1926,7 @@ pub fn lower_crate_sig(
         clone_trait: resolver.resolve("core::clone::Clone").unwrap().0,
         copy_trait: resolver.resolve("core::marker::Copy").unwrap().0,
         clone_trait_fn: resolver.resolve("core::clone::Clone::clone").unwrap().0,
-            resolver: Rc::new(RefCell::new(LocalResolverBase {
+        resolver: Rc::new(RefCell::new(LocalResolverBase {
             resolver,
             local_counter: 0,
             fake_defs_counter: 0,

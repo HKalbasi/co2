@@ -567,15 +567,19 @@ impl HirCtx<'_> {
                 }
                 // Block-scope `extern`/`static`/function are not locals:
                 // `extern` aliases a global, `static` was hoisted, plain `int f();` implies extern linkage.
-                let is_extern = declaration_specifiers
-                    .iter()
-                    .any(|s| matches!(s.0, DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Extern, _))));
-                let is_static = declaration_specifiers
-                    .iter()
-                    .any(|s| matches!(s.0, DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Static, _))));
-                let is_func = declarators
-                    .iter()
-                    .any(|d| d.0.declarator.0.is_function());
+                let is_extern = declaration_specifiers.iter().any(|s| {
+                    matches!(
+                        s.0,
+                        DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Extern, _))
+                    )
+                });
+                let is_static = declaration_specifiers.iter().any(|s| {
+                    matches!(
+                        s.0,
+                        DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::Static, _))
+                    )
+                });
+                let is_func = declarators.iter().any(|d| d.0.declarator.0.is_function());
                 if is_extern || is_func {
                     return Ok(());
                 }

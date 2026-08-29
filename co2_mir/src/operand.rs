@@ -2224,7 +2224,10 @@ impl Builder<'_, '_> {
         let cond_operand = self.lower_expr_to_operand(cond);
         let cond_tmp = self.new_temp(cond.ty, Mutability::Mut, cond.span);
         self.stmts.push(MirStatement {
-            kind: MirStatementKind::Assign(place(cond_tmp), Rvalue::Use(cond_operand, WithRetag::Yes)),
+            kind: MirStatementKind::Assign(
+                place(cond_tmp),
+                Rvalue::Use(cond_operand, WithRetag::Yes),
+            ),
             source_info: SourceInfo {
                 span: cond.span,
                 scope: self.current_scope(),
@@ -2237,21 +2240,25 @@ impl Builder<'_, '_> {
             targets: SwitchTargets::new(vec![(0, usize::MAX)], usize::MAX),
         };
         let entry_bb = self.blocks.len();
-        self.blocks.push(rustc_public_generative::rustc_public::mir::BasicBlock {
-            statements: std::mem::take(&mut self.stmts),
-            terminator: MirTerminator {
-                kind: entry_kind,
-                source_info: SourceInfo {
-                    span,
-                    scope: self.current_scope(),
+        self.blocks
+            .push(rustc_public_generative::rustc_public::mir::BasicBlock {
+                statements: std::mem::take(&mut self.stmts),
+                terminator: MirTerminator {
+                    kind: entry_kind,
+                    source_info: SourceInfo {
+                        span,
+                        scope: self.current_scope(),
+                    },
                 },
-            },
-        });
+            });
         let then_start = self.blocks.len();
         {
             let then_op = self.lower_cast(cond_copy.clone(), cond.ty, ty, span);
             self.stmts.push(MirStatement {
-                kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(then_op, WithRetag::Yes)),
+                kind: MirStatementKind::Assign(
+                    place(result_local),
+                    Rvalue::Use(then_op, WithRetag::Yes),
+                ),
                 source_info: SourceInfo {
                     span: cond.span,
                     scope: self.current_scope(),
@@ -2268,7 +2275,10 @@ impl Builder<'_, '_> {
                 self.lower_cast(else_op, else_expr.ty, ty, span)
             };
             self.stmts.push(MirStatement {
-                kind: MirStatementKind::Assign(place(result_local), Rvalue::Use(else_op, WithRetag::Yes)),
+                kind: MirStatementKind::Assign(
+                    place(result_local),
+                    Rvalue::Use(else_op, WithRetag::Yes),
+                ),
                 source_info: SourceInfo {
                     span: else_expr.span,
                     scope: self.current_scope(),

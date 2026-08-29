@@ -292,7 +292,7 @@ impl Preprocessor {
         let mut expanding = HashSet::new();
         let mut next_line = self.effective_line;
 
-        for slice in Self::logical_slices(source) {
+        for slice in self.logical_slices(source) {
             let slice_line = next_line;
             // Default increment for next slice; may be overridden by #line
             let mut next_line_for_next = slice_line + 1;

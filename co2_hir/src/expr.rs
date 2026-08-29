@@ -2661,7 +2661,9 @@ impl HirCtx<'_> {
                     else_expr.ty
                 } else if else_expr.is_null_like() {
                     then_or_cond.ty
-                } else if let Some(common_ty) = self.ternary_common_ty(then_or_cond.ty, else_expr.ty) {
+                } else if let Some(common_ty) =
+                    self.ternary_common_ty(then_or_cond.ty, else_expr.ty)
+                {
                     common_ty
                 } else {
                     self.terminate_with_error(
@@ -2683,7 +2685,8 @@ impl HirCtx<'_> {
                 Ok(HirExpr {
                     kind: HirExprKind::Conditional {
                         cond: Box::new(cond_stored),
-                        then_expr: then_expr.map(|then_expr| Box::new(self.emit_cast(then_expr, common_ty))),
+                        then_expr: then_expr
+                            .map(|then_expr| Box::new(self.emit_cast(then_expr, common_ty))),
                         else_expr: Box::new(self.emit_cast(else_expr, common_ty)),
                     },
                     ty: common_ty,

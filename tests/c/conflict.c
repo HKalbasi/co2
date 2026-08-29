@@ -12,10 +12,16 @@ int foo2() {
     return u64;
 }
 
+//* Some comment
+/// Some comment
+//! Some comment
 int main() {
     if (foo() != 5) {
         return 1;
     }
+    //* Some comment
+    /// Some comment
+    //! Some comment
     if (foo2() != 64) {
         return 2;
     }
