@@ -233,6 +233,7 @@ pub enum ForeignModItem {
         id: DefId,
         ty: HirTy,
         mutable: bool,
+        is_thread_local: bool,
         span: Span,
     },
 }

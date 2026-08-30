@@ -114,3 +114,13 @@ int abi_apply(abi_binop_t f, int a, int b) {
 _Bool abi_not_bool(_Bool b) {
     return !b;
 }
+
+_Thread_local int abi_tls = 123;
+
+int abi_get_tls(void) {
+    return abi_tls;
+}
+
+void abi_set_tls(int v) {
+    abi_tls = v;
+}

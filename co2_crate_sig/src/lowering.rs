@@ -103,6 +103,7 @@ fn emit_foreign_item(
     ty: CTy,
     span: rustc_public_generative::rustc_public::ty::Span,
     foreign_items: &mut Vec<ForeignModItem>,
+    is_thread_local: bool,
 ) {
     match ty {
         CTy::Function(sig) => foreign_items.push(ForeignModItem::ForeignFunction {
@@ -126,6 +127,7 @@ fn emit_foreign_item(
                 id,
                 ty,
                 mutable: true,
+                is_thread_local,
                 span,
             });
         }
@@ -1599,6 +1601,7 @@ fn lower_translation_unit_items(
                                     id,
                                     ty,
                                     mutable: true,
+                                    is_thread_local,
                                     span,
                                 });
                             } else if is_constexpr && is_scalar_type(&ty) {
@@ -1719,6 +1722,7 @@ fn lower_translation_unit_items(
                                     id,
                                     ty,
                                     mutable: true,
+                                    is_thread_local,
                                     span,
                                 });
                             } else {
@@ -2175,6 +2179,7 @@ pub fn lower_crate_sig(
             declarator,
             span: parser_span,
         } = pending;
+        let is_thread_local = is_thread_local(&specifiers);
         let span = ctx.co2_span_to_rustc(parser_span);
         let cleaned = strip_storage_specs(specifiers);
         let base_const = has_const_qualifier_in_decl_specs(&cleaned);
@@ -2183,7 +2188,15 @@ pub fn lower_crate_sig(
             ctx.lower_value_decl_ctype(base.clone(), base_const, (declarator, parser_span));
         // `decl_name` should match `name`; use `id` directly.
         let _ = decl_name;
-        emit_foreign_item(&mut ctx, id, name, ty, span, &mut foreign_items);
+        emit_foreign_item(
+            &mut ctx,
+            id,
+            name,
+            ty,
+            span,
+            &mut foreign_items,
+            is_thread_local,
+        );
     }
 
     let structs = ctx.resolver.borrow_mut().emit_structs().collect::<Vec<_>>();

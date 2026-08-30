@@ -70,6 +70,12 @@ int main(void) {
     CHECK(25, abi_not_bool(1) == 0, "abi_not_bool true");
     CHECK(26, abi_not_bool(0) == 1, "abi_not_bool false");
 
+    CHECK(27, abi_tls == 123, "abi_tls initial");
+    CHECK(28, abi_get_tls() == 123, "abi_get_tls");
+    abi_set_tls(456);
+    CHECK(29, abi_tls == 456, "abi_tls set");
+    CHECK(30, abi_get_tls() == 456, "abi_get_tls after set");
+
     printf("all ABI checks passed\n");
     return 0;
 }

@@ -329,6 +329,7 @@ impl ItemSignatureInfo {
                                     id,
                                     ty,
                                     mutable,
+                                    is_thread_local: _,
                                     span,
                                 } => {
                                     result.push(ItemSignatureInfo {
@@ -1445,6 +1446,7 @@ impl DefinedCrateInfo {
                                     id,
                                     mutable: _,
                                     ty: _,
+                                    is_thread_local,
                                     span: _,
                                 } => items.push(DefinedItemInfo {
                                     name,
@@ -1452,7 +1454,11 @@ impl DefinedCrateInfo {
                                         def_id: id,
                                         no_mangle: false,
                                     },
-                                    attrs: Vec::new(),
+                                    attrs: if is_thread_local {
+                                        vec![crate::GeneratedAttr::ThreadLocal]
+                                    } else {
+                                        Vec::new()
+                                    },
                                     span: DUMMY_SP,
                                     ident_span: None,
                                     parent: Some(foreign_mod_id),
