@@ -313,6 +313,8 @@ impl<'a> Tokenizer<'a> {
             "__builtin_offsetof" => Token::Offsetof,
             "static" => Token::Static,
             "_Atomic" => Token::Atomic,
+            "_Thread_local" | "thread_local" | "__thread" => Token::ThreadLocal,
+            "__auto_type" => Token::Auto,
             "struct" => Token::Struct,
             "switch" => Token::Switch,
             "typedef" => Token::Typedef,

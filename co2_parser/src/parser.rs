@@ -594,6 +594,7 @@ where
                 | Token::Static
                 | Token::Constexpr
                 | Token::Atomic
+                | Token::ThreadLocal
                 | Token::Auto
                 | Token::Register
                 | Token::Inline
@@ -2312,8 +2313,7 @@ where
             .ignore_then(just(Token::LParen))
             .ignore_then(choice((
                 typeof_type_name.map(|type_name| TypeSpecifier::TypeofType(Box::new(type_name))),
-                assign_expression_rec
-                    .clone()
+                expression(assign_expression_rec.clone())
                     .map(|expr| TypeSpecifier::TypeofExpr(Box::new(expr))),
             )))
             .then_ignore(just(Token::RParen));
@@ -2376,7 +2376,7 @@ where
         just(Token::Static).to(StorageClassSpecifier::Static),
         just(Token::Constexpr).to(StorageClassSpecifier::Constexpr),
         just(Token::Atomic).to(StorageClassSpecifier::Atomic),
-        // just(Token::ThreadLocal).to(StorageClassSpecifier::ThreadLocal),
+        just(Token::ThreadLocal).to(StorageClassSpecifier::ThreadLocal),
         just(Token::Auto).to(StorageClassSpecifier::Auto),
         just(Token::Register).to(StorageClassSpecifier::Register),
     ])

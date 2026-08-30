@@ -207,13 +207,44 @@ fn define_stdatomic_macros(macros: &mut MacroTable) {
     def(macros, "__ATOMIC_ACQ_REL", "4");
     def(macros, "__ATOMIC_SEQ_CST", "5");
 
-    // memory_order enum values for <stdatomic.h>
-    def(macros, "memory_order_relaxed", "0");
-    def(macros, "memory_order_consume", "1");
-    def(macros, "memory_order_acquire", "2");
-    def(macros, "memory_order_release", "3");
-    def(macros, "memory_order_acq_rel", "4");
-    def(macros, "memory_order_seq_cst", "5");
+    // memory_order enum values for <stdatomic.h> - intentionally not defined here
+    // when stdatomic.h is not skipped, the header's own enum defines them.
+    // Defining them as macros would break `typedef enum { memory_order_relaxed = ... }`.
+    // They are provided by the header itself (or via fallback when skipped).
+
+    // ponytail: provide __atomic_load for system header's atomic_load macro (3-arg)
+    macros.define(macro_def_from_parts(
+        "__atomic_load".to_string(),
+        true,
+        vec!["ptr".to_string(), "ret".to_string(), "order".to_string()],
+        false,
+        false,
+        "(*(ret) = *(ptr))".to_string(),
+    ));
+    macros.define(macro_def_from_parts(
+        "__atomic_store".to_string(),
+        true,
+        vec!["ptr".to_string(), "val".to_string(), "order".to_string()],
+        false,
+        false,
+        "(*(ptr) = *(val))".to_string(),
+    ));
+    macros.define(macro_def_from_parts(
+        "__atomic_thread_fence".to_string(),
+        true,
+        vec!["order".to_string()],
+        false,
+        false,
+        "((void)0)".to_string(),
+    ));
+    macros.define(macro_def_from_parts(
+        "__atomic_signal_fence".to_string(),
+        true,
+        vec!["order".to_string()],
+        false,
+        false,
+        "((void)0)".to_string(),
+    ));
 }
 
 /// <float.h> macros

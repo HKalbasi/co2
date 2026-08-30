@@ -1905,7 +1905,7 @@ fn source_span_for_source_text_range(
 fn should_skip_file(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|name| name.to_str()),
-        Some("stdatomic.h" | "tgmath.h")
+        Some("tgmath.h")
     )
 }
 

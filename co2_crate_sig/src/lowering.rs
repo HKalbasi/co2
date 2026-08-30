@@ -78,7 +78,8 @@ fn strip_storage_specs(
                     StorageClassSpecifier::Typedef
                         | StorageClassSpecifier::Extern
                         | StorageClassSpecifier::Static
-                        | StorageClassSpecifier::Constexpr,
+                        | StorageClassSpecifier::Constexpr
+                        | StorageClassSpecifier::ThreadLocal,
                     _
                 ))
             )
@@ -1481,6 +1482,12 @@ fn lower_translation_unit_items(
                             _,
                         )) => {
                             is_constexpr = true;
+                        }
+                        DeclarationSpecifier::StorageSpecifier((
+                            StorageClassSpecifier::ThreadLocal,
+                            _,
+                        )) => {
+                            // ponytail: ignore thread-local semantics, treat as normal storage
                         }
                         _ => cleaned_specs.push((spec, sp)),
                     }
