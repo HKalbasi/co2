@@ -2151,7 +2151,10 @@ impl<S: CrateGeneratorState> InterfaceCallbacks<S> {
             });
         }
 
-        for (idx, feature) in ["extern_types", "linkage"].into_iter().enumerate() {
+        for (idx, feature) in ["extern_types", "linkage", "thread_local"]
+            .into_iter()
+            .enumerate()
+        {
             krate.attrs.push(Attribute {
                 kind: rustc_ast::AttrKind::Normal(Box::new(rustc_ast::NormalAttr {
                     item: rustc_ast::AttrItem {
@@ -4617,6 +4620,7 @@ fn generated_attr(attr: &GeneratedAttr) -> Option<hir::Attribute> {
         GeneratedAttr::Weak => {
             hir::attrs::AttributeKind::Linkage(hir::attrs::Linkage::WeakAny, DUMMY_SP)
         }
+        GeneratedAttr::ThreadLocal => hir::attrs::AttributeKind::ThreadLocal,
     };
     Some(hir::Attribute::Parsed(kind))
 }

@@ -66,6 +66,15 @@ fn has_const_qualifier_in_decl_specs(
     })
 }
 
+fn is_thread_local(specs: &[co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>]) -> bool {
+    specs.iter().any(|(spec, _)| {
+        matches!(
+            spec,
+            DeclarationSpecifier::StorageSpecifier((StorageClassSpecifier::ThreadLocal, _))
+        )
+    })
+}
+
 fn strip_storage_specs(
     specs: Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>>,
 ) -> Vec<co2_ast::Spanned<DeclarationSpecifier<LocalResolver>>> {
@@ -1450,12 +1459,13 @@ fn lower_translation_unit_items(
                 declarators,
             } => {
                 let attrs = lower_generated_attrs(&attrs);
-                let gen_attrs = co2_attrs_to_generated(&attrs);
+                let mut gen_attrs = co2_attrs_to_generated(&attrs);
                 let original_specs = declaration_specifiers.clone();
                 let mut is_typedef = false;
                 let mut is_extern = false;
                 let mut is_static = false;
                 let mut is_constexpr = false;
+                let mut is_thread_local = false;
                 let mut cleaned_specs = Vec::new();
                 for (spec, sp) in declaration_specifiers {
                     match spec {
@@ -1487,7 +1497,7 @@ fn lower_translation_unit_items(
                             StorageClassSpecifier::ThreadLocal,
                             _,
                         )) => {
-                            // ponytail: ignore thread-local semantics, treat as normal storage
+                            is_thread_local = true;
                         }
                         _ => cleaned_specs.push((spec, sp)),
                     }
@@ -1498,6 +1508,9 @@ fn lower_translation_unit_items(
                         constexpr_decl_span(&original_specs, parser_span),
                         "`constexpr` cannot be combined with `extern`",
                     );
+                }
+                if is_thread_local {
+                    gen_attrs.push(GeneratedAttr::ThreadLocal);
                 }
 
                 let transformed_specs = cleaned_specs;
@@ -2039,6 +2052,12 @@ pub fn lower_crate_sig(
         let span = ctx.co2_span_to_rustc(parser_span);
         let original_specs = specifiers.clone();
         let is_constexpr = specifiers.iter().any(|spec| spec.0.is_constexpr());
+        let is_thread_local = is_thread_local(&specifiers);
+        let tls_attrs = if is_thread_local {
+            vec![GeneratedAttr::ThreadLocal]
+        } else {
+            Vec::new()
+        };
         let base_const = has_const_qualifier_in_decl_specs(&specifiers);
         let base_ty = ctx.base_ty_of_decl(specifiers, parser_span);
         let resolver = LocalResolver::new(ctx.resolver.clone());
@@ -2078,7 +2097,7 @@ pub fn lower_crate_sig(
                     span,
                     mutable: !is_constexpr,
                     no_mangle: false,
-                    attrs: Vec::new(),
+                    attrs: tls_attrs.clone(),
                     visibility: Visibility::Public,
                 });
                 if let Some(initializer) = declarator.initializer {
@@ -2127,7 +2146,7 @@ pub fn lower_crate_sig(
                     span,
                     mutable: !is_constexpr,
                     no_mangle: false,
-                    attrs: Vec::new(),
+                    attrs: tls_attrs.clone(),
                     visibility: Visibility::Public,
                 });
                 ctx.mir_owners.insert(

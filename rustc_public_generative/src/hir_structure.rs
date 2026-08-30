@@ -30,6 +30,8 @@ pub enum GeneratedAttr {
     /// Emit `#[linkage = "weak"]` so the symbol has weak linkage and may be
     /// overridden by a strong definition at link time.
     Weak,
+    /// Emit `#[thread_local]` for TLS statics.
+    ThreadLocal,
 }
 
 #[derive(Debug, Clone)]
