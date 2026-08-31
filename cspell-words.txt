@@ -37,6 +37,7 @@ foldr
 funcs
 fvec
 GNUC
+godbolt
 hkalbasi
 ilog
 impls

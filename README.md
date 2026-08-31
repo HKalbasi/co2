@@ -5,6 +5,12 @@ C (See [incompatibilities](./docs/known_incompatibilities_with_c.md)) but with
 direct access to the Rust ecosystem. CO2 and Rust can use each other crates seamlessly,
 with no FFI boundaries or extra tooling required.
 
+CO2 enables you to use Cargo as your C build system, add Rust dependencies to it using `cargo add`,
+use your favorite [Cargo commands](./docs/cargo_third_party.md) like `cargo doc` and `cargo test`,
+all without rewriting your C code to Rust. Even if you want to rewrite your C project to Rust,
+CO2 allows you to do it incrementally, in a crate by crate basis, without having the FFI overhead
+(both mental and runtime overhead) that a typical multi language project has.
+
 ## Example
 
 ```C++

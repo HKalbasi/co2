@@ -31,6 +31,7 @@ form the base of this project. Azhdaha was (and even is now) completely hand wri
 
 Then LLM progressed, agentic ones happened, and I eventually used some of them which had free tiers.
 My usage peaked when opencode provided deepseek v4 flash free, which was a usable model in both intelligence and rate limits.
+Deepseek v4 flash free is unfortunately gone, and new free models are not as good.
 I heavily rewrote some parts of the project at this point, like the test harness and the bundler script.
 Another notable LLM usage of me is updating the rustc version and fixing the breaking changes (CO2 heavily uses unstable rustc internals).
 
@@ -39,4 +40,4 @@ These parts of code are usually at lower quality than the rest of the project, a
 But there were no better human code available at the time, and they were necessary to make progress.
 I would appreciate a human rewrite of those parts, if it improves code quality.
 
-[Rust project LLM policy]: https://github.com/jyn514/rust-forge/blob/llm-policy/src/policies/llm-usage.md
+[Rust project LLM policy]: https://forge.rust-lang.org/policies/llm-usage.html
