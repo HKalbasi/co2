@@ -1,0 +1,17 @@
+//@ mode: co2
+//@ compile-fail
+
+use std::vec::Vec;
+
+fn f1() {
+    Vec<i32> v = Vec::<i32>::new();
+//  ^^^^ error: generic arguments require turbofish syntax: `Vec::<...>`
+}
+
+fn f2(){
+    Vec::<i32> v = Vec<i32>::new();
+               //  ^^^^ error: generic arguments require turbofish syntax: `Vec::<...>`
+
+}
+
+fn main() {}

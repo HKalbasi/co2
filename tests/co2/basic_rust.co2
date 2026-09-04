@@ -9,7 +9,7 @@ use std::vec::Vec;
 use std::mem::drop;
 
 typedef Instant MyInstant;
-typedef Vec<i32> MyVec;
+typedef Vec::<i32> MyVec;
 
 fn vec_vec_consumer(vv: Vec<Vec<i32>>) {
     Vec::<Vec<Vec<i32>>> vvv = Vec::<Vec<Vec<i32>>>::new();
@@ -34,7 +34,7 @@ fn main() {
     (void)instant3;
 
     MyVec v = Vec::<i32>::new();
-    Vec<i32> v2 = MyVec::new();
+    Vec::<i32> v2 = MyVec::new();
     v.push(2);
     v.push(5);
     v.push(7);
@@ -63,7 +63,7 @@ fn main() {
         std::process::exit(3);
     }
 
-    Vec<Vec<i32> > vv = Vec::<Vec<i32> > ::new();
+    Vec::<Vec<i32> > vv = Vec::<Vec<i32> > ::new();
     vv.push(v);
     vv.push(v2);
     if (vv.len() != 2) {
@@ -77,7 +77,7 @@ fn main() {
         std::process::exit(4);
     }
 
-    Vec<*mut i32> v3 = Vec::<*mut i32>::new();
+    Vec::<*mut i32> v3 = Vec::<*mut i32>::new();
     v3.push(&a);
     v3.push(&b);
     if (*v3.pop().unwrap() != 2) {

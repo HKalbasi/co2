@@ -15,10 +15,10 @@ int write(int, u8*, usize);
 fn main() {
     Args args = std::env::args();
     args.next(); // Skip program name
-    Option<String> opt = args.next();
+    Option::<String> opt = args.next();
     String arg = opt.unwrap();
     usize len = arg.len();
-    Vec<u8> bytes = arg.into_bytes();
+    Vec::<u8> bytes = arg.into_bytes();
     u8* ptr = bytes.as_mut_ptr();
     write(1, ptr, len);
     drop(bytes);

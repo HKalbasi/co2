@@ -1159,11 +1159,39 @@ where
                             Err((msg, span)) => Err(Rich::custom(span, msg)),
                         }
                     })
-                    .or(rust_path_expr_simple().try_map({
+                    .or(rust_path_expr_simple()
+                        .then(look_ahead(Token::Lt).map_with(|_, e| e.span()).or_not())
+                        .try_map({
                         let resolver = resolver.clone();
-                        move |path, _| {
+                        move |(path, lt_span): (
+                            Spanned<RustPath<StatelessResolver>>,
+                            Option<Span>,
+                        ),
+                              _| {
                             let path_span = rust_path_span(&path.0, path.1);
                             match resolver.classify_path(&path.0) {
+                                // A known type directly followed by `<` missed
+                                // its turbofish (`Vec<i32>::new()` instead of
+                                // `Vec::<i32>::new()`). A type can never be an
+                                // operand of `<`, so abort with a targeted
+                                // error rather than a cryptic follow-on one.
+                                // (Fatal: chumsky would otherwise discard this
+                                // for a further-position error.)
+                                Ok((TypeQueryResult::Type, _)) if lt_span.is_some() => {
+                                    let ctx = path_span.data().context;
+                                    let start = path_span.data().start;
+                                    // The lookahead span already covers `<`.
+                                    let lt_end = lt_span.unwrap().data().end;
+                                    let span = Span::from_parts(ctx, start..lt_end);
+                                    co2_ast::emit_errors_and_terminate(vec![Rich::custom(
+                                        span,
+                                        format!(
+                                            "generic arguments require turbofish syntax: `{}::<...>`",
+                                            path.0
+                                        ),
+                                    )
+                                    .map_token(|tok: Token| tok.to_string())]);
+                                }
                                 Ok((TypeQueryResult::Unsure | TypeQueryResult::Expr, resolved)) => {
                                     Ok(Expression::Identifier((resolved, path_span)))
                                 }
@@ -2343,22 +2371,58 @@ where
         .or(struct_or_union_specifier)
         .or(enum_specifier)
         .or(typeof_type_specifier)
-        .or(rust_path().try_map({
-            let resolver = resolver.clone();
-            move |path, _| {
-                let path_span = rust_path_span(&path.0, path.1);
-                match resolver.classify_path(&path.0) {
-                    Ok((TypeQueryResult::Unsure | TypeQueryResult::Type, resolved)) => {
-                        Ok(TypeSpecifier::TypedefName((resolved, path_span)))
+        // NOTE: turbofish-only path here (`a::b<T>`), never bare `a<T>`.
+        // C has no generics, so `i<(int)8` is always a comparison, but the
+        // bare-generics path parser would speculatively consume `<(int)>`
+        // as generic args and emit un-retractable "invalid as Rust type"
+        // errors before backtracking.
+        // A known type directly followed by `<` missed its turbofish:
+        // report that instead of a cryptic follow-on error. Only fires
+        // for definite types, so C comparisons (`i < x`) still parse.
+        .or(rust_path_expr(rust_generic_arg_ty())
+            .then(look_ahead(Token::Lt).map_with(|_, e| e.span()).or_not())
+            .try_map({
+                let resolver = resolver.clone();
+                move |(path, lt_span): (
+                    Spanned<RustPath<StatelessResolver>>,
+                    Option<Span>,
+                ),
+                      _| {
+                    let path_span = rust_path_span(&path.0, path.1);
+                    match resolver.classify_path(&path.0) {
+                        Ok((TypeQueryResult::Type, _)) if lt_span.is_some() => {
+                            // A known type directly followed by `<` missed its
+                            // turbofish (`Vec<i32>` instead of `Vec::<i32>`).
+                            // No valid C or turbofish-correct co2 program can
+                            // reach this point, so abort with a targeted error
+                            // rather than a cryptic follow-on diagnostic.
+                            // (Fatal: chumsky would otherwise discard this for
+                            // a further-position error.)
+                            let ctx = path_span.data().context;
+                            let start = path_span.data().start;
+                            // The lookahead span already covers `<`.
+                            let lt_end = lt_span.unwrap().data().end;
+                            let span = Span::from_parts(ctx, start..lt_end);
+                            co2_ast::emit_errors_and_terminate(vec![Rich::custom(
+                                span,
+                                format!(
+                                    "generic arguments require turbofish syntax: `{}::<...>`",
+                                    path.0
+                                ),
+                            )
+                            .map_token(|tok: Token| tok.to_string())]);
+                        }
+                        Ok((TypeQueryResult::Unsure | TypeQueryResult::Type, resolved)) => {
+                            Ok(TypeSpecifier::TypedefName((resolved, path_span)))
+                        }
+                        Ok((TypeQueryResult::Expr, _)) => Err(Rich::custom(
+                            path_span,
+                            "expected type name, found expression",
+                        )),
+                        Err((msg, span)) => Err(Rich::custom(span, msg)),
                     }
-                    Ok((TypeQueryResult::Expr, _)) => Err(Rich::custom(
-                        path_span,
-                        "expected type name, found expression",
-                    )),
-                    Err((msg, span)) => Err(Rich::custom(span, msg)),
                 }
-            }
-        }))
+            }))
         .map_with(|r, e| (r, e.span()))
         .labelled("Type specifier")
     })

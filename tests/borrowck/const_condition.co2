@@ -10,14 +10,14 @@ use std::mem::drop;
 // not analyzed by the borrow checker, so the (unsound-if-executed) code in
 // them produces no warnings.
 fn dead_branches_skipped() {
-    Vec<i32> v = Vec::<i32>::new();
+    Vec::<i32> v = Vec::<i32>::new();
     if (0) {
         drop(v);
     }
     v.push(2);
     drop(v);
 
-    Vec<i32> w = Vec::<i32>::new();
+    Vec::<i32> w = Vec::<i32>::new();
     if (1) {
         w.push(2);
     } else {
@@ -28,14 +28,14 @@ fn dead_branches_skipped() {
 
 // The bool literals `true` and `false` fold the same way as `1` and `0`.
 fn bool_literal_branches() {
-    Vec<i32> v = Vec::<i32>::new();
+    Vec::<i32> v = Vec::<i32>::new();
     if (false) {
         drop(v);
     }
     v.push(2);
     drop(v);
 
-    Vec<i32> w = Vec::<i32>::new();
+    Vec::<i32> w = Vec::<i32>::new();
     if (true) {
         w.push(2);
     } else {
@@ -43,7 +43,7 @@ fn bool_literal_branches() {
     }
     drop(w);
 
-    Vec<i32> u = Vec::<i32>::new();
+    Vec::<i32> u = Vec::<i32>::new();
     if (!true) {
         drop(u);
     }
@@ -81,7 +81,7 @@ fn infinite_loop() -> i32 {
 // right-hand side is not analyzed, so moving `v` into the (never evaluated)
 // call does not make the later `drop(v)` a use-after-move.
 fn const_logical() {
-    Vec<i32> v = Vec::<i32>::new();
+    Vec::<i32> v = Vec::<i32>::new();
     bool b = 0 && takes_vec(v);
     drop(v);
 }
