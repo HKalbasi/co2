@@ -10,6 +10,8 @@ struct TimeState {
     body_parse: Duration,
     hir_lowering: Duration,
     mir_lowering: Duration,
+    sig_call: Duration,
+    borrowck: Duration,
     lowering: Duration,
     codegen: Duration,
     mark: Instant,
@@ -23,6 +25,8 @@ pub fn enable_timing() {
         body_parse: Duration::ZERO,
         hir_lowering: Duration::ZERO,
         mir_lowering: Duration::ZERO,
+        sig_call: Duration::ZERO,
+        borrowck: Duration::ZERO,
         lowering: Duration::ZERO,
         codegen: Duration::ZERO,
         mark: Instant::now(),
@@ -68,6 +72,18 @@ pub fn accumulate_mir_lowering(duration: Duration) {
     }
 }
 
+pub fn accumulate_sig_call(duration: Duration) {
+    if let Some(ref mut t) = *TIMER.try_lock().unwrap() {
+        t.sig_call += duration;
+    }
+}
+
+pub fn accumulate_borrowck(duration: Duration) {
+    if let Some(ref mut t) = *TIMER.try_lock().unwrap() {
+        t.borrowck += duration;
+    }
+}
+
 /// Called from the `after_analysis` rustc callback.
 /// Records the lowering phase (parse-end to after_analysis) and starts codegen.
 pub fn mark_codegen_start() {
@@ -93,6 +109,8 @@ pub struct PhaseTiming {
     pub body_parse: Duration,
     pub hir_lowering: Duration,
     pub mir_lowering: Duration,
+    pub sig_call: Duration,
+    pub borrowck: Duration,
     pub lowering: Duration,
     pub codegen: Duration,
 }
@@ -105,6 +123,8 @@ pub fn take_timing() -> Option<PhaseTiming> {
         body_parse: t.body_parse,
         hir_lowering: t.hir_lowering,
         mir_lowering: t.mir_lowering,
+        sig_call: t.sig_call,
+        borrowck: t.borrowck,
         lowering: t.lowering,
         codegen: t.codegen,
     })

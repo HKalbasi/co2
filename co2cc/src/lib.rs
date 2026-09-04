@@ -291,6 +291,8 @@ fn run_co2c(args: &CcArgs) {
                 );
                 eprintln!("  Lowering:      {:.3}s", t.lowering.as_secs_f64());
                 eprintln!("    Body Parse:  {:.3}s", t.body_parse.as_secs_f64());
+                eprintln!("    Sig Span:    {:.3}s", t.sig_call.as_secs_f64());
+                eprintln!("    Borrowck:    {:.3}s", t.borrowck.as_secs_f64());
                 eprintln!("    HIR:         {:.3}s", t.hir_lowering.as_secs_f64());
                 eprintln!("    MIR:         {:.3}s", t.mir_lowering.as_secs_f64());
                 eprintln!("  Codegen:       {:.3}s", t.codegen.as_secs_f64());
@@ -360,6 +362,8 @@ fn run_co2c(args: &CcArgs) {
                 );
                 eprintln!("  Lowering:      {:.3}s", t.lowering.as_secs_f64());
                 eprintln!("    Body Parse:  {:.3}s", t.body_parse.as_secs_f64());
+                eprintln!("    Sig Span:    {:.3}s", t.sig_call.as_secs_f64());
+                eprintln!("    Borrowck:    {:.3}s", t.borrowck.as_secs_f64());
                 eprintln!("    HIR:         {:.3}s", t.hir_lowering.as_secs_f64());
                 eprintln!("    MIR:         {:.3}s", t.mir_lowering.as_secs_f64());
                 eprintln!("  Codegen:       {:.3}s", t.codegen.as_secs_f64());

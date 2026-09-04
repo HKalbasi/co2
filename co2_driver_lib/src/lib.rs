@@ -132,6 +132,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             on_body = Some(&mut record_body);
         }
 
+        let sig_start = std::time::Instant::now();
         let (result, pending_mirs, wellknown_defs) = co2_crate_sig::lower_crate_sig(
             ctx,
             &pending.source_path,
@@ -146,6 +147,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             on_parse,
             on_body,
         );
+        time_report::accumulate_sig_call(sig_start.elapsed());
         let file_ids = Arc::new(file_ids);
         co2_ast::set_source_map(Arc::new(Co2SourceMap {
             files: Arc::new(source_files),
@@ -324,7 +326,9 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                     && !mir_result.is_error_recovery
                     && !had_errors
                 {
+                    let borrowck_start = std::time::Instant::now();
                     self.emit_borrowck_warnings(&ctx, &mir_result.body);
+                    time_report::accumulate_borrowck(borrowck_start.elapsed());
                 }
                 mir_result.body
             }
