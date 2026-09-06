@@ -1001,9 +1001,8 @@ fn load_modules(
 
             let source_name = module_path.to_string_lossy().into_owned();
             let source: &'static str = Box::leak(preprocessed.raw_src.to_string().into_boxed_str());
-            let tu = parse_translation_unit(&source_name, &preprocessed, StatelessResolver::new())
-                .expect("failed to parse co2 module")
-                .0;
+            let tu =
+                parse_translation_unit(&source_name, &preprocessed, StatelessResolver::new()).0;
             let tu = deduplicate_tu_items(tu);
             let children = load_modules(
                 ctx,
@@ -1885,7 +1884,6 @@ pub fn lower_crate_sig(
         preprocessed.as_ref(),
         StatelessResolver::new(),
     )
-    .expect("failed to parse co2 source")
     .0;
     if let Some(cb) = on_parse_done {
         cb(parse_start.elapsed());

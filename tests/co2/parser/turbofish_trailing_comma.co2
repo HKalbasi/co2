@@ -1,0 +1,15 @@
+//@ mode: co2
+//@ run-status: 0
+
+use std::vec::Vec;
+use std::mem::drop;
+
+#include <assert.h>
+
+fn main() {
+    Vec::<i32,> v = Vec::<i32>::new();
+    v.push(1);
+    v.push(2);
+    assert(v.len() == 2);
+    drop(v);
+}

@@ -1,29 +1,251 @@
-use chumsky::{
-    input::{SliceInput, ValueInput},
-    prelude::*,
-};
+//! Hand-written recursive-descent C parser.
+//!
+//! Design (high-performance style, like clang/tcc):
+//! - Borrowed token slice + integer cursor. Zero token clones; AST owns its data.
+//! - First-token dispatch everywhere; speculation only where C is truly ambiguous
+//!   (cast-vs-paren, declaration-vs-expression-statement, typename-vs-expr in
+//!   `typeof`/`sizeof`), via cheap pos+resolver checkpoints. No error allocation
+//!   on the happy path.
+//! - Errors are cold: `Fail` carries (span, message); only the outermost entry
+//!   turns it into a diagnostic. TU parsing uses panic-mode recovery (emit +
+//!   skip to `;`/`}`) so all modules' errors are still reported together.
+
 use co2_ast::TypeResolver;
 use co2_ast::{
-    BinOp, CharPrefix, CompoundStatement, Constant, Declaration, DeclarationSpecifier, Declarator,
-    Designator, EnumSpecifier, Enumerator, Expression, FileId, FloatSuffix, ForInit,
-    FunctionDefinitionSignature, FunctionSpecifier, GenericAssociation, InitDeclarator,
-    Initializer, InitializerItem, IntegerSuffix, LazyCompoundStatement, LazyRustConstExpr,
-    LazySubscription, ModItem, ParameterList, RustAttribute, RustAttributeStyle, RustFunctionParam,
-    RustFunctionSignature, RustPath, RustPathSegment, RustStructField, RustTy, Span, Spanned,
-    SpecifierQualifier, StatelessResolver, Statement, StatementOrDeclaration,
-    StorageClassSpecifier, StringLiteral, StringLiteralPrefix, StructDeclarator,
-    StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, Token, TranslationUnit,
-    TypeName, TypeQualifier, TypeQueryResult, TypeSpecifier, UnaryOp, UpdateOp, UseItem,
-    Visibility, parse_unsigned_integer_constant,
+    CompoundStatement, Declaration, DeclarationSpecifier, Declarator, EnumSpecifier, Enumerator,
+    Expression, FileId, ForInit, FunctionDefinitionSignature, FunctionSpecifier, InitDeclarator,
+    LazyCompoundStatement, LazyRustConstExpr, LazySubscription, ModItem, ParameterList,
+    RustAttribute, RustAttributeStyle, RustFunctionParam, RustFunctionSignature, RustPath,
+    RustPathSegment, RustStructField, RustTy, Span, Spanned, SpecifierQualifier, StatelessResolver,
+    Statement, StatementOrDeclaration, StorageClassSpecifier, StringLiteral, StringLiteralPrefix,
+    StructDeclarator, StructOrUnionField, StructOrUnionKind, StructOrUnionSpecifier, Token,
+    TranslationUnit, TypeName, TypeQualifier, TypeQueryResult, TypeSpecifier, UseItem, Visibility,
 };
 
-enum LiteralToken {
-    Int(String, IntegerSuffix),
-    Float(String, FloatSuffix),
-    Char(Vec<u8>, CharPrefix),
+// ── Errors (cold path only) ────────────────────────────────────────────
+
+/// A parse failure. Carries no backtrace and allocates only the message string.
+pub(crate) struct Fail {
+    pub span: Span,
+    pub msg: String,
 }
 
-fn join_spans(start: Span, end: Span) -> Span {
+pub(crate) type PR<T> = Result<T, Fail>;
+
+// ── Cursor ─────────────────────────────────────────────────────────────
+
+pub(crate) struct P<'a, R> {
+    pub toks: &'a [Spanned<Token>],
+    pub pos: usize,
+    pub end_span: Span,
+    pub resolver: R,
+}
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    pub fn new(toks: &'a [Spanned<Token>], end_span: Span, resolver: R) -> Self {
+        Self {
+            toks,
+            pos: 0,
+            end_span,
+            resolver,
+        }
+    }
+
+    #[inline]
+    pub fn peek(&self, off: usize) -> Option<&'a Token> {
+        self.toks.get(self.pos + off).map(|(t, _)| t)
+    }
+
+    #[inline]
+    pub fn peek_span(&self, off: usize) -> Span {
+        self.toks
+            .get(self.pos + off)
+            .map_or(self.end_span, |(_, s)| *s)
+    }
+
+    #[inline]
+    pub fn cur_span(&self) -> Span {
+        self.peek_span(0)
+    }
+
+    #[inline]
+    pub fn at(&self, t: &Token) -> bool {
+        self.peek(0) == Some(t)
+    }
+
+    /// Consume the current token if it equals `t`.
+    #[inline]
+    pub fn eat(&mut self, t: &Token) -> Option<Span> {
+        if self.at(t) {
+            let s = self.peek_span(0);
+            self.pos += 1;
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    pub fn expect(&mut self, t: &Token, what: &str) -> PR<Span> {
+        if self.at(t) {
+            let s = self.peek_span(0);
+            self.pos += 1;
+            Ok(s)
+        } else {
+            Err(self.fail_here(format!("expected {what}, found {}", self.describe())))
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self.peek(0) {
+            Some(t) => t.to_string(),
+            None => "end of input".to_string(),
+        }
+    }
+
+    pub fn fail_here(&self, msg: String) -> Fail {
+        Fail {
+            span: self.cur_span(),
+            msg,
+        }
+    }
+
+    pub fn fail_at(&self, span: Span, msg: String) -> Fail {
+        Fail { span, msg }
+    }
+
+    /// Span covering tokens [start, pos). Zero-width at cursor if empty.
+    pub fn span_since(&self, start: usize) -> Span {
+        if start < self.pos && !self.toks.is_empty() {
+            let s = self.toks[start.min(self.toks.len() - 1)].1;
+            let e = self.toks[(self.pos - 1).min(self.toks.len() - 1)].1;
+            join_spans(s, e)
+        } else {
+            self.cur_span()
+        }
+    }
+
+    pub fn checkpoint(&self) -> (usize, R) {
+        (self.pos, self.resolver.clone())
+    }
+
+    pub fn restore(&mut self, cp: (usize, R)) {
+        self.pos = cp.0;
+        self.resolver = cp.1;
+    }
+
+    fn take_ident(&mut self, want: Option<&str>) -> Option<(String, Span)> {
+        match self.peek(0) {
+            Some(Token::Ident(s)) if want.is_none_or(|w| s == w) => {
+                let span = self.peek_span(0);
+                let s = s.clone();
+                self.pos += 1;
+                Some((s, span))
+            }
+            _ => None,
+        }
+    }
+
+    /// Consume `Ident(name)` exactly.
+    pub fn eat_ident(&mut self, name: &str) -> Option<(String, Span)> {
+        self.take_ident(Some(name))
+    }
+
+    /// Consume any identifier.
+    pub fn any_ident(&mut self) -> PR<(String, Span)> {
+        self.take_ident(None)
+            .ok_or_else(|| self.fail_here(format!("expected identifier, found {}", self.describe())))
+    }
+
+    // Capture tokens inside a balanced `open ... close` pair, assuming the
+    // cursor is ON `open`. Consumes through the matching `close`, handles
+    // nesting. Returns (inner tokens, whole span incl. delimiters).
+    pub fn capture_balanced(
+        &mut self,
+        open: &Token,
+        close: &Token,
+    ) -> PR<(Vec<Spanned<Token>>, Span)> {
+        let start = self.pos;
+        let whole = self.capture_balanced_full(open, close)?;
+        let span = self.span_since(start);
+        let inner = if whole.len() >= 2 {
+            whole[1..whole.len() - 1].to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok((inner, span))
+    }
+
+    /// Capture the full slice (including delimiters) of a balanced pair.
+    pub fn capture_balanced_full(
+        &mut self,
+        open: &Token,
+        close: &Token,
+    ) -> PR<Vec<Spanned<Token>>> {
+        let start = self.pos;
+        self.expect(open, &open.to_string())?;
+        let mut depth = 1u32;
+        while depth > 0 {
+            match self.peek(0) {
+                None => {
+                    return Err(self.fail_here(format!(
+                        "expected {}, found end of input",
+                        close.to_string()
+                    )));
+                }
+                Some(t) => {
+                    if t == open {
+                        depth += 1;
+                    } else if t == close {
+                        depth -= 1;
+                    }
+                    self.pos += 1;
+                }
+            }
+        }
+        Ok(self.toks[start..self.pos].to_vec())
+    }
+
+    /// Capture tokens up to (excluding) `close`. No nesting. Leaves `close`.
+    pub fn capture_until(&mut self, close: &Token) -> Vec<Spanned<Token>> {
+        let start = self.pos;
+        while let Some(t) = self.peek(0) {
+            if t == close {
+                break;
+            }
+            self.pos += 1;
+        }
+        self.toks[start..self.pos].to_vec()
+    }
+}
+
+/// `( item (, item)* [,] )` with optional trailing comma.
+pub(crate) fn parse_comma_list<'a, R: TypeResolver, T>(
+    p: &mut P<'a, R>,
+    open: &Token,
+    close: &Token,
+    allow_trailing: bool,
+    mut item: impl FnMut(&mut P<'a, R>) -> PR<T>,
+) -> PR<Vec<T>> {
+    p.expect(open, &open.to_string())?;
+    let mut out = Vec::new();
+    if !p.at(close) {
+        loop {
+            out.push(item(p)?);
+            if p.eat(&Token::Comma).is_none() {
+                break;
+            }
+            if allow_trailing && p.at(close) {
+                break;
+            }
+        }
+    }
+    p.expect(close, &close.to_string())?;
+    Ok(out)
+}
+
+// ── Shared pure helpers (unchanged semantics) ──────────────────────────
+
+pub(crate) fn join_spans(start: Span, end: Span) -> Span {
     let start_data = start.data();
     let end_data = end.data();
     if start_data.context == end_data.context {
@@ -33,7 +255,7 @@ fn join_spans(start: Span, end: Span) -> Span {
     }
 }
 
-fn merge_string_literals(parts: Vec<StringLiteral>, span: Span) -> StringLiteral {
+pub(crate) fn merge_string_literals(parts: Vec<StringLiteral>, span: Span) -> StringLiteral {
     let mut target: Option<StringLiteralPrefix> = None;
     for part in &parts {
         let prefix = part.prefix();
@@ -101,66 +323,11 @@ fn merge_string_literals(parts: Vec<StringLiteral>, span: Span) -> StringLiteral
     }
 }
 
-fn single_token_span(slice: &[Spanned<Token>], fallback: Span) -> Span {
-    slice.first().map_or(fallback, |(_, span)| *span)
-}
-
-fn slice_span(slice: &[Spanned<Token>], fallback: Span) -> Span {
+pub(crate) fn slice_span<T>(slice: &[(T, Span)], fallback: Span) -> Span {
     slice
         .first()
         .zip(slice.last())
         .map_or(fallback, |(first, last)| join_spans(first.1, last.1))
-}
-
-fn attr_content<'src, I>()
--> impl Parser<'src, I, Spanned<Vec<Spanned<Token>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let inner = recursive(|content| {
-        let any_non_delim = any()
-            .filter(|t| {
-                !matches!(
-                    t,
-                    Token::LParen
-                        | Token::RParen
-                        | Token::LBracket
-                        | Token::RBracket
-                        | Token::LBrace
-                        | Token::RBrace
-                )
-            })
-            .ignored();
-        let any_group = choice((
-            content
-                .clone()
-                .delimited_by(just(Token::LParen), just(Token::RParen))
-                .ignored(),
-            content
-                .clone()
-                .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                .ignored(),
-            content
-                .clone()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                .ignored(),
-        ));
-
-        choice((any_non_delim, any_group)).repeated().ignored()
-    });
-
-    inner
-        .delimited_by(just(Token::LBracket), just(Token::RBracket))
-        .map_with(|(), e| {
-            let slice: &[Spanned<Token>] = e.slice();
-            let inner = if slice.len() >= 2 {
-                slice[1..slice.len() - 1].to_vec()
-            } else {
-                Vec::new()
-            };
-            (inner, slice_span(slice, e.span()))
-        })
 }
 
 /// C type-specifier and qualifier keywords that are not valid in Rust type
@@ -223,67 +390,6 @@ fn c_type_keywords_suggestion(words: &[&str]) -> Option<(&'static str, &'static 
     }
 }
 
-/// Accept C `_Bool` as Rust `bool` and C `char` as Rust `char` when they
-/// appear as Rust types. Other C type keywords are rejected by
-/// [`recover_c_type_keyword`].
-fn rust_primitive_keyword<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let keyword = choice((
-        just(Token::Bool).map_with(|_, e| ("bool", e.span())),
-        just(Token::Char).map_with(|_, e| ("char", e.span())),
-    ));
-    keyword.try_map(move |(name, span), _| {
-        let path = RustPath {
-            segments: vec![(RustPathSegment::Ident(name.to_string()), span)],
-        };
-        match resolver.classify_path(&path) {
-            Ok((TypeQueryResult::Type | TypeQueryResult::Unsure, resolved)) => {
-                Ok((RustTy::Path((resolved, span)), span))
-            }
-            Ok((TypeQueryResult::Expr, _)) => {
-                Err(Rich::custom(span, format!("{name} is not a type")))
-            }
-            Err((msg, err_span)) => Err(Rich::custom(err_span, msg)),
-        }
-    })
-}
-
-/// Recover from C type specifier keywords appearing in a Rust type position.
-/// Consumes the keyword run, emits an error suggesting the Rust equivalent,
-/// and returns a unit-type placeholder so parsing can continue.
-fn recover_c_type_keyword<'src, I, R: TypeResolver>()
--> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let keyword = any::<I, extra::Err<Rich<'src, Token, Span>>>()
-        .filter(|token: &Token| c_type_keyword_token_str(token).is_some())
-        .map(|token: Token| c_type_keyword_token_str(&token).unwrap());
-    keyword
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<&'static str>>()
-        .map_with(|words, e| {
-            let slice: &[Spanned<Token>] = e.slice();
-            let span = slice_span(slice, e.span());
-            let c_type = words.join(" ");
-            let msg = match c_type_keywords_suggestion(&words) {
-                Some((primitive, ffi)) => format!(
-                    "{c_type} is invalid as Rust type. Use either `{primitive}` or `std::ffi::{ffi}`"
-                ),
-                None => format!("{c_type} is invalid as Rust type"),
-            };
-            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, msg)]);
-            (RustTy::Tuple(vec![]), span)
-        })
-}
-
 fn keyword_token_str(token: &Token) -> Option<&'static str> {
     Some(match token {
         Token::Auto => "auto",
@@ -343,7 +449,7 @@ fn keyword_token_str(token: &Token) -> Option<&'static str> {
 fn parse_rust_attr(
     tokens: Vec<Spanned<Token>>,
     span: Span,
-) -> Result<RustAttribute, Rich<'static, Token, Span>> {
+) -> Result<RustAttribute, (Span, String)> {
     let mut idx = 0;
     let mut path = Vec::new();
     while let Some((token, token_span)) = tokens.get(idx) {
@@ -362,9 +468,9 @@ fn parse_rust_attr(
         idx += 1;
     }
     if path.is_empty() {
-        return Err(Rich::custom(
+        return Err((
             span,
-            "attribute path must start with an identifier",
+            "attribute path must start with an identifier".to_string(),
         ));
     }
     Ok(RustAttribute {
@@ -374,220 +480,2060 @@ fn parse_rust_attr(
     })
 }
 
-fn rust_attr<'src, I>()
--> impl Parser<'src, I, Spanned<RustAttribute>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    just(Token::Hash)
-        .ignore_then(attr_content())
-        .try_map(|(tokens, span), _| parse_rust_attr(tokens, span).map(|attr| (attr, span)))
+pub(crate) fn rust_path_span<R: TypeResolver>(path: &RustPath<R>, fallback: Span) -> Span {
+    slice_span(&path.segments, fallback)
 }
 
-fn rust_inner_attr<'src, I>()
--> impl Parser<'src, I, Spanned<RustAttribute>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    just(Token::Hash)
-        .ignore_then(just(Token::Bang))
-        .ignore_then(attr_content())
-        .try_map(|(tokens, span), _| {
-            parse_rust_attr(tokens, span).map(|mut attr| {
-                attr.style = RustAttributeStyle::Inner;
-                (attr, span)
-            })
-        })
-}
-
-fn doc_attr<'src, I>()
--> impl Parser<'src, I, Spanned<RustAttribute>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! {
-        Token::DocComment { inner, text } => (inner, text),
+pub(crate) fn parse_hex_float_constant(text: &str) -> Option<f64> {
+    let (significand, exponent) = text.split_once(['p', 'P'])?;
+    let exponent = exponent.parse::<i32>().ok()?;
+    let significand = significand
+        .strip_prefix("0x")
+        .or_else(|| significand.strip_prefix("0X"))?;
+    let (int_part, frac_part) = significand.split_once('.').unwrap_or((significand, ""));
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
     }
-    .map_with(|(inner, text), e| {
-        let span = e.span();
-        (
-            RustAttribute {
-                path: vec![("doc".to_owned(), span)],
-                args: vec![(
-                    Token::StringLit(StringLiteral::None(text.into_bytes())),
-                    span,
-                )],
-                style: if inner {
-                    RustAttributeStyle::Inner
-                } else {
-                    RustAttributeStyle::Outer
-                },
-            },
-            span,
-        )
-    })
-}
 
-fn rust_attrs<'src, I>()
--> impl Parser<'src, I, Vec<Spanned<RustAttribute>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice((rust_attr(), rust_inner_attr(), doc_attr()))
-        .repeated()
-        .collect()
-}
-
-fn rust_path_span<R: TypeResolver>(path: &RustPath<R>, fallback: Span) -> Span {
-    path.segments
-        .first()
-        .zip(path.segments.last())
-        .map_or(fallback, |(first, last)| join_spans(first.1, last.1))
-}
-
-fn look_ahead<'src, I>(
-    token: Token,
-) -> impl Parser<'src, I, (), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    custom(move |inp| {
-        let check_point = inp.save();
-        let before = inp.cursor();
-        match inp.next() {
-            Some(t) if t == token => {
-                inp.rewind(check_point);
-                Ok(())
-            }
-            Some(t) => Err(Rich::custom(
-                inp.span_since(&before),
-                format!("expected {token}, found {t}"),
-            )),
-            None => Err(Rich::custom(
-                inp.span_since(&before),
-                format!("unexpected eof, expected {token}"),
-            )),
-        }
-    })
-}
-
-fn lazy_compound_statement<'src, I>()
--> impl Parser<'src, I, Spanned<LazyCompoundStatement>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|block| {
-        let content = choice((
-            // Skip any token that isn't a brace
-            any()
-                .filter(|t| !matches!(t, Token::LBrace | Token::RBrace))
-                .ignored(),
-            // Recursively skip balanced blocks
-            block.ignored(),
-        ))
-        .repeated()
-        .ignored();
-
-        content.delimited_by(just(Token::LBrace), just(Token::RBrace))
-    })
-    .map_with(|(), e| {
-        let slice = e.slice();
-        let span = slice_span(slice, e.span());
-        (
-            LazyCompoundStatement {
-                tokens: (<[_]>::to_vec(slice), span),
-            },
-            span,
-        )
-    })
-}
-
-fn repeated_statement_with_modified_resolver<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Vec<Spanned<StatementOrDeclaration<R>>>, extra::Err<Rich<'src, Token, Span>>>
-+ Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    fn is_finished<'src, I>(
-        inp: &mut chumsky::input::InputRef<
-            'src,
-            '_,
-            I,
-            extra::Full<Rich<'src, Token, Span>, (), ()>,
-        >,
-    ) -> bool
-    where
-        I: ValueInput<'src, Token = Token, Span = Span>
-            + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-    {
-        let check_point = inp.save();
-        let is_finished = inp.next() == Some(Token::RBrace);
-        inp.rewind(check_point);
-        is_finished
+    let mut value = 0.0f64;
+    for ch in int_part.chars() {
+        let digit = ch.to_digit(16)?;
+        value = value * 16.0 + f64::from(digit);
     }
-    custom(move |inp| {
-        if is_finished(inp) {
-            return Ok(vec![]);
-        }
-        let mut current_resolver = resolver.start_new_scope();
-        let mut result = vec![];
+    let mut scale = 1.0f64 / 16.0;
+    for ch in frac_part.chars() {
+        let digit = ch.to_digit(16)?;
+        value += f64::from(digit) * scale;
+        scale /= 16.0;
+    }
+    Some(value * 2.0f64.powi(exponent))
+}
+
+// ── Attributes ─────────────────────────────────────────────────────────
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    /// Parse `#[...]` / `#![...]` / doc comments (zero or more).
+    pub fn parse_attr_list(&mut self) -> PR<Vec<Spanned<RustAttribute>>> {
+        let mut attrs = Vec::new();
         loop {
-            if is_finished(inp) {
-                return Ok(result);
+            if self.at(&Token::Hash) {
+                self.pos += 1; // `#`
+                let mut style = RustAttributeStyle::Outer;
+                if self.at(&Token::Bang) {
+                    self.pos += 1;
+                    style = RustAttributeStyle::Inner;
+                }
+                if !self.at(&Token::LBracket) {
+                    return Err(self.fail_here(format!("expected [, found {}", self.describe())));
+                }
+                let (inner, span) = self.capture_balanced(&Token::LBracket, &Token::RBracket)?;
+                match parse_rust_attr(inner, span) {
+                    Ok(mut attr) => {
+                        attr.style = style;
+                        attrs.push((attr, span));
+                    }
+                    Err((span, msg)) => return Err(self.fail_at(span, msg)),
+                }
+            } else if let Some((Token::DocComment { inner, text }, span)) = self.peek_doc() {
+                let span = span;
+                let inner = *inner;
+                let text = text.clone();
+                let attr = RustAttribute {
+                    path: vec![("doc".to_owned(), span)],
+                    args: vec![(
+                        Token::StringLit(StringLiteral::None(text.into_bytes())),
+                        span,
+                    )],
+                    style: if inner {
+                        RustAttributeStyle::Inner
+                    } else {
+                        RustAttributeStyle::Outer
+                    },
+                };
+                self.pos += 1;
+                attrs.push((attr, span));
+            } else {
+                break;
             }
-            let (item, nr) = inp.parse(statement_or_declaration(
-                current_resolver.clone(),
-                statement(current_resolver),
-            ))?;
-            current_resolver = nr;
-            result.push(item);
         }
-    })
+        Ok(attrs)
+    }
+
+    fn peek_doc(&self) -> Option<(&Token, Span)> {
+        match self.toks.get(self.pos) {
+            Some((t @ Token::DocComment { .. }, s)) => Some((t, *s)),
+            _ => None,
+        }
+    }
 }
 
-pub(crate) fn compound_statement<'src, I, R: TypeResolver>(
-    resolver: R,
-    _stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<CompoundStatement<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    custom(move |inp| {
-        let before = inp.cursor();
-        inp.parse(just(Token::LBrace))?;
-        let statements = inp.parse(repeated_statement_with_modified_resolver(resolver.clone()))?;
-        inp.parse(just(Token::RBrace))?;
-        Ok((CompoundStatement { statements }, inp.span_since(&before)))
-    })
+// ── Rust paths & types ───────────────────────────────────────────────
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    pub(crate) fn parse_identifier(&mut self) -> PR<Spanned<String>> {
+        self.any_ident()
+    }
+
+    /// Parse a `::`-separated path. With `bare_generics`, `ident<...>` segments
+    /// are accepted; otherwise generics are only allowed as standalone
+    /// `::<...>` (turbofish) segments.
+    pub(crate) fn parse_rust_path(
+        &mut self,
+        bare_generics: bool,
+    ) -> PR<Spanned<RustPath<StatelessResolver>>> {
+        let start = self.pos;
+        if self.at(&Token::ColonColon) {
+            self.pos += 1;
+        }
+        let mut segments: Vec<Spanned<RustPathSegment<StatelessResolver>>> = Vec::new();
+        // First segment: ident, or a leading `<...>` generics segment
+        // (e.g. `::<T>` type specifiers).
+        if self.at(&Token::Lt) {
+            let (seg, span) = self.parse_generics_segment()?;
+            segments.push((seg, span));
+        } else {
+            let (name, span) = self.any_ident()?;
+            segments.push((RustPathSegment::Ident(name), span));
+            if bare_generics && self.at(&Token::Lt) {
+                if let Some((seg, span)) = self.try_parse_generics_segment() {
+                    segments.push((seg, span));
+                }
+            }
+        }
+        while self.at(&Token::ColonColon) {
+            self.pos += 1;
+            if self.at(&Token::Lt) {
+                let (seg, span) = self.parse_generics_segment()?;
+                segments.push((seg, span));
+            } else {
+                let (name, span) = self.any_ident()?;
+                segments.push((RustPathSegment::Ident(name), span));
+                if bare_generics && self.at(&Token::Lt) {
+                    if let Some((seg, span)) = self.try_parse_generics_segment() {
+                        segments.push((seg, span));
+                    }
+                }
+            }
+        }
+        if segments.is_empty() {
+            return Err(self.fail_here("expected path".to_string()));
+        }
+        let span = self.span_since(start);
+        Ok((RustPath { segments }, span))
+    }
+
+    fn parse_generics_segment(&mut self) -> PR<(RustPathSegment<StatelessResolver>, Span)> {
+        let start = self.pos;
+        let args = parse_comma_list(
+            self,
+            &Token::Lt,
+            &Token::Gt,
+            true,
+            parse_rust_ty_stateless_inner,
+        )?;
+        let span = self.span_since(start);
+        Ok((RustPathSegment::Generics(args), span))
+    }
+
+    fn try_parse_generics_segment(&mut self) -> Option<(RustPathSegment<StatelessResolver>, Span)> {
+        let cp = self.checkpoint();
+        match self.parse_generics_segment() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                self.restore(cp);
+                None
+            }
+        }
+    }
+
+    fn parse_pub_token(&mut self) -> PR<(Visibility, Option<Span>)> {
+        if self.eat_ident("pub").is_none() {
+            return Ok((Visibility::Private, None));
+        }
+        if self.eat(&Token::LParen).is_some() {
+            if self.eat_ident("crate").is_some() {
+                self.expect(&Token::RParen, ")")?;
+                return Ok((Visibility::Crate, None));
+            }
+            if self.eat_ident("self").is_some() {
+                self.expect(&Token::RParen, ")")?;
+                return Ok((Visibility::Restricted, None));
+            }
+            // `pub(<inner>)`: invalid specifier, capture inner span.
+            let inner_start = self.pos;
+            while !self.at(&Token::RParen) {
+                if self.peek(0).is_none() {
+                    return Err(self.fail_here("expected ), found end of input".to_string()));
+                }
+                self.pos += 1;
+            }
+            let inner = slice_span(&self.toks[inner_start..self.pos], self.cur_span());
+            self.expect(&Token::RParen, ")")?;
+            return Ok((Visibility::Public, Some(inner)));
+        }
+        Ok((Visibility::Public, None))
+    }
+
+    /// Resolver-classified Rust type for `R` positions.
+    pub fn parse_rust_ty(&mut self) -> PR<Spanned<RustTy<R>>> {
+        parse_rust_ty_resolving(self)
+    }
 }
 
-fn statement_or_declaration<'src, I, R: TypeResolver>(
+// Concrete Rust-type parsing lives in free functions so the stateless and
+// resolving variants stay independent.
+fn parse_ptr_mut<'a, R: TypeResolver>(p: &mut P<'a, R>) -> PR<bool> {
+    if p.at(&Token::Const) {
+        p.pos += 1;
+        Ok(false)
+    } else if p.eat_ident("mut").is_some() {
+        Ok(true)
+    } else {
+        Err(p.fail_here(format!("expected const or mut, found {}", p.describe())))
+    }
+}
+
+fn parse_opt_lifetime<'a, R: TypeResolver>(p: &mut P<'a, R>) -> Option<(String, Span)> {
+    match p.peek(0) {
+        Some(Token::Lifetime(name)) => {
+            let span = p.peek_span(0);
+            let name = name.clone();
+            p.pos += 1;
+            Some((name, span))
+        }
+        _ => None,
+    }
+}
+
+fn parse_array_len<'a, R: TypeResolver>(
+    p: &mut P<'a, R>,
+) -> Option<(LazyRustConstExpr, Span)> {
+    let semi_span = p.eat(&Token::Semicolon)?;
+    let tokens = p.capture_until(&Token::RBracket);
+    // Span covers from `;` (old `map_with` on the `;...` match).
+    let span = if tokens.is_empty() {
+        semi_span
+    } else {
+        join_spans(semi_span, slice_span(&tokens, p.cur_span()))
+    };
+    Some((LazyRustConstExpr { tokens }, span))
+}
+
+pub(crate) fn parse_rust_ty_resolving<'a, R: TypeResolver>(
+    p: &mut P<'a, R>,
+) -> PR<Spanned<RustTy<R>>> {
+    let start = p.pos;
+    match p.peek(0) {
+        Some(Token::Star) => {
+            p.pos += 1;
+            let mutable = parse_ptr_mut(p)?;
+            let inner = parse_rust_ty_resolving(p)?;
+            let span = p.span_since(start);
+            Ok((
+                RustTy::Ptr {
+                    mutable,
+                    inner: Box::new(inner),
+                },
+                span,
+            ))
+        }
+        Some(Token::Amp) => {
+            p.pos += 1;
+            let lifetime = parse_opt_lifetime(p);
+            let mutable = p.eat_ident("mut").is_some();
+            let inner = parse_rust_ty_resolving(p)?;
+            let span = p.span_since(start);
+            Ok((
+                RustTy::Ref {
+                    lifetime,
+                    mutable,
+                    inner: Box::new(inner),
+                },
+                span,
+            ))
+        }
+        Some(Token::Bang) => {
+            p.pos += 1;
+            Ok((RustTy::Never, p.span_since(start)))
+        }
+        Some(Token::LParen) => {
+            let elems = parse_comma_list(
+                p,
+                &Token::LParen,
+                &Token::RParen,
+                true,
+                parse_rust_ty_resolving,
+            )?;
+            Ok((RustTy::Tuple(elems), p.span_since(start)))
+        }
+        Some(Token::LBracket) => {
+            p.pos += 1;
+            let inner = parse_rust_ty_resolving(p)?;
+            let len = parse_array_len(p);
+            p.expect(&Token::RBracket, "]")?;
+            let span = p.span_since(start);
+            match len {
+                Some(len) => Ok((
+                    RustTy::Array {
+                        inner: Box::new(inner),
+                        len,
+                    },
+                    span,
+                )),
+                None => Ok((RustTy::Slice(Box::new(inner)), span)),
+            }
+        }
+        Some(Token::Bool) | Some(Token::Char) => {
+            let (name, span) = match p.peek(0) {
+                Some(Token::Bool) => ("bool", p.peek_span(0)),
+                _ => ("char", p.peek_span(0)),
+            };
+            p.pos += 1;
+            let path = RustPath {
+                segments: vec![(RustPathSegment::Ident(name.to_string()), span)],
+            };
+            match p.resolver.classify_path(&path) {
+                Ok((TypeQueryResult::Type | TypeQueryResult::Unsure, resolved)) => {
+                    Ok((RustTy::Path((resolved, span)), span))
+                }
+                Ok((TypeQueryResult::Expr, _)) => {
+                    Err(p.fail_at(span, format!("{name} is not a type")))
+                }
+                Err((msg, err_span)) => Err(p.fail_at(err_span, msg)),
+            }
+        }
+        Some(t) if c_type_keyword_token_str(t).is_some() => {
+            let mut words = Vec::new();
+            while let Some(w) = p.peek(0).and_then(c_type_keyword_token_str) {
+                words.push(w);
+                p.pos += 1;
+            }
+            let span = p.span_since(start);
+            let c_type = words.join(" ");
+            let msg = match c_type_keywords_suggestion(&words) {
+                Some((primitive, ffi)) => format!(
+                    "{c_type} is invalid as Rust type. Use either `{primitive}` or `std::ffi::{ffi}`"
+                ),
+                None => format!("{c_type} is invalid as Rust type"),
+            };
+            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, msg)]);
+            Ok((RustTy::Tuple(vec![]), span))
+        }
+        _ => {
+            let (path, _) = p.parse_rust_path(true)?;
+            let span = p.span_since(start);
+            let path_span = rust_path_span(&path, span);
+            match p.resolver.classify_path(&path) {
+                Ok((TypeQueryResult::Unsure | TypeQueryResult::Type, resolved)) => {
+                    Ok((RustTy::Path((resolved, path_span)), span))
+                }
+                Ok((TypeQueryResult::Expr, _)) => {
+                    Err(p.fail_at(path_span, "expected type, found expression".to_string()))
+                }
+                Err((msg, err_span)) => Err(p.fail_at(err_span, msg)),
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_rust_ty_stateless_inner<'a, R: TypeResolver>(
+    p: &mut P<'a, R>,
+) -> PR<Spanned<RustTy<StatelessResolver>>> {
+    let start = p.pos;
+    match p.peek(0) {
+        Some(Token::Ident(s)) if s == "_" => {
+            p.pos += 1;
+            Ok((RustTy::Wild, p.span_since(start)))
+        }
+        Some(Token::Star) => {
+            p.pos += 1;
+            let mutable = parse_ptr_mut(p)?;
+            let inner = parse_rust_ty_stateless_inner(p)?;
+            let span = p.span_since(start);
+            Ok((
+                RustTy::Ptr {
+                    mutable,
+                    inner: Box::new(inner),
+                },
+                span,
+            ))
+        }
+        Some(Token::Amp) => {
+            p.pos += 1;
+            let lifetime = parse_opt_lifetime(p);
+            let mutable = p.eat_ident("mut").is_some();
+            let inner = parse_rust_ty_stateless_inner(p)?;
+            let span = p.span_since(start);
+            Ok((
+                RustTy::Ref {
+                    lifetime,
+                    mutable,
+                    inner: Box::new(inner),
+                },
+                span,
+            ))
+        }
+        Some(Token::Bang) => {
+            p.pos += 1;
+            Ok((RustTy::Never, p.span_since(start)))
+        }
+        Some(Token::LParen) => {
+            let elems = parse_comma_list(
+                p,
+                &Token::LParen,
+                &Token::RParen,
+                true,
+                parse_rust_ty_stateless_inner,
+            )?;
+            Ok((RustTy::Tuple(elems), p.span_since(start)))
+        }
+        Some(Token::LBracket) => {
+            p.pos += 1;
+            let inner = parse_rust_ty_stateless_inner(p)?;
+            let len = parse_array_len(p);
+            p.expect(&Token::RBracket, "]")?;
+            let span = p.span_since(start);
+            match len {
+                Some(len) => Ok((
+                    RustTy::Array {
+                        inner: Box::new(inner),
+                        len,
+                    },
+                    span,
+                )),
+                None => Ok((RustTy::Slice(Box::new(inner)), span)),
+            }
+        }
+        Some(Token::Lifetime(_)) => {
+            let (name, span) = match p.peek(0) {
+                Some(Token::Lifetime(name)) => (name.clone(), p.peek_span(0)),
+                _ => unreachable!(),
+            };
+            p.pos += 1;
+            Ok((RustTy::Lifetime((name, span)), span))
+        }
+        Some(Token::Bool) | Some(Token::Char) => {
+            let (name, span) = match p.peek(0) {
+                Some(Token::Bool) => ("bool", p.peek_span(0)),
+                _ => ("char", p.peek_span(0)),
+            };
+            p.pos += 1;
+            let path = RustPath {
+                segments: vec![(RustPathSegment::Ident(name.to_string()), span)],
+            };
+            match StatelessResolver::new().classify_path(&path) {
+                Ok((_, resolved)) => Ok((RustTy::Path((resolved, span)), span)),
+                Err((msg, err_span)) => Err(p.fail_at(err_span, msg)),
+            }
+        }
+        Some(t) if c_type_keyword_token_str(t).is_some() => {
+            let mut words = Vec::new();
+            while let Some(w) = p.peek(0).and_then(c_type_keyword_token_str) {
+                words.push(w);
+                p.pos += 1;
+            }
+            let span = p.span_since(start);
+            let c_type = words.join(" ");
+            let msg = match c_type_keywords_suggestion(&words) {
+                Some((primitive, ffi)) => format!(
+                    "{c_type} is invalid as Rust type. Use either `{primitive}` or `std::ffi::{ffi}`"
+                ),
+                None => format!("{c_type} is invalid as Rust type"),
+            };
+            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, msg)]);
+            Ok((RustTy::Tuple(vec![]), span))
+        }
+        _ => {
+            let (path, _) = p.parse_rust_path(true)?;
+            let span = p.span_since(start);
+            Ok((RustTy::Path((path, span)), span))
+        }
+    }
+}
+
+// ── C types & declarators ────────────────────────────────────────────
+
+fn is_type_qualifier(tok: Option<&Token>) -> bool {
+    matches!(
+        tok,
+        Some(Token::Const | Token::Restrict | Token::Volatile | Token::Atomic)
+    )
+}
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    fn parse_type_qualifier(&mut self) -> PR<Spanned<TypeQualifier>> {
+        let start = self.pos;
+        let q = match self.peek(0) {
+            Some(Token::Const) => TypeQualifier::Const,
+            Some(Token::Restrict) => TypeQualifier::Restrict,
+            Some(Token::Volatile) => TypeQualifier::Volatile,
+            Some(Token::Atomic) => TypeQualifier::Atomic,
+            _ => {
+                return Err(self.fail_here(format!(
+                    "expected type qualifier, found {}",
+                    self.describe()
+                )));
+            }
+        };
+        self.pos += 1;
+        Ok((q, self.span_since(start)))
+    }
+
+    fn parse_storage_class(&mut self) -> PR<Spanned<StorageClassSpecifier>> {
+        let start = self.pos;
+        let s = match self.peek(0) {
+            Some(Token::Typedef) => StorageClassSpecifier::Typedef,
+            Some(Token::Extern) => StorageClassSpecifier::Extern,
+            Some(Token::Static) => StorageClassSpecifier::Static,
+            Some(Token::Constexpr) => StorageClassSpecifier::Constexpr,
+            Some(Token::Atomic) => StorageClassSpecifier::Atomic,
+            Some(Token::ThreadLocal) => StorageClassSpecifier::ThreadLocal,
+            Some(Token::Auto) => StorageClassSpecifier::Auto,
+            Some(Token::Register) => StorageClassSpecifier::Register,
+            _ => {
+                return Err(self.fail_here(format!(
+                    "expected storage specifier, found {}",
+                    self.describe()
+                )));
+            }
+        };
+        self.pos += 1;
+        Ok((s, self.span_since(start)))
+    }
+
+    pub fn parse_type_specifier(&mut self) -> PR<Spanned<TypeSpecifier<R>>> {
+        let start = self.pos;
+        let spec = match self.peek(0) {
+            Some(Token::Int) => TypeSpecifier::Int,
+            Some(Token::Bool) => TypeSpecifier::Bool,
+            Some(Token::Void) => TypeSpecifier::Void,
+            Some(Token::Char) => TypeSpecifier::Char,
+            Some(Token::Short) => TypeSpecifier::Short,
+            Some(Token::Long) => TypeSpecifier::Long,
+            Some(Token::Float) => TypeSpecifier::Float,
+            Some(Token::Double) => TypeSpecifier::Double,
+            Some(Token::Signed) => TypeSpecifier::Signed,
+            Some(Token::Unsigned) => TypeSpecifier::Unsigned,
+            _ => {
+                return match self.peek(0) {
+                    Some(Token::Alignas) => {
+                        self.pos += 1;
+                        self.expect(&Token::LParen, "(")?;
+                        self.capture_until(&Token::RParen);
+                        self.expect(&Token::RParen, ")")?;
+                        Ok((TypeSpecifier::Alignas, self.span_since(start)))
+                    }
+                    Some(Token::Struct) | Some(Token::Union) => self.parse_struct_or_union(),
+                    Some(Token::Enum) => self.parse_enum_specifier(),
+                    Some(Token::Typeof) => self.parse_typeof_specifier(),
+                    Some(Token::Ident(_)) | Some(Token::ColonColon) | Some(Token::Lt) => {
+                        self.parse_typedef_name()
+                    }
+                    _ => Err(self.fail_here(format!(
+                "expected type specifier, found {}",
+                self.describe()
+            ))),
+                };
+            }
+        };
+        self.pos += 1;
+        Ok((spec, self.span_since(start)))
+    }
+
+    /// `typedef-name` path with the turbofish-miss check.
+    fn parse_typedef_name(&mut self) -> PR<Spanned<TypeSpecifier<R>>> {
+        let start = self.pos;
+        // See exp::parse_ufcs_path: report classify failures at the start token.
+        let err_span = self.cur_span();
+        let (path, _) = self.parse_rust_path(false)?;
+        let path_span = rust_path_span(&path, self.span_since(start));
+        let has_lt = self.at(&Token::Lt);
+        let lt_span = self.cur_span();
+        match self.resolver.classify_path(&path) {
+            Ok((TypeQueryResult::Type, _)) if has_lt => {
+                let ctx = path_span.data().context;
+                let s = path_span.data().start;
+                let e = lt_span.data().end;
+                let span = Span::from_parts(ctx, s..e);
+                co2_ast::emit_errors_and_terminate(vec![
+                    co2_ast::Rich::custom(
+                        span,
+                        format!("generic arguments require turbofish syntax: `{path}::<...>`"),
+                    )
+                    .map_token(|tok: Token| tok.to_string()),
+                ]);
+            }
+            Ok((TypeQueryResult::Unsure | TypeQueryResult::Type, resolved)) => Ok((
+                TypeSpecifier::TypedefName((resolved, path_span)),
+                self.span_since(start),
+            )),
+            Ok((TypeQueryResult::Expr, _)) => {
+                Err(self.fail_at(err_span, "expected type name, found expression".to_string()))
+            }
+            Err((msg, _)) => Err(self.fail_at(err_span, msg)),
+        }
+    }
+
+    fn parse_struct_or_union(&mut self) -> PR<Spanned<TypeSpecifier<R>>> {
+        let start = self.pos;
+        let kind = match self.peek(0) {
+            Some(Token::Struct) => StructOrUnionKind::Struct,
+            _ => StructOrUnionKind::Union,
+        };
+        self.pos += 1;
+        // Inner span excludes the `struct`/`union` keyword (matches old).
+        let inner_start = self.pos;
+        let specifier: Spanned<StructOrUnionSpecifier<R>> = if self.at(&Token::LBrace) {
+            let fields = self.parse_struct_fields()?;
+            let span = self.span_since(inner_start);
+            (StructOrUnionSpecifier::Anonymous { fields }, span)
+        } else {
+            let ident = self.parse_identifier()?;
+            if self.at(&Token::LBrace) {
+                let fields = self.parse_struct_fields()?;
+                let span = self.span_since(inner_start);
+                (StructOrUnionSpecifier::Defined { ident, fields }, span)
+            } else {
+                let span = self.span_since(inner_start);
+                (StructOrUnionSpecifier::Declared { ident }, span)
+            }
+        };
+        let span = specifier.1;
+        let registered = self
+            .resolver
+            .register_struct_or_union_specifier(kind, specifier);
+        Ok((
+            TypeSpecifier::StructOrUnion {
+                kind,
+                specifier: (registered, span),
+            },
+            self.span_since(start),
+        ))
+    }
+
+    /// `{` fields `}`. Caller guarantees cursor is on `{`.
+    fn parse_struct_fields(&mut self) -> PR<Vec<Spanned<StructOrUnionField<R>>>> {
+        self.expect(&Token::LBrace, "{")?;
+        let mut fields = Vec::new();
+        loop {
+            if self.eat(&Token::RBrace).is_some() {
+                break;
+            }
+            if self.peek(0).is_none() {
+                return Err(
+                    self.fail_here("expected } or struct member, found end of input".to_string())
+                );
+            }
+            if self.at(&Token::Semicolon) {
+                let span = self.peek_span(0);
+                self.pos += 1;
+                fields.push((
+                    StructOrUnionField {
+                        specifiers: vec![],
+                        declarators: vec![],
+                    },
+                    span,
+                ));
+                continue;
+            }
+            fields.push(self.parse_struct_field()?);
+        }
+        // Same filter as before: drop bare `;`; drop all-abstract declarator
+        // lists unless they carry an anonymous struct/union member.
+        Ok(fields
+            .into_iter()
+            .filter(|(field, _)| {
+                if field.specifiers.is_empty() && field.declarators.is_empty() {
+                    return false;
+                }
+                if !field.declarators.is_empty()
+                    && field.declarators.iter().all(|(d, _)| {
+                        matches!(d.declarator.0, Declarator::Abstract) && d.bits.is_none()
+                    })
+                {
+                    let has_anon_struct_union = field.specifiers.iter().any(|(s, _)| {
+                        matches!(
+                            s,
+                            SpecifierQualifier::TypeSpecifier((
+                                TypeSpecifier::StructOrUnion { .. },
+                                _,
+                            ))
+                        )
+                    });
+                    return has_anon_struct_union;
+                }
+                true
+            })
+            .collect())
+    }
+
+    fn parse_struct_field(&mut self) -> PR<Spanned<StructOrUnionField<R>>> {
+        let start = self.pos;
+        let mut specs = vec![self.parse_spec_qualifier()?];
+        loop {
+            let cp = self.checkpoint();
+            match self.parse_struct_declarator_list() {
+                Ok(declarators) => {
+                    let span = self.span_since(start);
+                    return Ok((
+                        StructOrUnionField {
+                            specifiers: specs,
+                            declarators,
+                        },
+                        span,
+                    ));
+                }
+                Err(_) => {
+                    self.restore(cp);
+                }
+            }
+            specs.push(self.parse_spec_qualifier()?);
+        }
+    }
+
+    fn parse_struct_declarator_list(&mut self) -> PR<Vec<Spanned<StructDeclarator<R>>>> {
+        let mut out = Vec::new();
+        loop {
+            let start = self.pos;
+            let declarator = self.parse_declarator()?;
+            let bits = if self.eat(&Token::Colon).is_some() {
+                Some(crate::exp::parse_assignment(self)?)
+            } else {
+                None
+            };
+            let span = self.span_since(start);
+            out.push((StructDeclarator { declarator, bits }, span));
+            if self.eat(&Token::Comma).is_none() {
+                break;
+            }
+        }
+        self.expect(&Token::Semicolon, ";")?;
+        Ok(out)
+    }
+
+    fn parse_spec_qualifier(&mut self) -> PR<Spanned<SpecifierQualifier<R>>> {
+        let start = self.pos;
+        if is_type_qualifier(self.peek(0)) {
+            let q = self.parse_type_qualifier()?;
+            return Ok((SpecifierQualifier::TypeQualifier(q), self.span_since(start)));
+        }
+        let s = self.parse_type_specifier()?;
+        Ok((SpecifierQualifier::TypeSpecifier(s), self.span_since(start)))
+    }
+
+    fn parse_enum_specifier(&mut self) -> PR<Spanned<TypeSpecifier<R>>> {
+        let start = self.pos;
+        self.expect(&Token::Enum, "enum")?;
+        // Inner span excludes the `enum` keyword (matches old).
+        let inner_start = self.pos;
+        let ident = match self.peek(0) {
+            Some(Token::Ident(_)) => Some(self.parse_identifier()?),
+            _ => None,
+        };
+        let underlying_type = {
+            // C23 `enum E : int` underlying type. Backtrack if no type
+            // follows (e.g. `enum Color: 2` in `_Generic`).
+            let cp = self.checkpoint();
+            let mut ut = None;
+            if self.eat(&Token::Colon).is_some() {
+                let mut list = Vec::new();
+                loop {
+                    let sstart = self.pos;
+                    if is_type_qualifier(self.peek(0)) {
+                        let q = self.parse_type_qualifier()?;
+                        list.push((
+                            SpecifierQualifier::TypeQualifier(q),
+                            self.span_since(sstart),
+                        ));
+                    } else if self.peek_is_type_spec_start() {
+                        let s = self.parse_type_specifier()?;
+                        list.push((
+                            SpecifierQualifier::TypeSpecifier(s),
+                            self.span_since(sstart),
+                        ));
+                    } else {
+                        break;
+                    }
+                }
+                if list.is_empty() {
+                    self.restore(cp);
+                } else {
+                    ut = Some(TypeName {
+                        specifier_qualifier_list: list,
+                        abstract_declarator: None,
+                    });
+                }
+            }
+            ut
+        };
+        let spec: Spanned<EnumSpecifier<R>> = if self.at(&Token::LBrace) {
+            self.pos += 1;
+            let mut enumerators = Vec::new();
+            if !self.at(&Token::RBrace) {
+                loop {
+                    let estart = self.pos;
+                    let ident = self.parse_identifier()?;
+                    let value = if self.eat(&Token::Assign).is_some() {
+                        Some(crate::exp::parse_assignment(self)?)
+                    } else {
+                        None
+                    };
+                    let espan = self.span_since(estart);
+                    let reg = self
+                        .resolver
+                        .register_enumerator((Enumerator { ident, value }, espan));
+                    enumerators.push((reg, espan));
+                    if self.eat(&Token::Comma).is_some() {
+                        if self.at(&Token::RBrace) {
+                            break;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(&Token::RBrace, "}")?;
+            let span = self.span_since(inner_start);
+            match ident {
+                Some(ident) => (
+                    EnumSpecifier::Defined {
+                        ident,
+                        underlying_type,
+                        enumerators,
+                    },
+                    span,
+                ),
+                None => (
+                    EnumSpecifier::Anonymous {
+                        underlying_type,
+                        enumerators,
+                    },
+                    span,
+                ),
+            }
+        } else {
+            let ident = ident.ok_or_else(|| {
+                self.fail_here(format!(
+                    "expected identifier or {{, found {}",
+                    self.describe()
+                ))
+            })?;
+            let span = self.span_since(inner_start);
+            (
+                EnumSpecifier::Declared {
+                    ident,
+                    underlying_type,
+                },
+                span,
+            )
+        };
+        let span = spec.1;
+        let reg = self.resolver.register_enum_specifier(spec);
+        Ok((TypeSpecifier::Enum((reg, span)), self.span_since(start)))
+    }
+
+    fn peek_is_type_spec_start(&self) -> bool {
+        matches!(
+            self.peek(0),
+            Some(
+                Token::Int
+                    | Token::Bool
+                    | Token::Void
+                    | Token::Char
+                    | Token::Short
+                    | Token::Long
+                    | Token::Float
+                    | Token::Double
+                    | Token::Signed
+                    | Token::Unsigned
+                    | Token::Alignas
+                    | Token::Struct
+                    | Token::Union
+                    | Token::Enum
+                    | Token::Typeof
+                    | Token::Ident(_)
+                    | Token::ColonColon
+                    | Token::Lt,
+            )
+        )
+    }
+
+    fn parse_typeof_specifier(&mut self) -> PR<Spanned<TypeSpecifier<R>>> {
+        let start = self.pos;
+        self.expect(&Token::Typeof, "typeof")?;
+        self.expect(&Token::LParen, "(")?;
+        // Try type-name first; fall back to expression.
+        let cp = self.checkpoint();
+        match self.parse_type_name() {
+            Ok(ty) => {
+                self.expect(&Token::RParen, ")")?;
+                Ok((
+                    TypeSpecifier::TypeofType(Box::new(ty)),
+                    self.span_since(start),
+                ))
+            }
+            Err(_) => {
+                self.restore(cp);
+                let expr = crate::exp::parse_expression(self)?;
+                self.expect(&Token::RParen, ")")?;
+                Ok((
+                    TypeSpecifier::TypeofExpr(Box::new(expr)),
+                    self.span_since(start),
+                ))
+            }
+        }
+    }
+
+    pub fn parse_type_name(&mut self) -> PR<TypeName<R>> {
+        let mut list = Vec::new();
+        loop {
+            let sstart = self.pos;
+            if is_type_qualifier(self.peek(0)) {
+                let q = self.parse_type_qualifier()?;
+                list.push((
+                    SpecifierQualifier::TypeQualifier(q),
+                    self.span_since(sstart),
+                ));
+            } else if self.peek_is_type_spec_start() {
+                // Avoid consuming a lone identifier that is not a type: probe.
+                let cp = self.checkpoint();
+                match self.parse_type_specifier() {
+                    Ok(s) => {
+                        list.push((
+                            SpecifierQualifier::TypeSpecifier(s),
+                            self.span_since(sstart),
+                        ));
+                    }
+                    Err(e) => {
+                        self.restore(cp);
+                        if list.is_empty() {
+                            return Err(e);
+                        }
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        if list.is_empty() {
+            return Err(self.fail_here(format!("expected type name, found {}", self.describe())));
+        }
+        let decl = self.try_parse_declarator_opt()?;
+        Ok(TypeName {
+            specifier_qualifier_list: list,
+            abstract_declarator: decl.and_then(|d| {
+                if matches!(d.0, Declarator::Abstract) {
+                    None
+                } else {
+                    Some(d)
+                }
+            }),
+        })
+    }
+
+    /// Declarator if one is present, else Abstract without consuming... but an
+    /// empty abstract must only apply where valid; here we always return Some
+    /// and let the caller drop Abstract. Never fails.
+    fn try_parse_declarator_opt(&mut self) -> PR<Option<Spanned<Declarator<R>>>> {
+        // Only parse if the next tokens can start a declarator (including
+        // abstract array tails like `[3]` in `(int[3]){...}`).
+        match self.peek(0) {
+            Some(Token::Star | Token::LParen | Token::LBracket | Token::Ident(_)) => {
+                Ok(Some(self.parse_declarator()?))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn parse_decl_specifier(&mut self) -> PR<Spanned<DeclarationSpecifier<R>>> {
+        match self.parse_decl_specifier_inner() {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                let found = match self.peek(0) {
+                    Some(t) => format!("'{t}'"),
+                    None => "end of input".to_string(),
+                };
+                Err(Fail {
+                    span: e.span,
+                    msg: format!(
+                        "found {found} expected Type specifier, Type qualifier, Storage specifier, Function specifier, or something else"
+                    ),
+                })
+            }
+        }
+    }
+
+    fn parse_decl_specifier_inner(&mut self) -> PR<Spanned<DeclarationSpecifier<R>>> {
+        let start = self.pos;
+        match self.peek(0) {
+            // NOTE: `_Atomic` always parses as a qualifier here, matching the
+            // old grammar where the qualifier alternative preceded storage.
+            Some(
+                Token::Typedef
+                | Token::Extern
+                | Token::Static
+                | Token::Constexpr
+                | Token::ThreadLocal
+                | Token::Auto
+                | Token::Register,
+            ) => {
+                let s = self.parse_storage_class()?;
+                Ok((
+                    DeclarationSpecifier::StorageSpecifier(s),
+                    self.span_since(start),
+                ))
+            }
+            Some(Token::Inline) => {
+                let kw_span = self.peek_span(0);
+                self.pos += 1;
+                Ok((
+                    DeclarationSpecifier::FunctionSpecifier((FunctionSpecifier::Inline, kw_span)),
+                    self.span_since(start),
+                ))
+            }
+            Some(Token::Hash) | Some(Token::DocComment { .. }) => {
+                let attrs = self.parse_attr_list()?;
+                let span = self.span_since(start);
+                Ok((DeclarationSpecifier::GNUAttribute(attrs), span))
+            }
+            _ if is_type_qualifier(self.peek(0)) => {
+                let q = self.parse_type_qualifier()?;
+                Ok((
+                    DeclarationSpecifier::TypeQualifier(q),
+                    self.span_since(start),
+                ))
+            }
+            _ => {
+                let s = self.parse_type_specifier()?;
+                Ok((
+                    DeclarationSpecifier::TypeSpecifier(s),
+                    self.span_since(start),
+                ))
+            }
+        }
+    }
+
+    // ── Declarators ──
+
+    pub fn parse_declarator(&mut self) -> PR<Spanned<Declarator<R>>> {
+        let start = self.pos;
+        let mut pointers: Vec<(Vec<Spanned<TypeQualifier>>, Span)> = Vec::new();
+        while self.at(&Token::Star) {
+            let star = self.peek_span(0);
+            self.pos += 1;
+            let mut quals = Vec::new();
+            while is_type_qualifier(self.peek(0)) {
+                quals.push(self.parse_type_qualifier()?);
+            }
+            pointers.push((quals, star));
+        }
+        let mut base = self.parse_direct_declarator()?;
+        for (quals, star_span) in pointers.into_iter().rev() {
+            let span = join_spans(star_span, base.1);
+            base = (
+                Declarator::PointerDeclarator {
+                    declarator: Box::new(base),
+                    qualifiers: quals,
+                },
+                span,
+            );
+            let _ = start;
+        }
+        Ok(base)
+    }
+
+    fn parse_direct_declarator(&mut self) -> PR<Spanned<Declarator<R>>> {
+        let mut base: Spanned<Declarator<R>> = if self.at(&Token::LParen) {
+            // Could be a grouped declarator. (Parameter tails are handled in
+            // the loop below; a group always starts with `(` too, so try it.)
+            // To avoid misparsing `f(int)` when called at declaration start...
+            // note this fn is only called after pointers, where the next token
+            // decides: ident -> named, `(` -> group. `f(int)`: base `f` is an
+            // ident, never reaches here. Only true groups/abstracts arrive.
+            let cp = self.checkpoint();
+            self.pos += 1;
+            match self.parse_declarator() {
+                Ok(inner) => {
+                    self.expect(&Token::RParen, ")")?;
+                    inner
+                }
+                Err(_) => {
+                    self.restore(cp);
+                    // Abstract empty (e.g. `void` param, `(*)` cast).
+                    (Declarator::Abstract, self.cur_span())
+                }
+            }
+        } else if let Some(Token::Ident(_)) = self.peek(0) {
+            let (name, span) = self.parse_identifier()?;
+            let ident = self.resolver.register_ident(name);
+            (Declarator::Identifier((ident, span)), span)
+        } else {
+            (Declarator::Abstract, self.cur_span())
+        };
+        loop {
+            if self.at(&Token::LParen) {
+                let tstart = self.pos;
+                let (params, tail_span) = self.parse_parameter_type_list()?;
+                let base_span = base.1;
+                let placeholder = matches!(base.0, Declarator::Abstract);
+                base = (
+                    Declarator::FunctionDeclarator {
+                        declarator: Box::new(base),
+                        param_list: params,
+                    },
+                    if placeholder {
+                        tail_span
+                    } else {
+                        join_spans(base_span, tail_span)
+                    },
+                );
+                let _ = tstart;
+            } else if self.at(&Token::LBracket) {
+                let tstart = self.pos;
+                let full = self.capture_balanced_full(&Token::LBracket, &Token::RBracket)?;
+                let tail_span = self.span_since(tstart);
+                let sub_span = slice_span(&full, tail_span);
+                let sub = self
+                    .resolver
+                    .register_subscription((LazySubscription { tokens: full }, sub_span));
+                let base_span = base.1;
+                let placeholder = matches!(base.0, Declarator::Abstract);
+                base = (
+                    Declarator::ArrayDeclarator {
+                        declarator: Box::new(base),
+                        subscription: (sub, sub_span),
+                    },
+                    if placeholder {
+                        tail_span
+                    } else {
+                        join_spans(base_span, tail_span)
+                    },
+                );
+            } else {
+                break;
+            }
+        }
+        Ok(base)
+    }
+
+    fn parse_parameter_type_list(&mut self) -> PR<(ParameterList<R>, Span)> {
+        let start = self.pos;
+        self.expect(&Token::LParen, "(")?;
+        let mut parameters = Vec::new();
+        let mut ellipsis = false;
+        if !self.at(&Token::RParen) {
+            loop {
+                parameters.push(self.parse_parameter_single()?);
+                if self.eat(&Token::Comma).is_none() {
+                    break;
+                }
+                // `, ...` terminates the list (old grammar required a comma
+                // before `...`; bare `(...)` was rejected too).
+                // A trailing `,)` is rejected like gcc: loop back and
+                // require another parameter.
+                if self.eat(&Token::Ellipsis).is_some() {
+                    ellipsis = true;
+                    break;
+                }
+            }
+        }
+        self.expect(&Token::RParen, ")")?;
+        let span = self.span_since(start);
+        Ok((
+            ParameterList {
+                parameters,
+                ellipsis,
+                empty_is_variadic: true,
+            },
+            span,
+        ))
+    }
+
+    fn parse_parameter_single(
+        &mut self,
+    ) -> PR<(
+        Vec<Spanned<DeclarationSpecifier<R>>>,
+        Spanned<Declarator<R>>,
+    )> {
+        let mut specs = vec![self.parse_decl_specifier()?];
+        loop {
+            let has_type_spec = specs
+                .iter()
+                .any(|(s, _)| matches!(s, DeclarationSpecifier::TypeSpecifier(_)));
+            let mut next_is_typedef_name = false;
+            if !has_type_spec {
+                if let Some(Token::Ident(s)) = self.peek(0) {
+                    let path = RustPath::<StatelessResolver>::from_ident((
+                        s.clone(),
+                        Span::from_parts(FileId::INVALID, 0..0),
+                    ));
+                    if let Ok((TypeQueryResult::Type | TypeQueryResult::Unsure, _)) =
+                        self.resolver.classify_path(&path)
+                    {
+                        next_is_typedef_name = true;
+                    }
+                }
+            }
+            if !next_is_typedef_name {
+                let cp = self.checkpoint();
+                match self.parse_declarator() {
+                    Ok(decl) => {
+                        if self.at(&Token::RParen) || self.at(&Token::Comma) {
+                            return Ok((specs, decl));
+                        }
+                        self.restore(cp);
+                    }
+                    Err(_) => {
+                        self.restore(cp);
+                    }
+                }
+            }
+            // If the declarator attempt failed or the next token cannot end a
+            // parameter, another specifier must follow — otherwise error out
+            // instead of looping forever.
+            if self.at(&Token::RParen) || self.at(&Token::Comma) {
+                // Declarator attempt above failed but we are at a boundary:
+                // bare spec (e.g. `void`, `int` in prototype). Synthesize an
+                // abstract declarator.
+                let span = self.cur_span();
+                return Ok((specs, (Declarator::Abstract, span)));
+            }
+            specs.push(self.parse_decl_specifier()?);
+        }
+    }
+}
+
+fn declarator_has_name<R: TypeResolver>(decl: &Declarator<R>) -> bool {
+    match decl {
+        Declarator::Identifier(_) => true,
+        Declarator::Abstract => false,
+        Declarator::FunctionDeclarator { declarator, .. }
+        | Declarator::PointerDeclarator { declarator, .. }
+        | Declarator::ArrayDeclarator { declarator, .. } => declarator_has_name(&declarator.0),
+    }
+}
+
+// In C, a function cannot return a function (only a pointer to one). A valid
+// function-definition declarator therefore never has a FunctionDeclarator
+// immediately wrapping another FunctionDeclarator.
+fn function_decl_direct_inner_is_not_function<R: TypeResolver>(decl: &Declarator<R>) -> bool {
+    match decl {
+        Declarator::FunctionDeclarator { declarator, .. } => {
+            !matches!(&declarator.0, Declarator::FunctionDeclarator { .. })
+        }
+        _ => true,
+    }
+}
+
+// ── Declarations ─────────────────────────────────────────────────────
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    fn parse_static_assert(&mut self) -> PR<Declaration<R>> {
+        self.expect(&Token::StaticAssert, "static_assert")?;
+        self.expect(&Token::LParen, "(")?;
+        let expr = crate::exp::parse_assignment(self)?;
+        let mut message: Option<(String, Span)> = None;
+        if self.eat(&Token::Comma).is_some() {
+            let mut parts = Vec::new();
+            loop {
+                match self.peek(0) {
+                    Some(Token::StringLit(s)) => {
+                        parts.push(s.clone());
+                        self.pos += 1;
+                    }
+                    _ => break,
+                }
+            }
+            if parts.is_empty() {
+                return Err(self.fail_here(format!(
+                    "expected string literal, found {}",
+                    self.describe()
+                )));
+            }
+            let span = self.cur_span();
+            let literal = merge_string_literals(parts, span);
+            let text = String::from_utf8_lossy(literal.to_bytes().as_ref()).into_owned();
+            message = Some((text, span));
+        }
+        self.expect(&Token::RParen, ")")?;
+        self.expect(&Token::Semicolon, ";")?;
+        Ok(Declaration::StaticAssert {
+            expr,
+            message: message
+                .unwrap_or_else(|| (String::new(), Span::from_parts(FileId::INVALID, 0..0))),
+        })
+    }
+
+    /// One-or-more `declarator (= init)?` items. Registers each name before
+    /// parsing its initializer (C11 6.2.1p7). Empty vec if no declarator.
+    fn parse_init_declarator_list(&mut self) -> PR<Vec<Spanned<InitDeclarator<R>>>> {
+        let mut result = Vec::new();
+        loop {
+            let cp = self.checkpoint();
+            let item_start = self.pos;
+            let decl = match self.parse_declarator() {
+                Ok(d) => d,
+                Err(_) => {
+                    self.restore(cp);
+                    break;
+                }
+            };
+            if !declarator_has_name(&decl.0) || !function_decl_direct_inner_is_not_function(&decl.0)
+            {
+                self.restore(cp);
+                break;
+            }
+            if let Some(ident) = decl.0.ident() {
+                let r = self.resolver.clone();
+                self.resolver = r.declare_ident_as_local(&ident);
+            }
+            // `= init` is optional-lookahead: on failure rewind the input
+            // (keeping the resolver, like the old `or_not`) and continue
+            // without an initializer.
+            let init = if self.at(&Token::Assign) {
+                let init_pos = self.pos;
+                self.pos += 1; // `=`
+                match crate::exp::parse_initializer(self) {
+                    Ok(init) => Some(init),
+                    Err(_) => {
+                        self.pos = init_pos;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let is_transparent_union = self.eat(&Token::TransparentUnionAttr).is_some();
+            let span = self.span_since(item_start);
+            result.push((
+                InitDeclarator {
+                    declarator: decl,
+                    initializer: init,
+                    is_transparent_union,
+                },
+                span,
+            ));
+            if self.eat(&Token::Comma).is_none() {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn parse_declaration(&mut self) -> PR<Spanned<Declaration<R>>> {
+        let start = self.pos;
+        if self.at(&Token::StaticAssert) {
+            let d = self.parse_static_assert()?;
+            let span = self.span_since(start);
+            let nr = self.resolver.register_decl(&d);
+            self.resolver = nr;
+            return Ok((d, span));
+        }
+        if self.resolver.rust_style_syntax_enabled() && self.peek_rust_fn() {
+            let d = self.parse_rust_fn_def(Vec::new())?;
+            let span = self.span_since(start);
+            let nr = self.resolver.register_decl(&d);
+            self.resolver = nr;
+            return Ok((d, span));
+        }
+        if self.resolver.rust_style_syntax_enabled() && self.peek_rust_type_alias() {
+            let d = self.parse_rust_type_def(Vec::new())?;
+            let span = self.span_since(start);
+            let nr = self.resolver.register_decl(&d);
+            self.resolver = nr;
+            return Ok((d, span));
+        }
+        // C declaration: specifiers first, then function or object form.
+        let mut specs = vec![self.parse_decl_specifier()?];
+        loop {
+            // Function-definition base: declarator (function) + attrs? + `{`.
+            {
+                let cp = self.checkpoint();
+                match self.parse_declarator() {
+                    Ok(decl) => {
+                        if declarator_has_name(&decl.0)
+                            && decl.0.is_function()
+                            && function_decl_direct_inner_is_not_function(&decl.0)
+                        {
+                            let attrs = self.parse_attr_list().unwrap_or_default();
+                            if self.at(&Token::LBrace) {
+                                let body = self.parse_lazy_compound()?;
+                                let span = self.span_since(start);
+                                let d = Declaration::FunctionDefinition {
+                                    attrs,
+                                    signature: FunctionDefinitionSignature::C {
+                                        declaration_specifiers: specs,
+                                        declarator: decl,
+                                    },
+                                    body,
+                                };
+                                let nr = self.resolver.register_decl(&d);
+                                self.resolver = nr;
+                                return Ok((d, span));
+                            }
+                        }
+                        self.restore(cp);
+                    }
+                    Err(_) => {
+                        self.restore(cp);
+                    }
+                }
+            }
+            // Object-declaration base: init-declarators + attrs? + `;`.
+            {
+                let cp = self.checkpoint();
+                match self.parse_init_declarator_list() {
+                    Ok(declarators) => {
+                        let trailing = self.parse_attr_list().unwrap_or_default();
+                        if self.eat(&Token::Semicolon).is_some() {
+                            let span = self.span_since(start);
+                            let mut leading: Vec<Spanned<RustAttribute>> = specs
+                                .iter()
+                                .filter_map(|spec| match &spec.0 {
+                                    DeclarationSpecifier::GNUAttribute(attrs) => {
+                                        Some(attrs.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .flatten()
+                                .collect();
+                            leading.extend(trailing);
+                            let d = Declaration::Declaration {
+                                attrs: leading,
+                                declaration_specifiers: specs,
+                                declarators,
+                            };
+                            let nr = self.resolver.register_decl(&d);
+                            self.resolver = nr;
+                            return Ok((d, span));
+                        }
+                        self.restore(cp);
+                    }
+                    Err(_) => {
+                        self.restore(cp);
+                    }
+                }
+            }
+            specs.push(self.parse_decl_specifier()?);
+        }
+    }
+
+    fn peek_after_pub(&self) -> usize {
+        // Offset of the token after an optional `pub` / `pub(...)` prefix.
+        if !matches!(self.peek(0), Some(Token::Ident(s)) if s == "pub") {
+            return 0;
+        }
+        if self.peek(1) != Some(&Token::LParen) {
+            return 1;
+        }
+        let mut depth = 0u32;
+        let mut i = 1;
+        while let Some(t) = self.peek(i) {
+            if t == &Token::LParen {
+                depth += 1;
+            } else if t == &Token::RParen {
+                if depth == 1 {
+                    return i + 1;
+                }
+                depth -= 1;
+            }
+            i += 1;
+        }
+        i
+    }
+
+    fn peek_rust_fn(&self) -> bool {
+        matches!(self.peek(self.peek_after_pub()), Some(Token::Ident(s)) if s == "fn")
+    }
+
+    fn peek_rust_type_alias(&self) -> bool {
+        matches!(self.peek(self.peek_after_pub()), Some(Token::Ident(s)) if s == "type")
+    }
+
+    // ── Rust-style items ──
+
+    fn parse_rust_fn_def(&mut self, attrs: Vec<Spanned<RustAttribute>>) -> PR<Declaration<R>> {
+        let (visibility, err_span) = self.parse_pub_token()?;
+        if let Some(span) = err_span {
+            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, "invalid pub specifier")]);
+        }
+        if self.eat_ident("fn").is_none() {
+            return Err(self.fail_here(format!("expected fn, found {}", self.describe())));
+        }
+        let (name, name_span) = self.parse_identifier()?;
+        let params = self.parse_rust_params()?;
+        let ret_ty = if self.eat(&Token::Arrow).is_some() {
+            self.parse_rust_ty()?
+        } else {
+            (RustTy::Tuple(vec![]), self.cur_span())
+        };
+        let body = self.parse_lazy_compound()?;
+        Ok(Declaration::FunctionDefinition {
+            attrs: Vec::new(),
+            signature: FunctionDefinitionSignature::Rust(RustFunctionSignature {
+                attrs,
+                name: (self.resolver.register_ident(name), name_span),
+                params,
+                ret_ty,
+                visibility,
+            }),
+            body,
+        })
+    }
+
+    fn parse_rust_params(&mut self) -> PR<Vec<RustFunctionParam<R>>> {
+        self.expect(&Token::LParen, "(")?;
+        let mut out = Vec::new();
+        if !self.at(&Token::RParen) {
+            loop {
+                let (name, name_span) = self.parse_identifier()?;
+                self.expect(&Token::Colon, ":")?;
+                let ty = self.parse_rust_ty()?;
+                out.push(RustFunctionParam {
+                    name: (self.resolver.register_ident(name), name_span),
+                    ty,
+                });
+                if self.eat(&Token::Comma).is_some() {
+                    if self.at(&Token::RParen) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&Token::RParen, ")")?;
+        Ok(out)
+    }
+
+    fn parse_rust_type_def(&mut self, attrs: Vec<Spanned<RustAttribute>>) -> PR<Declaration<R>> {
+        let visibility = match self.peek(0) {
+            Some(Token::Ident(s)) if s == "pub" => {
+                self.pos += 1;
+                Visibility::Public
+            }
+            _ => Visibility::Private,
+        };
+        if self.eat_ident("type").is_none() {
+            return Err(self.fail_here(format!("expected type, found {}", self.describe())));
+        }
+        let (name, name_span) = self.parse_identifier()?;
+        self.expect(&Token::Assign, "=")?;
+        let ty = self.parse_rust_ty()?;
+        Ok(Declaration::RustTypeAlias {
+            attrs,
+            ident: (self.resolver.register_ident(name), name_span),
+            ty,
+            visibility,
+        })
+    }
+
+    fn parse_rust_struct_def(&mut self, attrs: Vec<Spanned<RustAttribute>>) -> PR<Declaration<R>> {
+        let (visibility, err_span) = self.parse_pub_token()?;
+        if let Some(span) = err_span {
+            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, "invalid pub specifier")]);
+        }
+        if !matches!(self.peek(0), Some(Token::Struct)) {
+            return Err(self.fail_here(format!("expected struct, found {}", self.describe())));
+        }
+        self.pos += 1;
+        let (name, name_span) = self.parse_identifier()?;
+        self.expect(&Token::LBrace, "{")?;
+        let mut fields = Vec::new();
+        if !self.at(&Token::RBrace) {
+            loop {
+                let (vis, err_span) = self.parse_pub_token()?;
+                if let Some(span) = err_span {
+                    co2_ast::emit_errors(vec![co2_ast::Rich::custom(
+                        span,
+                        "invalid pub specifier",
+                    )]);
+                }
+                let (fname, fspan) = self.parse_identifier()?;
+                self.expect(&Token::Colon, ":")?;
+                let ty = self.parse_rust_ty()?;
+                fields.push(RustStructField {
+                    name: (self.resolver.register_ident(fname), fspan),
+                    visibility: vis,
+                    ty,
+                });
+                if self.eat(&Token::Comma).is_some() {
+                    if self.at(&Token::RBrace) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&Token::RBrace, "}")?;
+        Ok(Declaration::RustStruct {
+            attrs,
+            ident: (self.resolver.register_ident(name), name_span),
+            fields,
+            visibility,
+        })
+    }
+
+    /// `{ ... }` captured lazily (braces included).
+    pub(crate) fn parse_lazy_compound(&mut self) -> PR<Spanned<LazyCompoundStatement>> {
+        let start = self.pos;
+        let full = self.capture_balanced_full(&Token::LBrace, &Token::RBrace)?;
+        let span = self.span_since(start);
+        Ok((
+            LazyCompoundStatement {
+                tokens: (full, span),
+            },
+            span,
+        ))
+    }
+
+    // ── use / mod ──
+
+    fn parse_braced_use_tree(&mut self) -> PR<Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>> {
+        self.pos += 1; // `{`
+        let mut out = Vec::new();
+        if !self.at(&Token::RBrace) {
+            loop {
+                out.extend(self.parse_use_tree()?);
+                if self.eat(&Token::Comma).is_some() {
+                    if self.at(&Token::RBrace) {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&Token::RBrace, "}")?;
+        Ok(out)
+    }
+
+    fn parse_use_tree(&mut self) -> PR<Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>> {
+        if self.at(&Token::LBrace) {
+            return self.parse_braced_use_tree();
+        }
+        if self.at(&Token::Star) {
+            let span = self.peek_span(0);
+            self.pos += 1;
+            return Ok(vec![(vec![("*".to_string(), span)], None)]);
+        }
+        let mut prefix = vec![self.parse_identifier()?];
+        while self.at(&Token::ColonColon) {
+            // Look ahead: `{` or `*` after `::` starts a nested/group form.
+            let is_nested = matches!(self.peek(1), Some(Token::LBrace | Token::Star));
+            if !is_nested {
+                self.pos += 1;
+                prefix.push(self.parse_identifier()?);
+                continue;
+            }
+            break;
+        }
+        let mut nested: Option<Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>> = None;
+        if self.at(&Token::ColonColon) {
+            self.pos += 1;
+            if self.at(&Token::Star) {
+                let span = self.peek_span(0);
+                self.pos += 1;
+                nested = Some(vec![(vec![("*".to_string(), span)], None)]);
+            } else if self.at(&Token::LBrace) {
+                nested = Some(self.parse_braced_use_tree()?);
+            } else {
+                return Err(self.fail_here(format!("expected {{ or *, found {}", self.describe())));
+            }
+        }
+        let alias = if self.eat_ident("as").is_some() {
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+        if let Some(items) = nested {
+            let mut flat = Vec::new();
+            for (mut path, a) in items {
+                let mut full = prefix.clone();
+                full.append(&mut path);
+                flat.push((full, a));
+            }
+            return Ok(flat);
+        }
+        Ok(vec![(prefix, alias)])
+    }
+
+    fn parse_use_items(&mut self, attrs: Vec<Spanned<RustAttribute>>) -> PR<Vec<Spanned<UseItem>>> {
+        let start = self.pos;
+        if self.eat_ident("use").is_none() {
+            return Err(self.fail_here(format!("expected use, found {}", self.describe())));
+        }
+        if self.at(&Token::ColonColon) {
+            self.pos += 1;
+        }
+        let items = self.parse_use_tree()?;
+        self.expect(&Token::Semicolon, ";")?;
+        let span = self.span_since(start);
+        Ok(items
+            .into_iter()
+            .map(|(path, alias)| {
+                (
+                    UseItem {
+                        attrs: attrs.clone(),
+                        path,
+                        alias,
+                    },
+                    span,
+                )
+            })
+            .collect())
+    }
+
+    fn parse_mod_item(&mut self, attrs: Vec<Spanned<RustAttribute>>) -> PR<Spanned<ModItem>> {
+        let start = self.pos;
+        if self.eat_ident("mod").is_none() {
+            return Err(self.fail_here(format!("expected mod, found {}", self.describe())));
+        }
+        let name = self.parse_identifier()?;
+        let item = if self.eat(&Token::Semicolon).is_some() {
+            ModItem {
+                attrs,
+                name,
+                inline_content: None,
+            }
+        } else if self.at(&Token::LBrace) {
+            let (inner, span) = self.capture_balanced(&Token::LBrace, &Token::RBrace)?;
+            ModItem {
+                attrs,
+                name,
+                inline_content: Some((inner, span)),
+            }
+        } else {
+            return Err(self.fail_here(format!("expected ; or {{, found {}", self.describe())));
+        };
+        Ok((item, self.span_since(start)))
+    }
+
+    fn parse_break_co2(&mut self) -> PR<Spanned<Declaration<R>>> {
+        let start = self.pos;
+        self.expect(&Token::Break, "break")?;
+        if self.eat_ident("co2").is_none() {
+            return Err(self.fail_here(format!("expected co2, found {}", self.describe())));
+        }
+        self.expect(&Token::Semicolon, ";")?;
+        Ok((Declaration::BreakCo2, self.span_since(start)))
+    }
+
+    fn parse_pragma_pack(&mut self) -> PR<Spanned<Declaration<R>>> {
+        let start = self.pos;
+        let action = match self.peek(0) {
+            Some(Token::Ident(s)) => pragma_pack_action(s),
+            _ => None,
+        };
+        let Some(action) = action else {
+            return Err(self.fail_here(format!(
+                "expected pragma pack action, found {}",
+                self.describe()
+            )));
+        };
+        self.pos += 1;
+        self.expect(&Token::Semicolon, ";")?;
+        Ok((Declaration::PragmaPack { action }, self.span_since(start)))
+    }
+}
+
+fn pragma_pack_action(ident: &str) -> Option<co2_ast::PackAction> {
+    use co2_ast::PackAction;
+    match ident {
+        "__ccc_pack_pop" => Some(PackAction::Pop),
+        "__ccc_pack_reset" => Some(PackAction::Reset),
+        "__ccc_pack_push_only" => Some(PackAction::PushOnly),
+        _ => {
+            if let Some(n) = ident
+                .strip_prefix("__ccc_pack_push_")
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                return Some(PackAction::PushSet(n));
+            }
+            ident
+                .strip_prefix("__ccc_pack_set_")
+                .and_then(|s| s.parse::<u32>().ok())
+                .map(PackAction::Set)
+        }
+    }
+}
+
+fn attach_attrs_to_declaration<R: TypeResolver>(
+    mut decl: Declaration<R>,
+    attrs: Vec<Spanned<RustAttribute>>,
+) -> Declaration<R> {
+    match &mut decl {
+        Declaration::FunctionDefinition {
+            attrs: decl_attrs, ..
+        }
+        | Declaration::Declaration {
+            attrs: decl_attrs, ..
+        }
+        | Declaration::RustTypeAlias {
+            attrs: decl_attrs, ..
+        }
+        | Declaration::RustStruct {
+            attrs: decl_attrs, ..
+        } => *decl_attrs = attrs,
+        Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
+        Declaration::StaticAssert { .. } => {}
+    }
+    decl
+}
+
+fn attrs_are_outer(attrs: &[Spanned<RustAttribute>]) -> bool {
+    attrs.iter().all(|(attr, _)| !attr.is_inner())
+}
+
+// ── Translation unit ─────────────────────────────────────────────────
+
+/// Parse a whole TU. Aborts on the first bad item (matching the old
+/// combinator behavior, where a failing item kills the whole TU parse).
+pub(crate) fn parse_tu<R: TypeResolver>(
+    toks: &[Spanned<Token>],
+    end_span: Span,
     resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, (Spanned<StatementOrDeclaration<R>>, R), extra::Err<Rich<'src, Token, Span>>>
-+ Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    custom(move |inp| {
-        let before = inp.cursor();
-        let checkpoint = inp.save();
-        let first = inp.next();
-        let prefer_declaration = match first {
+) -> PR<Spanned<TranslationUnit<R>>> {
+    let mut p = P::new(toks, end_span, resolver);
+    let mut rust_use_items = Vec::new();
+    let mut rust_mod_items = Vec::new();
+    let mut declarations = Vec::new();
+    let mut tu_attrs = Vec::new();
+
+    while p.peek(0).is_some() {
+        let mut attrs = p.parse_attr_list()?;
+        // Split leading inner attrs into TU attrs.
+        if let Some(first_outer) = attrs.iter().position(|(attr, _)| !attr.is_inner())
+            && first_outer > 0
+        {
+            tu_attrs.extend(attrs.drain(..first_outer));
+        }
+        if !attrs.is_empty() && attrs.iter().all(|(attr, _)| attr.is_inner()) {
+            tu_attrs.extend(attrs);
+            continue;
+        }
+        parse_tu_item(
+            &mut p,
+            attrs,
+            &mut rust_use_items,
+            &mut rust_mod_items,
+            &mut declarations,
+        )?;
+    }
+
+    let span = slice_span(toks, end_span);
+    Ok((
+        TranslationUnit {
+            attrs: tu_attrs,
+            rust_use_items,
+            rust_mod_items,
+            items: declarations,
+        },
+        span,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_tu_item<R: TypeResolver>(
+    p: &mut P<'_, R>,
+    attrs: Vec<Spanned<RustAttribute>>,
+    rust_use_items: &mut Vec<Spanned<UseItem>>,
+    rust_mod_items: &mut Vec<Spanned<ModItem>>,
+    declarations: &mut Vec<Spanned<Declaration<R>>>,
+) -> PR<()> {
+    if !attrs.is_empty() {
+        if !attrs_are_outer(&attrs) {
+            let span = attrs
+                .first()
+                .zip(attrs.last())
+                .map_or(Span::from_parts(FileId::INVALID, 0..0), |(f, l)| {
+                    join_spans(f.1, l.1)
+                });
+            return Err(p.fail_at(
+                span,
+                "inner doc comments are only supported before module contents".to_string(),
+            ));
+        }
+        // try use / mod / rust-style-with-attrs / declaration+attach
+        let cp = p.checkpoint();
+        match p.parse_use_items(attrs.clone()) {
+            Ok(items) => {
+                rust_use_items.extend(items);
+                return Ok(());
+            }
+            Err(_) => p.restore(cp),
+        }
+        let cp = p.checkpoint();
+        match p.parse_mod_item(attrs.clone()) {
+            Ok(item) => {
+                rust_mod_items.push(item);
+                return Ok(());
+            }
+            Err(_) => p.restore(cp),
+        }
+        if p.resolver.rust_style_syntax_enabled() {
+            if p.peek_rust_fn()
+                || p.peek_rust_type_alias()
+                || matches!(p.peek(0), Some(Token::Struct) | Some(Token::Ident(_)))
+            {
+                let start = p.pos;
+                let cp = p.checkpoint();
+                let r = if p.peek_rust_fn() {
+                    p.parse_rust_fn_def(attrs.clone())
+                } else if p.peek_rust_type_alias() {
+                    p.parse_rust_type_def(attrs.clone())
+                } else {
+                    p.parse_rust_struct_def(attrs.clone())
+                };
+                match r {
+                    Ok(d) => {
+                        let span = p.span_since(start);
+                        let nr = p.resolver.register_decl(&d);
+                        p.resolver = nr;
+                        declarations.push((d, span));
+                        return Ok(());
+                    }
+                    Err(_) => p.restore(cp),
+                }
+            }
+        }
+        let cp = p.checkpoint();
+        match p.parse_declaration() {
+            Ok((d, span)) => {
+                let d = attach_attrs_to_declaration(d, attrs);
+                declarations.push((d, span));
+                return Ok(());
+            }
+            Err(_) => p.restore(cp),
+        }
+        let span = attrs
+            .first()
+            .zip(attrs.last())
+            .map_or(Span::from_parts(FileId::INVALID, 0..0), |(f, l)| {
+                join_spans(f.1, l.1)
+            });
+        return Err(p.fail_at(
+            span,
+            "attributes are only supported on rust items".to_string(),
+        ));
+    }
+    // No attrs: use / mod / break / pack / rust-struct / declaration / `;`.
+    let cp = p.checkpoint();
+    match p.parse_use_items(Vec::new()) {
+        Ok(items) => {
+            rust_use_items.extend(items);
+            return Ok(());
+        }
+        Err(_) => p.restore(cp),
+    }
+    let cp = p.checkpoint();
+    match p.parse_mod_item(Vec::new()) {
+        Ok(item) => {
+            rust_mod_items.push(item);
+            return Ok(());
+        }
+        Err(_) => p.restore(cp),
+    }
+    let cp = p.checkpoint();
+    match p.parse_break_co2() {
+        Ok((d, span)) => {
+            let nr = p.resolver.register_decl(&d);
+            p.resolver = nr;
+            declarations.push((d, span));
+            return Ok(());
+        }
+        Err(_) => p.restore(cp),
+    }
+    let cp = p.checkpoint();
+    match p.parse_pragma_pack() {
+        Ok((d, span)) => {
+            let nr = p.resolver.register_decl(&d);
+            p.resolver = nr;
+            declarations.push((d, span));
+            return Ok(());
+        }
+        Err(_) => p.restore(cp),
+    }
+    // Rust struct (no attrs) before plain declaration, mirroring old order.
+    if p.resolver.rust_style_syntax_enabled()
+        && matches!(p.peek(0), Some(Token::Struct) | Some(Token::Ident(_)))
+    {
+        let start = p.pos;
+        let cp = p.checkpoint();
+        match p.parse_rust_struct_def(Vec::new()) {
+            Ok(d) => {
+                let span = p.span_since(start);
+                let nr = p.resolver.register_decl(&d);
+                p.resolver = nr;
+                declarations.push((d, span));
+                return Ok(());
+            }
+            Err(_) => p.restore(cp),
+        }
+    }
+    let cp = p.checkpoint();
+    match p.parse_declaration() {
+        Ok(decl) => {
+            declarations.push(decl);
+            return Ok(());
+        }
+        Err(_) => p.restore(cp),
+    }
+    if p.eat(&Token::Semicolon).is_some() {
+        return Ok(());
+    }
+    // Match the old TU-final `just(Token::Semicolon)` failure wording.
+    Err(p.fail_here(match p.peek(0) {
+        Some(t) => format!("found '{t}' expected ';'"),
+        None => "found end of input expected ';'".to_string(),
+    }))
+}
+
+// ── Statements ───────────────────────────────────────────────────────
+
+impl<'a, R: TypeResolver> P<'a, R> {
+    /// `{` ... `}` with scope handling. Caller must be on `{`.
+    pub fn parse_compound_inner(&mut self) -> PR<Spanned<CompoundStatement<R>>> {
+        let start = self.pos;
+        self.expect(&Token::LBrace, "{")?;
+        let outer = self.resolver.clone();
+        self.resolver = outer.clone().start_new_scope();
+        let mut statements = Vec::new();
+        let res = loop {
+            if self.eat(&Token::RBrace).is_some() {
+                break Ok(());
+            }
+            if self.peek(0).is_none() {
+                break Err(
+                    self.fail_here("expected } or statement, found end of input".to_string())
+                );
+            }
+            match self.parse_stmt_or_decl() {
+                Ok(item) => statements.push(item),
+                Err(e) => break Err(e),
+            }
+        };
+        self.resolver = outer;
+        res?;
+        Ok((CompoundStatement { statements }, self.span_since(start)))
+    }
+
+    fn parse_stmt_or_decl(&mut self) -> PR<Spanned<StatementOrDeclaration<R>>> {
+        if self.prefer_declaration() {
+            let d = self.parse_declaration()?;
+            let span = d.1;
+            Ok((StatementOrDeclaration::Declaration(d), span))
+        } else {
+            let s = self.parse_statement()?;
+            let span = s.1;
+            Ok((StatementOrDeclaration::Statement(s), span))
+        }
+    }
+
+    fn prefer_declaration(&self) -> bool {
+        match self.peek(0) {
             Some(
                 Token::Typedef
                 | Token::Extern
@@ -619,3259 +2565,276 @@ where
                 | Token::StaticAssert,
             ) => true,
             Some(Token::Ident(_)) => {
-                inp.rewind(checkpoint.clone());
-                // Check if this is a C label (ident: ) — if so, prefer statement
-                let is_label = inp
-                    .parse(rust_path().then_ignore(look_ahead(Token::Colon)))
-                    .is_ok();
-                inp.rewind(checkpoint.clone());
-                let prefer = if is_label {
-                    false
-                } else {
-                    inp.parse(rust_path())
-                        .ok()
-                        .as_ref()
-                        .and_then(|path| resolver.classify_path(&path.0).ok())
-                        .is_some_and(|(result, _)| {
-                            matches!(result, TypeQueryResult::Unsure | TypeQueryResult::Type)
-                        })
-                };
-                inp.rewind(checkpoint.clone());
-                prefer
+                if self.is_label_ahead() {
+                    return false;
+                }
+                matches!(
+                    self.peek_classify(),
+                    Some((TypeQueryResult::Unsure | TypeQueryResult::Type, _))
+                )
             }
             Some(Token::ColonColon) => {
-                inp.rewind(checkpoint.clone());
-                let prefer = inp
-                    .parse(rust_path())
-                    .ok()
-                    .as_ref()
-                    .and_then(|path| resolver.classify_path(&path.0).ok())
-                    .is_some_and(|(result, _)| matches!(result, TypeQueryResult::Type));
-                inp.rewind(checkpoint.clone());
-                prefer
+                matches!(self.peek_classify(), Some((TypeQueryResult::Type, _)))
             }
             _ => false,
-        };
-        inp.rewind(checkpoint);
-
-        let (value, next_resolver) = if prefer_declaration {
-            inp.parse(
-                declaration(resolver.clone(), stmt_rec.clone())
-                    .map(|(v, r)| (StatementOrDeclaration::Declaration(v), r)),
-            )?
-        } else {
-            inp.parse(
-                stmt_rec
-                    .clone()
-                    .map(|v| (StatementOrDeclaration::Statement(v), resolver.clone())),
-            )?
-        };
-
-        Ok(((value, inp.span_since(&before)), next_resolver))
-    })
-}
-
-pub(crate) fn statement<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|stmt_rec| {
-        let assign_expression_rec = assignment_expression(resolver.clone(), stmt_rec.clone());
-        let expression_rec = expression(assign_expression_rec);
-        let jump_statement = just(Token::Return)
-            .ignore_then(expression_rec.clone().or_not())
-            .map(|exp| Statement::Return(exp))
-            .then_ignore(just(Token::Semicolon));
-        let goto_statement = just(Token::Goto)
-            .ignore_then(
-                just(Token::Star)
-                    .ignore_then(expression_rec.clone())
-                    .map(Statement::IndirectGoto)
-                    .or(identifier().map(Statement::Goto)),
-            )
-            .then_ignore(just(Token::Semicolon));
-        let break_statement = just(Token::Break).ignore_then(
-            just(Token::Ident("co2".to_string()))
-                .then_ignore(just(Token::Semicolon))
-                .to(Statement::BreakCo2)
-                .or(just(Token::Semicolon).to(Statement::Break)),
-        );
-        let continue_statement = just(Token::Continue)
-            .then_ignore(just(Token::Semicolon))
-            .to(Statement::Continue);
-        let switch_statement = just(Token::Switch)
-            .ignore_then(
-                expression_rec
-                    .clone()
-                    .delimited_by(just(Token::LParen), just(Token::RParen)),
-            )
-            .then(stmt_rec.clone())
-            .map(|(expr, body)| Statement::Switch {
-                expr,
-                body: Box::new(body),
-            });
-        let case_statement = just(Token::Case)
-            .ignore_then(expression_rec.clone())
-            .then_ignore(just(Token::Colon))
-            .then(stmt_rec.clone())
-            .map(|(expr, statement)| Statement::Case {
-                expr,
-                statement: Box::new(statement),
-            });
-        let default_statement = just(Token::Default)
-            .map_with(|_, e| e.span())
-            .then(just(Token::Colon).ignore_then(stmt_rec.clone()))
-            .map(|(keyword_span, statement)| Statement::Default {
-                keyword_span,
-                statement: Box::new(statement),
-            });
-
-        let expression_statement = expression_rec
-            .clone()
-            .map(Statement::Expression)
-            .then_ignore(just(Token::Semicolon));
-        let empty_statement = just(Token::Semicolon).to(Statement::Empty);
-
-        let compound =
-            compound_statement(resolver.clone(), stmt_rec.clone()).map(Statement::Compound);
-
-        let if_statement = custom({
-            let expression_rec = expression_rec.clone();
-            let stmt_rec = stmt_rec.clone();
-            move |inp| {
-                inp.parse(just(Token::If))?;
-                let cond = inp.parse(
-                    expression_rec
-                        .clone()
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                )?;
-                let then_branch = inp.parse(stmt_rec.clone())?;
-                let else_branch = {
-                    let checkpoint = inp.save();
-                    let has_else = inp.next() == Some(Token::Else);
-                    inp.rewind(checkpoint);
-                    if has_else {
-                        inp.parse(just(Token::Else))?;
-                        Some(inp.parse(stmt_rec.clone())?)
-                    } else {
-                        None
-                    }
-                };
-                Ok(Statement::If {
-                    cond,
-                    then_branch: Box::new(then_branch),
-                    else_branch: else_branch.map(Box::new),
-                })
-            }
-        });
-
-        let while_statement = custom({
-            let expression_rec = expression_rec.clone();
-            let stmt_rec = stmt_rec.clone();
-            move |inp| {
-                inp.parse(just(Token::While))?;
-                let cond = inp.parse(
-                    expression_rec
-                        .clone()
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                )?;
-                let body = inp.parse(stmt_rec.clone())?;
-                Ok(Statement::While {
-                    cond,
-                    body: Box::new(body),
-                })
-            }
-        });
-        let do_while_statement = just(Token::Do)
-            .ignore_then(stmt_rec.clone())
-            .then_ignore(just(Token::While))
-            .then(
-                expression_rec
-                    .clone()
-                    .delimited_by(just(Token::LParen), just(Token::RParen)),
-            )
-            .then_ignore(just(Token::Semicolon))
-            .map(|(body, cond)| Statement::DoWhile {
-                body: Box::new(body),
-                cond,
-            });
-        let labeled_statement = identifier()
-            .then_ignore(just(Token::Colon))
-            .then(stmt_rec.clone())
-            .map(|(name, statement)| Statement::Label {
-                name,
-                statement: Box::new(statement),
-            });
-        let labeled_or_expression_statement = custom({
-            let expression_statement = expression_statement.clone();
-            let labeled_statement = labeled_statement.clone();
-            move |inp| {
-                let checkpoint = inp.save();
-                let is_label = inp
-                    .parse(identifier().ignored().then_ignore(look_ahead(Token::Colon)))
-                    .is_ok();
-                inp.rewind(checkpoint);
-                if is_label {
-                    inp.parse(labeled_statement.clone())
-                } else {
-                    inp.parse(expression_statement.clone())
-                }
-            }
-        });
-
-        let for_statement = just(Token::For).ignore_then(custom({
-            let resolver = resolver.clone();
-            let stmt_rec = stmt_rec.clone();
-            move |inp| {
-                inp.parse(just(Token::LParen))?;
-
-                let init_resolver = resolver.clone();
-                let (init, loop_resolver) = {
-                    let checkpoint = inp.save();
-                    if let Ok((decl, next_resolver)) =
-                        inp.parse(declaration(init_resolver.clone(), stmt_rec.clone()))
-                    {
-                        (Some(ForInit::Declaration(decl)), next_resolver)
-                    } else {
-                        inp.rewind(checkpoint);
-                        let expr = inp.parse(
-                            expression_rec
-                                .clone()
-                                .or_not()
-                                .then_ignore(just(Token::Semicolon)),
-                        )?;
-                        (expr.map(ForInit::Expression), init_resolver)
-                    }
-                };
-
-                let loop_expr = expression(assignment_expression(
-                    loop_resolver.clone(),
-                    stmt_rec.clone(),
-                ));
-                let cond = inp.parse(
-                    loop_expr
-                        .clone()
-                        .or_not()
-                        .then_ignore(just(Token::Semicolon)),
-                )?;
-                let post = inp.parse(loop_expr.or_not())?;
-                inp.parse(just(Token::RParen))?;
-                let body = inp.parse(statement(loop_resolver))?;
-
-                Ok(Statement::For {
-                    init,
-                    cond,
-                    post,
-                    body: Box::new(body),
-                })
-            }
-        }));
-
-        custom(move |inp| {
-            let before = inp.cursor();
-            let checkpoint = inp.save();
-            let first = inp.next();
-            inp.rewind(checkpoint);
-
-            let stmt = match first {
-                Some(Token::If) => inp.parse(if_statement.clone())?,
-                Some(Token::While) => inp.parse(while_statement.clone())?,
-                Some(Token::Do) => inp.parse(do_while_statement.clone())?,
-                Some(Token::For) => inp.parse(for_statement.clone())?,
-                Some(Token::Switch) => inp.parse(switch_statement.clone())?,
-                Some(Token::Case) => inp.parse(case_statement.clone())?,
-                Some(Token::Default) => inp.parse(default_statement.clone())?,
-                Some(Token::Goto) => inp.parse(goto_statement.clone())?,
-                Some(Token::Break) => inp.parse(break_statement.clone())?,
-                Some(Token::Continue) => inp.parse(continue_statement.clone())?,
-                Some(Token::Return) => inp.parse(jump_statement.clone())?,
-                Some(Token::Semicolon) => inp.parse(empty_statement.clone())?,
-                Some(Token::LBrace) => inp.parse(compound.clone())?,
-                _ => inp.parse(labeled_or_expression_statement.clone())?,
-            };
-
-            Ok((stmt, inp.span_since(&before)))
-        })
-    })
-}
-
-pub(crate) fn expression<'src, I, R: TypeResolver>(
-    assignment: impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    assignment
-        .separated_by(just(Token::Comma))
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(|x| {
-            let mut x = x.into_iter();
-            let mut r = x.next().unwrap();
-            for x in x {
-                let span = r.1;
-                r = (
-                    Expression::BinOp(Box::new(r), BinOp::Comma, Box::new(x)),
-                    span,
-                );
-            }
-            r
-        })
-}
-
-pub(crate) fn assignment_expression<'src, I, R: TypeResolver>(
-    resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<Expression<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|rec| {
-        #[derive(Clone)]
-        enum PostfixPart<R: TypeResolver> {
-            Subscript(Spanned<Expression<R>>),
-            Call(Vec<Spanned<Expression<R>>>),
-            Dot(Spanned<String>),
-            Arrow(Spanned<String>),
-            MethodCall {
-                ident: Spanned<String>,
-                generics: Vec<Spanned<RustTy<StatelessResolver>>>,
-                params: Vec<Spanned<Expression<R>>>,
-            },
-            PostInc,
-            PostDec,
         }
-
-        let compound_initializer = recursive(|init_rec| {
-            let designator = choice((
-                rec.clone()
-                    .then_ignore(just(Token::Ellipsis))
-                    .then(rec.clone())
-                    .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                    .map(|(start, end)| Designator::Range(start, end)),
-                rec.clone()
-                    .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                    .map(Designator::Subscript),
-                just(Token::Dot)
-                    .ignore_then(identifier())
-                    .map(Designator::Field),
-            ))
-            .map_with(|r, e| (r, e.span()));
-
-            let initializer_item = designator
-                .repeated()
-                .at_least(1)
-                .collect::<Vec<_>>()
-                .then_ignore(just(Token::Assign))
-                .or_not()
-                .then(init_rec.clone())
-                .map(|(designators, initializer)| InitializerItem {
-                    designators,
-                    initializer,
-                })
-                .map_with(|r, e| (r, e.span()));
-
-            let list = initializer_item
-                .separated_by(just(Token::Comma))
-                .allow_trailing()
-                .collect::<Vec<_>>()
-                .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                .map(Initializer::List)
-                .map_with(|r, e| (r, e.span()));
-
-            let expr = rec
-                .clone()
-                .map(Initializer::Expr)
-                .map_with(|r, e| (r, e.span()));
-
-            choice((list, expr))
-        });
-
-        let compound_literal = type_name(resolver.clone(), rec.clone())
-            .delimited_by(just(Token::LParen), just(Token::RParen))
-            .then(
-                compound_initializer
-                    .clone()
-                    .filter(|(init, _)| matches!(init, Initializer::List(_))),
-            )
-            .map(|(type_name, initializer)| Expression::CompoundLiteral {
-                type_name: Box::new(type_name),
-                initializer: Box::new(initializer),
-            });
-
-        let va_exp = choice((
-            just(Token::VaStart).ignore_then(
-                rec.clone()
-                    .then_ignore(just(Token::Comma))
-                    .then(identifier())
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .map(|(args, last_param)| {
-                        let args = Box::new(args);
-                        Expression::VaStart { args, last_param }
-                    }),
-            ),
-            just(Token::VaArg).ignore_then(
-                rec.clone()
-                    .then_ignore(just(Token::Comma))
-                    .then(type_name(resolver.clone(), rec.clone()))
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .map(|(args, type_name)| {
-                        let args = Box::new(args);
-                        Expression::VaArg { args, type_name }
-                    }),
-            ),
-            just(Token::VaCopy).ignore_then(
-                rec.clone()
-                    .then_ignore(just(Token::Comma))
-                    .then(rec.clone())
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .map(|(dest, src)| {
-                        let dest = Box::new(dest);
-                        let src = Box::new(src);
-                        Expression::VaCopy { dest, src }
-                    }),
-            ),
-            just(Token::VaEnd).ignore_then(
-                rec.clone()
-                    .delimited_by(just(Token::LParen), just(Token::RParen))
-                    .map(|args| {
-                        let args = Box::new(args);
-                        Expression::VaEnd { args }
-                    }),
-            ),
-        ));
-
-        let generic_selection = just(Token::Generic).ignore_then(
-            rec.clone()
-                .then_ignore(just(Token::Comma))
-                .then(
-                    choice((
-                        just(Token::Default)
-                            .ignore_then(just(Token::Colon))
-                            .ignore_then(rec.clone())
-                            .map(|expr| GenericAssociation::Default { expr }),
-                        type_name(resolver.clone(), rec.clone())
-                            .then_ignore(just(Token::Colon))
-                            .then(rec.clone())
-                            .map(|(type_name, expr)| GenericAssociation::Type { type_name, expr }),
-                    ))
-                    .map_with(|assoc, e| (assoc, e.span()))
-                    .separated_by(just(Token::Comma))
-                    .at_least(1)
-                    .collect::<Vec<_>>(),
-                )
-                .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map(|(controlling, associations)| Expression::GenericSelection {
-                    controlling: Box::new(controlling),
-                    associations,
-                }),
-        );
-
-        let primary_expression = choice((
-            compound_literal,
-            va_exp,
-            generic_selection,
-            just(Token::BuiltinInf)
-                .then_ignore(just(Token::LParen))
-                .then_ignore(just(Token::RParen))
-                .to(Expression::Constant(Constant::Float(
-                    f64::INFINITY,
-                    co2_ast::FloatSuffix::None,
-                ))),
-            just(Token::BuiltinNan)
-                .then_ignore(just(Token::LParen))
-                .then_ignore(
-                    select! {
-                        Token::StringLit(s) => s,
-                    }
-                    .repeated()
-                    .at_least(1)
-                    .collect::<Vec<_>>()
-                    .or_not(),
-                )
-                .then_ignore(just(Token::RParen))
-                .to(Expression::Constant(Constant::Float(
-                    f64::NAN,
-                    co2_ast::FloatSuffix::None,
-                ))),
-            just(Token::And)
-                .ignore_then(identifier())
-                .map(Expression::LabelAddress),
-            expression(rec.clone())
-                .delimited_by(just(Token::LParen), just(Token::RParen))
-                .map(|x: Spanned<Expression<R>>| x.0),
-            just(Token::LParen)
-                .ignore_then(compound_statement(resolver.clone(), stmt_rec.clone()))
-                .then_ignore(just(Token::RParen))
-                .map(|body| Expression::GnuStatementExpr {
-                    body: Box::new(body),
-                }),
-            {
-                let generic_ty = rust_generic_arg_ty();
-                let ufcs_path = just(Token::Lt)
-                    .ignore_then(rust_path_with_generic_args(generic_ty.clone()))
-                    .then_ignore(just(Token::Ident("as".to_string())))
-                    .then(rust_path_with_generic_args(generic_ty))
-                    .then_ignore(just(Token::Gt))
-                    .then_ignore(just(Token::ColonColon))
-                    .then(identifier())
-                    .map(|((type_path, trait_path), method)| {
-                        let type_segments = type_path.0.segments;
-                        let trait_segments = trait_path.0.segments;
-                        let method_segment = (RustPathSegment::Ident(method.0), method.1);
-                        let qual_span = join_spans(type_path.1, trait_path.1);
-                        let qual_segment = (
-                            RustPathSegment::<StatelessResolver>::Qualified {
-                                type_segments,
-                                trait_segments,
-                            },
-                            qual_span,
-                        );
-                        let span = qual_span;
-                        (
-                            RustPath {
-                                segments: vec![qual_segment, method_segment],
-                            },
-                            span,
-                        )
-                    });
-                let map_resolver = resolver.clone();
-                let ufcs_or_normal = ufcs_path
-                    .try_map(move |path, _| {
-                        let path_span = rust_path_span(&path.0, path.1);
-                        match map_resolver.classify_path(&path.0) {
-                            Ok((TypeQueryResult::Unsure | TypeQueryResult::Expr, resolved)) => {
-                                Ok(Expression::Identifier((resolved, path_span)))
-                            }
-                            Ok((TypeQueryResult::Type, _)) => Err(Rich::custom(
-                                path_span,
-                                "expected expression, found type name",
-                            )),
-                            Err((msg, span)) => Err(Rich::custom(span, msg)),
-                        }
-                    })
-                    .or(rust_path_expr_simple()
-                        .then(look_ahead(Token::Lt).map_with(|_, e| e.span()).or_not())
-                        .try_map({
-                        let resolver = resolver.clone();
-                        move |(path, lt_span): (
-                            Spanned<RustPath<StatelessResolver>>,
-                            Option<Span>,
-                        ),
-                              _| {
-                            let path_span = rust_path_span(&path.0, path.1);
-                            match resolver.classify_path(&path.0) {
-                                // A known type directly followed by `<` missed
-                                // its turbofish (`Vec<i32>::new()` instead of
-                                // `Vec::<i32>::new()`). A type can never be an
-                                // operand of `<`, so abort with a targeted
-                                // error rather than a cryptic follow-on one.
-                                // (Fatal: chumsky would otherwise discard this
-                                // for a further-position error.)
-                                Ok((TypeQueryResult::Type, _)) if lt_span.is_some() => {
-                                    let ctx = path_span.data().context;
-                                    let start = path_span.data().start;
-                                    // The lookahead span already covers `<`.
-                                    let lt_end = lt_span.unwrap().data().end;
-                                    let span = Span::from_parts(ctx, start..lt_end);
-                                    co2_ast::emit_errors_and_terminate(vec![Rich::custom(
-                                        span,
-                                        format!(
-                                            "generic arguments require turbofish syntax: `{}::<...>`",
-                                            path.0
-                                        ),
-                                    )
-                                    .map_token(|tok: Token| tok.to_string())]);
-                                }
-                                Ok((TypeQueryResult::Unsure | TypeQueryResult::Expr, resolved)) => {
-                                    Ok(Expression::Identifier((resolved, path_span)))
-                                }
-                                Ok((TypeQueryResult::Type, _)) => Err(Rich::custom(
-                                    path_span,
-                                    "expected expression, found type name",
-                                )),
-                                Err((msg, span)) => Err(Rich::custom(span, msg)),
-                            }
-                        }
-                    }));
-                ufcs_or_normal
-            },
-            select! {
-                Token::StringLit(s) => s,
-            }
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>()
-            .map_with(|parts, e| {
-                Expression::Constant(Constant::String(merge_string_literals(parts, e.span())))
-            }),
-            select! {
-                Token::Integer(i, suffix) => LiteralToken::Int(i, suffix),
-                Token::FloatLit(i, suffix) => LiteralToken::Float(i, suffix),
-                Token::CharLit(s, prefix) => LiteralToken::Char(s, prefix),
-            }
-            .map_with(|lit, e| {
-                let span = e.span();
-                match lit {
-                    LiteralToken::Int(i, suffix) => match parse_unsigned_integer_constant(&i) {
-                        Some(v) => {
-                            // C11 §6.4.4.1: an unsuffixed decimal constant
-                            // only considers signed types (int, long, long
-                            // long); hex/octal may also pick unsigned types.
-                            let suffix = if suffix == IntegerSuffix::None
-                                && !i.starts_with("0x")
-                                && !i.starts_with("0X")
-                                && !i.starts_with("0b")
-                                && !i.starts_with("0B")
-                                && !(i.len() > 1 && i.starts_with('0'))
-                            {
-                                IntegerSuffix::NoneDecimal
-                            } else {
-                                suffix
-                            };
-                            Expression::Constant(Constant::Int(v as i128, suffix))
-                        }
-                        None => {
-                            let msg = if i.starts_with("0x") || i.starts_with("0X") {
-                                "Invalid hexadecimal int literal"
-                            } else if i.starts_with("0b") || i.starts_with("0B") {
-                                "Invalid binary int literal"
-                            } else {
-                                "Invalid integer literal"
-                            };
-                            co2_ast::emit_errors(vec![co2_ast::Rich::custom(span, msg)]);
-                            Expression::Constant(Constant::Int(0, suffix))
-                        }
-                    },
-                    LiteralToken::Float(i, suffix) => {
-                        let value = i
-                            .parse::<f64>()
-                            .ok()
-                            .or_else(|| parse_hex_float_constant(&i));
-                        match value {
-                            Some(v) => Expression::Constant(Constant::Float(v, suffix)),
-                            None => {
-                                co2_ast::emit_errors(vec![co2_ast::Rich::custom(
-                                    span,
-                                    "Invalid float literal",
-                                )]);
-                                Expression::Constant(Constant::Float(0.0, suffix))
-                            }
-                        }
-                    }
-                    LiteralToken::Char(s, prefix) => {
-                        if s.is_empty() {
-                            co2_ast::emit_errors(vec![co2_ast::Rich::custom(
-                                span,
-                                "Invalid character constant",
-                            )]);
-                            Expression::Constant(Constant::Char(0, prefix))
-                        } else if prefix == CharPrefix::None && s.len() > 1 {
-                            // Multi-character character constant (implementation defined).
-                            // gcc packs up to sizeof(int) characters into an int,
-                            // first character in the most significant byte:
-                            //   'ab'   == 0x6162
-                            //   'abcd' == 0x61626364
-                            //   'abcde' == 0x62636465  (leading chars dropped)
-                            // The result has type int.
-                            let used = if s.len() > 4 {
-                                &s[s.len() - 4..]
-                            } else {
-                                &s[..]
-                            };
-                            let mut value: u32 = 0;
-                            for &b in used {
-                                value = (value << 8) | u32::from(b);
-                            }
-                            Expression::Constant(Constant::Int(
-                                i128::from(value as i32),
-                                IntegerSuffix::None,
-                            ))
-                        } else if prefix == CharPrefix::Utf8 {
-                            // char8_t holds the (unsigned) byte value of a
-                            // single byte or a UTF-8-encoded code point.
-                            let value = if s.len() == 1 {
-                                u32::from(s[0])
-                            } else {
-                                String::from_utf8_lossy(&s)
-                                    .chars()
-                                    .next()
-                                    .map(|c| c as u32)
-                                    .unwrap_or(0)
-                            };
-                            Expression::Constant(Constant::Char(value, prefix))
-                        } else if prefix == CharPrefix::None {
-                            // Narrow character constants hold the
-                            // (sign-extended) byte value.
-                            Expression::Constant(Constant::Char((s[0] as i8) as u32, prefix))
-                        } else {
-                            // Wide character constants: the tokenizer encodes
-                            // the value as 4 little-endian bytes.
-                            let mut bytes = [0u8; 4];
-                            for (i, &b) in s.iter().take(4).enumerate() {
-                                bytes[i] = b;
-                            }
-                            Expression::Constant(Constant::Char(u32::from_le_bytes(bytes), prefix))
-                        }
-                    }
-                }
-            }),
-        ))
-        .map_with(|r, e| (r, e.span()));
-
-        let call_params = rec
-            .clone()
-            .separated_by(just(Token::Comma))
-            .collect()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
-
-        let method_call_dot = just(Token::Dot)
-            .ignore_then(identifier())
-            .then(
-                just(Token::ColonColon)
-                    .ignore_then(
-                        rust_generic_arg_ty()
-                            .separated_by(just(Token::Comma))
-                            .collect::<Vec<_>>()
-                            .delimited_by(just(Token::Lt), just(Token::Gt)),
-                    )
-                    .then(call_params.clone()),
-            )
-            .map(|(ident, (generics, params))| PostfixPart::MethodCall {
-                ident,
-                generics,
-                params,
-            });
-
-        let method_call_arrow = just(Token::Arrow)
-            .ignore_then(identifier())
-            .then(
-                just(Token::ColonColon)
-                    .ignore_then(
-                        rust_generic_arg_ty()
-                            .separated_by(just(Token::Comma))
-                            .collect::<Vec<_>>()
-                            .delimited_by(just(Token::Lt), just(Token::Gt)),
-                    )
-                    .then(call_params.clone()),
-            )
-            .map(|(ident, (generics, params))| PostfixPart::MethodCall {
-                ident,
-                generics,
-                params,
-            });
-
-        let postfix_expression = primary_expression
-            .then(
-                choice((
-                    method_call_dot,
-                    method_call_arrow,
-                    rec.clone()
-                        .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                        .map(PostfixPart::<R>::Subscript),
-                    rec.clone()
-                        .separated_by(just(Token::Comma))
-                        .collect()
-                        .map(PostfixPart::<R>::Call)
-                        .delimited_by(just(Token::LParen), just(Token::RParen)),
-                    just(Token::Dot)
-                        .ignore_then(identifier())
-                        .map(PostfixPart::<R>::Dot),
-                    just(Token::Arrow)
-                        .ignore_then(identifier())
-                        .map(PostfixPart::<R>::Arrow),
-                    just(Token::Inc).to(PostfixPart::<R>::PostInc),
-                    just(Token::Dec).to(PostfixPart::<R>::PostDec),
-                ))
-                .repeated()
-                .collect::<Vec<PostfixPart<R>>>(),
-            )
-            .map(|(mut main, posts)| {
-                for post in posts {
-                    let span = main.1;
-                    let post_expr = match post {
-                        PostfixPart::Subscript(sub) => {
-                            Expression::Subscript(Box::new(main), Box::new(sub))
-                        }
-                        PostfixPart::Call(params) => Expression::Call {
-                            func: Box::new(main),
-                            params,
-                        },
-                        PostfixPart::Dot(ident) => Expression::Field(Box::new(main), ident),
-                        PostfixPart::Arrow(ident) => Expression::Arrow(Box::new(main), ident),
-                        PostfixPart::MethodCall {
-                            ident,
-                            generics,
-                            params,
-                        } => Expression::MethodCall {
-                            receiver: Box::new(main),
-                            method: ident,
-                            generics,
-                            params,
-                        },
-                        PostfixPart::PostInc => Expression::Update {
-                            expr: Box::new(main),
-                            op: UpdateOp::Inc,
-                            is_postfix: true,
-                        },
-                        PostfixPart::PostDec => Expression::Update {
-                            expr: Box::new(main),
-                            op: UpdateOp::Dec,
-                            is_postfix: true,
-                        },
-                    };
-                    main = (post_expr, span);
-                }
-                main
-            });
-
-        let unary_op = choice((
-            just(Token::Bang).to(UnaryOp::Not),
-            just(Token::Tilde).to(UnaryOp::Com),
-            just(Token::Amp).to(UnaryOp::AddrOf),
-            just(Token::Star).to(UnaryOp::Deref),
-            just(Token::Plus).to(UnaryOp::Plus),
-            just(Token::Minus).to(UnaryOp::Minus),
-        ));
-
-        let cast_expression = recursive(|cast_expr| {
-            let unary_expression = recursive(|unary| {
-                let sizeof_type_expression = just(Token::Sizeof)
-                    .ignore_then(
-                        type_name(resolver.clone(), rec.clone())
-                            .delimited_by(just(Token::LParen), just(Token::RParen)),
-                    )
-                    .map(|ty| Expression::SizeofType(Box::new(ty)))
-                    .map_with(|r, e| (r, e.span()));
-
-                let alignof_type_expression = just(Token::Alignof)
-                    .ignore_then(
-                        type_name(resolver.clone(), rec.clone())
-                            .delimited_by(just(Token::LParen), just(Token::RParen)),
-                    )
-                    .map(|ty| Expression::AlignofType(Box::new(ty)))
-                    .map_with(|r, e| (r, e.span()));
-
-                let offsetof_expression = just(Token::Offsetof)
-                    .ignore_then(just(Token::LParen))
-                    .ignore_then(type_name(resolver.clone(), rec.clone()))
-                    .then_ignore(just(Token::Comma))
-                    .then(select! { Token::Ident(s) => s }.map_with(|s, e| (s, e.span())))
-                    .then_ignore(just(Token::RParen))
-                    .map(|(ty, (field, field_span))| Expression::Offsetof {
-                        ty: Box::new(ty),
-                        field,
-                        field_span,
-                    })
-                    .map_with(|r, e| (r, e.span()));
-
-                let types_compatible_p_expression = just(Token::BuiltinTypesCompatibleP)
-                    .ignore_then(just(Token::LParen))
-                    .ignore_then(type_name(resolver.clone(), rec.clone()))
-                    .then_ignore(just(Token::Comma))
-                    .then(type_name(resolver.clone(), rec.clone()))
-                    .then_ignore(just(Token::RParen))
-                    .map(|(ty1, ty2)| Expression::BuiltinTypesCompatibleP {
-                        ty1: Box::new(ty1),
-                        ty2: Box::new(ty2),
-                    })
-                    .map_with(|r, e| (r, e.span()));
-
-                let constant_p_expression = just(Token::BuiltinConstantP)
-                    .ignore_then(
-                        rec.clone()
-                            .map(|expr| Expression::BuiltinConstantP {
-                                expr: Box::new(expr),
-                            })
-                            .delimited_by(just(Token::LParen), just(Token::RParen)),
-                    )
-                    .map_with(|r, e| (r, e.span()));
-
-                let prefix_inc_expression = just(Token::Inc)
-                    .ignore_then(unary.clone())
-                    .map(|expr| Expression::Update {
-                        expr: Box::new(expr),
-                        op: UpdateOp::Inc,
-                        is_postfix: false,
-                    })
-                    .map_with(|r, e| (r, e.span()));
-
-                let prefix_dec_expression = just(Token::Dec)
-                    .ignore_then(unary.clone())
-                    .map(|expr| Expression::Update {
-                        expr: Box::new(expr),
-                        op: UpdateOp::Dec,
-                        is_postfix: false,
-                    })
-                    .map_with(|r, e| (r, e.span()));
-
-                let unary_operator_expression = unary_op
-                    .then(cast_expr.clone())
-                    .map(|(op, expr)| Expression::UnaryOp(op, Box::new(expr)))
-                    .map_with(|r, e| (r, e.span()));
-
-                let sizeof_unary_expression = just(Token::Sizeof)
-                    .ignore_then(unary.clone())
-                    .map(|expr| Expression::Sizeof(Box::new(expr)))
-                    .map_with(|r, e| (r, e.span()));
-
-                let alignof_unary_expression = just(Token::Alignof)
-                    .ignore_then(unary)
-                    .map(|expr| Expression::Alignof(Box::new(expr)))
-                    .map_with(|r, e| (r, e.span()));
-
-                choice((
-                    sizeof_type_expression,
-                    alignof_type_expression,
-                    offsetof_expression,
-                    constant_p_expression,
-                    types_compatible_p_expression,
-                    prefix_inc_expression,
-                    prefix_dec_expression,
-                    unary_operator_expression,
-                    sizeof_unary_expression,
-                    alignof_unary_expression,
-                    postfix_expression.clone(),
-                ))
-            });
-
-            let cast_type_expression = type_name(resolver.clone(), rec.clone())
-                .delimited_by(just(Token::LParen), just(Token::RParen))
-                .then(cast_expr.clone())
-                .map(|(type_name, expr)| Expression::Cast {
-                    type_name: Box::new(type_name),
-                    expr: Box::new(expr),
-                })
-                .map_with(|r, e| (r, e.span()));
-
-            choice((cast_type_expression, unary_expression))
-        });
-
-        let mul = just(Token::Star).to(BinOp::Mul);
-        let div = just(Token::Slash).to(BinOp::Div);
-        let rem = just(Token::Percent).to(BinOp::Rem);
-        let add = just(Token::Plus).to(BinOp::Add);
-        let sub = just(Token::Minus).to(BinOp::Sub);
-        let shl = just(Token::Shl).to(BinOp::Shl);
-        let shr = just(Token::Gt).then(just(Token::Gt)).map(|_| BinOp::Shr);
-        let lt = just(Token::Lt).to(BinOp::Lt);
-        let le = just(Token::Le).to(BinOp::Le);
-        let gt = just(Token::Gt).to(BinOp::Gt);
-        let ge = just(Token::Ge).to(BinOp::Ge);
-        let eq = just(Token::EqEq).to(BinOp::Eq);
-        let ne = just(Token::Ne).to(BinOp::Ne);
-        let bit_and = just(Token::Amp).to(BinOp::BitAnd);
-        let bit_xor = just(Token::Caret).to(BinOp::BitXor);
-        let bit_or = just(Token::Pipe).to(BinOp::BitOr);
-        let logical_and = just(Token::And).to(BinOp::And);
-        let logical_or = just(Token::Or).to(BinOp::Or);
-
-        let multiplicative = cast_expression
-            .clone()
-            .then(
-                choice((mul, div, rem))
-                    .then(cast_expression)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let additive = multiplicative
-            .clone()
-            .then(
-                choice((add, sub))
-                    .then(multiplicative)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let shift = additive
-            .clone()
-            .then(
-                choice((shl, shr))
-                    .then(additive)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let relational = shift
-            .clone()
-            .then(
-                choice((lt, le, gt, ge))
-                    .then(shift)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let equality = relational
-            .clone()
-            .then(
-                choice((eq, ne))
-                    .then(relational)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let bit_and_expr = equality
-            .clone()
-            .then(bit_and.then(equality).repeated().collect::<Vec<_>>())
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let bit_xor_expr = bit_and_expr
-            .clone()
-            .then(bit_xor.then(bit_and_expr).repeated().collect::<Vec<_>>())
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let bit_or_expr = bit_xor_expr
-            .clone()
-            .then(bit_or.then(bit_xor_expr).repeated().collect::<Vec<_>>())
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let logical_and_expr = bit_or_expr
-            .clone()
-            .then(logical_and.then(bit_or_expr).repeated().collect::<Vec<_>>())
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        let logical_or_expr = logical_and_expr
-            .clone()
-            .then(
-                logical_or
-                    .then(logical_and_expr)
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .map(|(head, tails)| {
-                let mut expr = head;
-                for (op, rhs) in tails {
-                    let span = expr.1;
-                    expr = (Expression::BinOp(Box::new(expr), op, Box::new(rhs)), span);
-                }
-                expr
-            })
-            .boxed();
-
-        // C grammar: logical-OR-expression ? expression : conditional-expression
-        // The "then" branch is a full expression (comma operator allowed);
-        // the "else" branch is conditional-expression (no top-level comma).
-        // GNU elvis: `a ?: b` ≡ `a ? a : b` but `a` eval'd once; middle may be omitted.
-        // then branch is a full expression, else is conditional-expression.
-        let conditional_expr = logical_or_expr
-            .clone()
-            .then(
-                just(Token::Question)
-                    .ignore_then(expression(rec.clone()).or_not())
-                    .then_ignore(just(Token::Colon))
-                    .then(rec.clone())
-                    .map(|(then_opt, else_expr)| (then_opt, else_expr))
-                    .or_not(),
-            )
-            .map(|(cond, then_else)| {
-                if let Some((then_opt, else_expr)) = then_else {
-                    let span = cond.1;
-                    (
-                        Expression::Conditional {
-                            cond: Box::new(cond),
-                            then_expr: then_opt.map(Box::new),
-                            else_expr: Box::new(else_expr),
-                        },
-                        span,
-                    )
-                } else {
-                    cond
-                }
-            })
-            .boxed();
-
-        conditional_expr
-            .clone()
-            .then(
-                choice((
-                    just(Token::Assign).to(None),
-                    just(Token::PlusAssign).to(Some(BinOp::Add)),
-                    just(Token::MinusAssign).to(Some(BinOp::Sub)),
-                    just(Token::StarAssign).to(Some(BinOp::Mul)),
-                    just(Token::SlashAssign).to(Some(BinOp::Div)),
-                    just(Token::PercentAssign).to(Some(BinOp::Rem)),
-                    just(Token::PipeAssign).to(Some(BinOp::BitOr)),
-                    just(Token::CaretAssign).to(Some(BinOp::BitXor)),
-                    just(Token::AmpAssign).to(Some(BinOp::BitAnd)),
-                    just(Token::ShlAssign).to(Some(BinOp::Shl)),
-                    just(Token::ShrAssign).to(Some(BinOp::Shr)),
-                ))
-                .then(rec.clone())
-                .or_not(),
-            )
-            .map(|(lhs, assign)| {
-                if let Some((op, rhs)) = assign {
-                    let span = lhs.1;
-                    match op {
-                        Some(op) => (
-                            Expression::AssignWithOp {
-                                lhs: Box::new(lhs),
-                                op,
-                                rhs: Box::new(rhs),
-                            },
-                            span,
-                        ),
-                        None => (
-                            Expression::BinOp(Box::new(lhs), BinOp::Assign, Box::new(rhs)),
-                            span,
-                        ),
-                    }
-                } else {
-                    lhs
-                }
-            })
-            .map_with(|r, e| (r.0, e.span()))
-    })
-}
-
-fn parse_hex_float_constant(text: &str) -> Option<f64> {
-    let (significand, exponent) = text.split_once(['p', 'P'])?;
-    let exponent = exponent.parse::<i32>().ok()?;
-    let significand = significand
-        .strip_prefix("0x")
-        .or_else(|| significand.strip_prefix("0X"))?;
-    let (int_part, frac_part) = significand.split_once('.').unwrap_or((significand, ""));
-    if int_part.is_empty() && frac_part.is_empty() {
-        return None;
     }
 
-    let mut value = 0.0f64;
-    for ch in int_part.chars() {
-        let digit = ch.to_digit(16)?;
-        value = value * 16.0 + f64::from(digit);
-    }
-    let mut scale = 1.0f64 / 16.0;
-    for ch in frac_part.chars() {
-        let digit = ch.to_digit(16)?;
-        value += f64::from(digit) * scale;
-        scale /= 16.0;
-    }
-    Some(value * 2.0f64.powi(exponent))
-}
-
-fn lazy_subscription<'src, I>()
--> impl Parser<'src, I, Spanned<LazySubscription>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|block| {
-        let content = choice((
-            // Skip any token that isn't a brace
-            any()
-                .filter(|t| !matches!(t, Token::LBracket | Token::RBracket))
-                .ignored(),
-            // Recursively skip balanced blocks
-            block.ignored(),
-        ))
-        .repeated()
-        .ignored();
-
-        content.delimited_by(just(Token::LBracket), just(Token::RBracket))
-    })
-    .map_with(|(), e| {
-        let slice = e.slice();
-        let span = slice_span(slice, e.span());
-        (
-            LazySubscription {
-                tokens: <[_]>::to_vec(slice),
-            },
-            span,
-        )
-    })
-}
-
-fn rust_path_with_generic_args<'src, I, R: TypeResolver>(
-    generic_ty: impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<RustPath<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let generics = generic_ty
-        .separated_by(just(Token::Comma))
-        .collect()
-        .map(RustPathSegment::Generics)
-        .delimited_by(just(Token::Lt), just(Token::Gt))
-        .map_with(|r, e| (r, e.span()));
-
-    just(Token::ColonColon).or_not().ignore_then(
-        choice((
-            identifier()
-                .then(generics.clone().or_not())
-                .map(|(ident, generics)| {
-                    let mut segments = vec![(RustPathSegment::Ident(ident.0), ident.1)];
-                    if let Some(generics) = generics {
-                        segments.push(generics);
-                    }
-                    segments
-                }),
-            generics.map(|generics| vec![generics]),
-        ))
-        .separated_by(just(Token::ColonColon))
-        .at_least(1)
-        .collect::<Vec<Vec<Spanned<RustPathSegment<R>>>>>()
-        .map(|parts| {
-            let segments = parts
-                .into_iter()
-                .flatten()
-                .collect::<Vec<Spanned<RustPathSegment<R>>>>();
-            let span = segments
-                .first()
-                .zip(segments.last())
-                .map_or(Span::from_parts(FileId::INVALID, 0..0), |(first, last)| {
-                    join_spans(first.1, last.1)
-                });
-            (RustPath { segments }, span)
-        }),
-    )
-}
-
-fn rust_path<'src, I>()
--> impl Parser<'src, I, Spanned<RustPath<StatelessResolver>>, extra::Err<Rich<'src, Token, Span>>>
-+ Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_path_with_generic_args(rust_generic_arg_ty())
-}
-
-/// Like `rust_path` but only allows generic arguments after `::` (turbofish syntax).
-/// Bare `<...>` after an identifier is NOT parsed as generics.
-/// Used in expression context to avoid ambiguity with `<` as less-than operator.
-fn rust_path_expr<'src, I, R: TypeResolver>(
-    generic_ty: impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<RustPath<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let generics = generic_ty
-        .separated_by(just(Token::Comma))
-        .collect()
-        .map(RustPathSegment::Generics)
-        .delimited_by(just(Token::Lt), just(Token::Gt))
-        .map_with(|r, e| (r, e.span()));
-
-    just(Token::ColonColon).or_not().ignore_then(
-        choice((
-            identifier().map(|ident| vec![(RustPathSegment::Ident(ident.0), ident.1)]),
-            generics.map(|generics| vec![generics]),
-        ))
-        .separated_by(just(Token::ColonColon))
-        .at_least(1)
-        .collect::<Vec<Vec<Spanned<RustPathSegment<R>>>>>()
-        .map(|parts| {
-            let segments = parts
-                .into_iter()
-                .flatten()
-                .collect::<Vec<Spanned<RustPathSegment<R>>>>();
-            let span = segments
-                .first()
-                .zip(segments.last())
-                .map_or(Span::from_parts(FileId::INVALID, 0..0), |(first, last)| {
-                    join_spans(first.1, last.1)
-                });
-            (RustPath { segments }, span)
-        }),
-    )
-}
-
-fn rust_path_expr_simple<'src, I>()
--> impl Parser<'src, I, Spanned<RustPath<StatelessResolver>>, extra::Err<Rich<'src, Token, Span>>>
-+ Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_path_expr(rust_generic_arg_ty())
-}
-
-fn rust_generic_arg_ty<'src, I>()
--> impl Parser<'src, I, Spanned<RustTy<StatelessResolver>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|rec| {
-        let wild = just(Token::Ident("_".to_string()))
-            .to(RustTy::Wild)
-            .map_with(|r, e| (r, e.span()));
-
-        let path = rust_path_with_generic_args(rec.clone())
-            .map(|path| (RustTy::Path((path.0, path.1)), path.1));
-
-        let ptr = just(Token::Star)
-            .ignore_then(choice((just(Token::Const).to(false), mut_token().to(true))))
-            .then(rec.clone())
-            .map(|(mutable, inner)| RustTy::Ptr {
-                mutable,
-                inner: Box::new(inner),
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let reference = just(Token::Amp)
-            .ignore_then(
-                select! { Token::Lifetime(name) => name }
-                    .map_with(|name, e| (name, e.span()))
-                    .or_not(),
-            )
-            .then(
-                mut_token()
-                    .to(true)
-                    .or_not()
-                    .map(|m| m.is_some())
-                    .then(rec.clone()),
-            )
-            .map(|(lifetime, (mutable, inner))| RustTy::Ref {
-                lifetime,
-                mutable,
-                inner: Box::new(inner),
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let never = just(Token::Bang)
-            .to(RustTy::Never)
-            .map_with(|r, e| (r, e.span()));
-
-        let tuple = rec
-            .clone()
-            .separated_by(just(Token::Comma))
-            .allow_trailing()
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::LParen), just(Token::RParen))
-            .map(RustTy::Tuple)
-            .map_with(|r, e| (r, e.span()));
-
-        let slice_or_array = rec
-            .clone()
-            .then(
-                just(Token::Semicolon)
-                    .ignore_then(
-                        any()
-                            .filter(|t| !matches!(t, Token::RBracket))
-                            .map_with(|t, e| (t, e.span()))
-                            .repeated()
-                            .collect()
-                            .map(|tokens| LazyRustConstExpr { tokens }),
-                    )
-                    .map_with(|r, e| (r, e.span()))
-                    .or_not(),
-            )
-            .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|(inner, len)| {
-                if let Some(len) = len {
-                    RustTy::Array {
-                        inner: Box::new(inner),
-                        len,
-                    }
-                } else {
-                    RustTy::Slice(Box::new(inner))
-                }
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let lifetime = select! { Token::Lifetime(name) => name }
-            .map_with(|name, e| (RustTy::Lifetime((name, e.span())), e.span()));
-
-        choice((
-            wild,
-            path,
-            ptr,
-            reference,
-            never,
-            tuple,
-            slice_or_array,
-            lifetime,
-            rust_primitive_keyword(StatelessResolver::new()),
-            recover_c_type_keyword(),
-        ))
-    })
-}
-
-fn left_recursion<'src, I, B: 'src, E: 'src>(
-    base: impl Parser<'src, I, B, extra::Err<Rich<'src, Token, Span>>> + Clone + 'src,
-    left_elem: impl Parser<'src, I, E, extra::Err<Rich<'src, Token, Span>>> + Clone + 'src,
-) -> impl Parser<'src, I, (Vec<E>, B), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    custom(move |inp| {
-        let mut elems = vec![inp.parse(left_elem.clone())?];
-        loop {
-            let checkpoint = inp.save();
-            if let Ok(base_value) = inp.parse(base.clone()) {
-                return Ok((elems, base_value));
-            }
-            inp.rewind(checkpoint);
-            elems.push(inp.parse(left_elem.clone())?);
+    /// Classify the path at the cursor without consuming anything.
+    fn peek_classify(&self) -> Option<(TypeQueryResult, R::ResolvedRustPath)> {
+        let mut tmp = P {
+            toks: self.toks,
+            pos: self.pos,
+            end_span: self.end_span,
+            resolver: self.resolver.clone(),
+        };
+        match tmp.parse_rust_path(true) {
+            Ok((path, _)) => self.resolver.classify_path(&path).ok(),
+            Err(_) => None,
         }
-    })
-}
+    }
 
-fn struct_or_union_fields<'src, I, R: TypeResolver>(
-    type_specifier_rec: impl Parser<
-        'src,
-        I,
-        Spanned<TypeSpecifier<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-) -> impl Parser<'src, I, Vec<Spanned<StructOrUnionField<R>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let normal = left_recursion(
-        struct_declarator(declarator_rec, assign_expression_rec)
-            .separated_by(just(Token::Comma))
-            .collect()
-            .then_ignore(just(Token::Semicolon)),
-        choice((
-            type_specifier_rec.map(SpecifierQualifier::TypeSpecifier),
-            type_qualifier().map(SpecifierQualifier::TypeQualifier),
-        ))
-        .map_with(|r, e| (r, e.span())),
-    )
-    .map(|(specs, declarators)| StructOrUnionField {
-        specifiers: specs,
-        declarators,
-    })
-    .map_with(|r, e| (r, e.span()));
+    fn is_label_ahead(&self) -> bool {
+        let mut tmp = P {
+            toks: self.toks,
+            pos: self.pos,
+            end_span: self.end_span,
+            resolver: self.resolver.clone(),
+        };
+        match tmp.parse_rust_path(true) {
+            Ok(_) => tmp.at(&Token::Colon),
+            Err(_) => false,
+        }
+    }
 
-    // GCC extension: accept bare `;` as an empty struct/union member declaration.
-    let bare_semicolon = just(Token::Semicolon).map_with(|_, e| {
-        let span = e.span();
-        (
-            StructOrUnionField {
-                specifiers: vec![],
-                declarators: vec![],
-            },
-            span,
-        )
-    });
-
-    let single = choice((normal, bare_semicolon));
-    single
-        .repeated()
-        .collect()
-        .delimited_by(just(Token::LBrace), just(Token::RBrace))
-        .map(|fields: Vec<Spanned<StructOrUnionField<R>>>| {
-            fields
-                .into_iter()
-                .filter(|(field, _)| {
-                    // Filter out empty declarations: GCC allows `int;` and bare `;`
-                    // which should not produce any field. Anonymous struct/union members
-                    // have a struct-or-union specifier and must be kept.
-                    if field.specifiers.is_empty() && field.declarators.is_empty() {
-                        return false;
-                    }
-                    if !field.declarators.is_empty()
-                        && field.declarators.iter().all(|(d, _)| {
-                            matches!(d.declarator.0, Declarator::Abstract) && d.bits.is_none()
-                        })
-                    {
-                        let has_anon_struct_union = field.specifiers.iter().any(|(s, _)| {
-                            matches!(
-                                s,
-                                SpecifierQualifier::TypeSpecifier((
-                                    TypeSpecifier::StructOrUnion { .. },
-                                    _,
-                                ))
-                            )
-                        });
-                        return has_anon_struct_union;
-                    }
-                    true
-                })
-                .collect()
-        })
-}
-
-fn type_specifier<'src, I, R: TypeResolver>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<TypeSpecifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|rec| {
-        let struct_or_union_specifier = group((
-            just(Token::Struct)
-                .to(StructOrUnionKind::Struct)
-                .or(just(Token::Union).to(StructOrUnionKind::Union)),
-            choice((
-                identifier()
-                    .then(struct_or_union_fields(
-                        rec.clone(),
-                        declarator_rec.clone(),
-                        assign_expression_rec.clone(),
-                    ))
-                    .map(|(ident, fields)| StructOrUnionSpecifier::Defined { ident, fields }),
-                struct_or_union_fields(
-                    rec.clone(),
-                    declarator_rec.clone(),
-                    assign_expression_rec.clone(),
-                )
-                .map(|fields| StructOrUnionSpecifier::Anonymous { fields }),
-                identifier().map(|ident| StructOrUnionSpecifier::Declared { ident }),
-            ))
-            .map_with(|r, e| (r, e.span())),
-        ))
-        .map({
-            let resolver = resolver.clone();
-            move |(kind, (specifier, span))| TypeSpecifier::StructOrUnion {
-                kind,
-                specifier: (
-                    resolver.register_struct_or_union_specifier(kind, (specifier, span)),
-                    span,
-                ),
+    pub fn parse_statement(&mut self) -> PR<Spanned<Statement<R>>> {
+        let start = self.pos;
+        let stmt = match self.peek(0) {
+            Some(Token::If) => self.parse_if()?,
+            Some(Token::While) => self.parse_while()?,
+            Some(Token::Do) => self.parse_do_while()?,
+            Some(Token::For) => self.parse_for()?,
+            Some(Token::Switch) => {
+                self.pos += 1;
+                self.expect(&Token::LParen, "(")?;
+                let expr = crate::exp::parse_expression(self)?;
+                self.expect(&Token::RParen, ")")?;
+                let body = self.parse_statement()?;
+                Statement::Switch {
+                    expr,
+                    body: Box::new(body),
+                }
             }
-        });
-
-        let enumerator = identifier()
-            .then(
-                just(Token::Assign)
-                    .ignore_then(assign_expression_rec.clone())
-                    .or_not(),
-            )
-            .map(|(ident, value)| Enumerator { ident, value })
-            .map_with(|r, e| (r, e.span()))
-            .map({
-                let resolver = resolver.clone();
-                move |x| {
-                    let span = x.1;
-                    (resolver.register_enumerator(x), span)
+            Some(Token::Case) => {
+                self.pos += 1;
+                let expr = crate::exp::parse_expression(self)?;
+                self.expect(&Token::Colon, ":")?;
+                let statement = self.parse_statement()?;
+                Statement::Case {
+                    expr,
+                    statement: Box::new(statement),
                 }
-            });
-        let enum_body = enumerator
-            .separated_by(just(Token::Comma))
-            .allow_trailing()
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::LBrace), just(Token::RBrace));
-        let underlying_type = just(Token::Colon)
-            .ignore_then(
-                choice((
-                    rec.clone().map(SpecifierQualifier::TypeSpecifier),
-                    type_qualifier().map(SpecifierQualifier::TypeQualifier),
-                ))
-                .map_with(|r, e| (r, e.span()))
-                .repeated()
-                .at_least(1)
-                .collect::<Vec<_>>(),
-            )
-            .map(|specifier_qualifier_list| TypeName {
-                specifier_qualifier_list,
-                abstract_declarator: None,
-            });
-        let enum_specifier = just(Token::Enum)
-            .ignore_then(
-                choice((
-                    identifier()
-                        .then(underlying_type.clone().or_not())
-                        .then(enum_body.clone())
-                        .map(
-                            |((ident, underlying_type), enumerators)| EnumSpecifier::Defined {
-                                ident,
-                                underlying_type,
-                                enumerators,
-                            },
-                        ),
-                    underlying_type
-                        .clone()
-                        .or_not()
-                        .then(enum_body.clone())
-                        .map(|(underlying_type, enumerators)| EnumSpecifier::Anonymous {
-                            underlying_type,
-                            enumerators,
-                        }),
-                    identifier()
-                        .then(underlying_type.or_not())
-                        .map(|(ident, underlying_type)| EnumSpecifier::Declared {
-                            ident,
-                            underlying_type,
-                        }),
-                ))
-                .map_with(|r, e| (r, e.span())),
-            )
-            .map({
-                let resolver = resolver.clone();
-                move |(x, span)| {
-                    TypeSpecifier::Enum((resolver.register_enum_specifier((x, span)), span))
+            }
+            Some(Token::Default) => {
+                let kw_span = self.peek_span(0);
+                self.pos += 1;
+                self.expect(&Token::Colon, ":")?;
+                let statement = self.parse_statement()?;
+                Statement::Default {
+                    keyword_span: kw_span,
+                    statement: Box::new(statement),
                 }
-            })
-            .boxed();
-
-        let typeof_declarator = declarator(resolver.clone(), assign_expression_rec.clone());
-        let typeof_specifier_qualifier = choice((
-            rec.clone().map(SpecifierQualifier::TypeSpecifier),
-            type_qualifier().map(SpecifierQualifier::TypeQualifier),
-        ))
-        .map_with(|r, e| (r, e.span()));
-        let typeof_type_name = typeof_specifier_qualifier
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>()
-            .then(typeof_declarator.or_not())
-            .map(|(specifier_qualifier_list, abstract_declarator)| TypeName {
-                specifier_qualifier_list,
-                abstract_declarator: abstract_declarator.and_then(|decl| {
-                    if matches!(decl.0, Declarator::Abstract) {
-                        None
-                    } else {
-                        Some(decl)
-                    }
-                }),
-            });
-
-        let typeof_type_specifier = just(Token::Typeof)
-            .ignore_then(just(Token::LParen))
-            .ignore_then(choice((
-                typeof_type_name.map(|type_name| TypeSpecifier::TypeofType(Box::new(type_name))),
-                expression(assign_expression_rec.clone())
-                    .map(|expr| TypeSpecifier::TypeofExpr(Box::new(expr))),
-            )))
-            .then_ignore(just(Token::RParen));
-
-        choice([
-            just(Token::Int).to(TypeSpecifier::Int),
-            just(Token::Bool).to(TypeSpecifier::Bool),
-            just(Token::Void).to(TypeSpecifier::Void),
-            just(Token::Char).to(TypeSpecifier::Char),
-            just(Token::Short).to(TypeSpecifier::Short),
-            just(Token::Long).to(TypeSpecifier::Long),
-            just(Token::Float).to(TypeSpecifier::Float),
-            just(Token::Double).to(TypeSpecifier::Double),
-            just(Token::Signed).to(TypeSpecifier::Signed),
-            just(Token::Unsigned).to(TypeSpecifier::Unsigned),
-        ])
-        .or(just(Token::Alignas)
-            .then_ignore(just(Token::LParen))
-            .ignore_then(
-                any::<I, extra::Err<Rich<'src, Token, Span>>>()
-                    .filter(|tok: &Token| tok != &Token::RParen)
-                    .repeated()
-                    .collect::<Vec<Token>>(),
-            )
-            .then_ignore(just(Token::RParen))
-            .to(TypeSpecifier::Alignas))
-        .or(struct_or_union_specifier)
-        .or(enum_specifier)
-        .or(typeof_type_specifier)
-        // NOTE: turbofish-only path here (`a::b<T>`), never bare `a<T>`.
-        // C has no generics, so `i<(int)8` is always a comparison, but the
-        // bare-generics path parser would speculatively consume `<(int)>`
-        // as generic args and emit un-retractable "invalid as Rust type"
-        // errors before backtracking.
-        // A known type directly followed by `<` missed its turbofish:
-        // report that instead of a cryptic follow-on error. Only fires
-        // for definite types, so C comparisons (`i < x`) still parse.
-        .or(rust_path_expr(rust_generic_arg_ty())
-            .then(look_ahead(Token::Lt).map_with(|_, e| e.span()).or_not())
-            .try_map({
-                let resolver = resolver.clone();
-                move |(path, lt_span): (
-                    Spanned<RustPath<StatelessResolver>>,
-                    Option<Span>,
-                ),
-                      _| {
-                    let path_span = rust_path_span(&path.0, path.1);
-                    match resolver.classify_path(&path.0) {
-                        Ok((TypeQueryResult::Type, _)) if lt_span.is_some() => {
-                            // A known type directly followed by `<` missed its
-                            // turbofish (`Vec<i32>` instead of `Vec::<i32>`).
-                            // No valid C or turbofish-correct co2 program can
-                            // reach this point, so abort with a targeted error
-                            // rather than a cryptic follow-on diagnostic.
-                            // (Fatal: chumsky would otherwise discard this for
-                            // a further-position error.)
-                            let ctx = path_span.data().context;
-                            let start = path_span.data().start;
-                            // The lookahead span already covers `<`.
-                            let lt_end = lt_span.unwrap().data().end;
-                            let span = Span::from_parts(ctx, start..lt_end);
-                            co2_ast::emit_errors_and_terminate(vec![Rich::custom(
-                                span,
-                                format!(
-                                    "generic arguments require turbofish syntax: `{}::<...>`",
-                                    path.0
-                                ),
-                            )
-                            .map_token(|tok: Token| tok.to_string())]);
-                        }
-                        Ok((TypeQueryResult::Unsure | TypeQueryResult::Type, resolved)) => {
-                            Ok(TypeSpecifier::TypedefName((resolved, path_span)))
-                        }
-                        Ok((TypeQueryResult::Expr, _)) => Err(Rich::custom(
-                            path_span,
-                            "expected type name, found expression",
-                        )),
-                        Err((msg, span)) => Err(Rich::custom(span, msg)),
-                    }
+            }
+            Some(Token::Goto) => {
+                self.pos += 1;
+                let s = if self.eat(&Token::Star).is_some() {
+                    Statement::IndirectGoto(crate::exp::parse_expression(self)?)
+                } else {
+                    Statement::Goto(self.parse_identifier()?)
+                };
+                self.expect(&Token::Semicolon, ";")?;
+                s
+            }
+            Some(Token::Break) => {
+                self.pos += 1;
+                if self.eat_ident("co2").is_some() {
+                    self.expect(&Token::Semicolon, ";")?;
+                    Statement::BreakCo2
+                } else {
+                    self.expect(&Token::Semicolon, ";")?;
+                    Statement::Break
                 }
-            }))
-        .map_with(|r, e| (r, e.span()))
-        .labelled("Type specifier")
-    })
-}
-
-fn storage_class_specifier<'src, I>()
--> impl Parser<'src, I, Spanned<StorageClassSpecifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice([
-        just(Token::Typedef).to(StorageClassSpecifier::Typedef),
-        just(Token::Extern).to(StorageClassSpecifier::Extern),
-        just(Token::Static).to(StorageClassSpecifier::Static),
-        just(Token::Constexpr).to(StorageClassSpecifier::Constexpr),
-        just(Token::Atomic).to(StorageClassSpecifier::Atomic),
-        just(Token::ThreadLocal).to(StorageClassSpecifier::ThreadLocal),
-        just(Token::Auto).to(StorageClassSpecifier::Auto),
-        just(Token::Register).to(StorageClassSpecifier::Register),
-    ])
-    .labelled("Storage specifier")
-    .map_with(|r, e| (r, e.span()))
-}
-
-fn type_qualifier<'src, I>()
--> impl Parser<'src, I, Spanned<TypeQualifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice([
-        just(Token::Const).to(TypeQualifier::Const),
-        just(Token::Restrict).to(TypeQualifier::Restrict),
-        just(Token::Volatile).to(TypeQualifier::Volatile),
-        just(Token::Atomic).to(TypeQualifier::Atomic),
-    ])
-    .labelled("Type qualifier")
-    .map_with(|r, e| (r, e.span()))
-}
-
-fn function_specifier<'src, I>()
--> impl Parser<'src, I, Spanned<FunctionSpecifier>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice([just(Token::Inline).to(FunctionSpecifier::Inline)])
-        .labelled("Function specifier")
-        .map_with(|r, e| (r, e.span()))
-}
-
-fn specifier_qualifier<'src, I, R: TypeResolver>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<SpecifierQualifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice((
-        type_specifier(declarator_rec, assign_expression_rec, resolver)
-            .map(SpecifierQualifier::TypeSpecifier),
-        type_qualifier().map(SpecifierQualifier::TypeQualifier),
-    ))
-    .map_with(|r, e| (r, e.span()))
-}
-
-fn type_name<'src, I, R: TypeResolver>(
-    resolver: R,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-) -> impl Parser<'src, I, TypeName<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let declarator = declarator(resolver.clone(), assign_expression_rec.clone());
-    let sq = specifier_qualifier(declarator.clone(), assign_expression_rec, resolver)
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>();
-    sq.then(declarator.or_not())
-        .map(|(specifier_qualifier_list, abstract_declarator)| TypeName {
-            specifier_qualifier_list,
-            abstract_declarator: abstract_declarator.and_then(|decl| {
-                if matches!(decl.0, Declarator::Abstract) {
+            }
+            Some(Token::Continue) => {
+                self.pos += 1;
+                self.expect(&Token::Semicolon, ";")?;
+                Statement::Continue
+            }
+            Some(Token::Return) => {
+                self.pos += 1;
+                let exp = if self.at(&Token::Semicolon) {
                     None
                 } else {
-                    Some(decl)
-                }
-            }),
-        })
-}
-
-fn declaration_specifier<'src, I, R: TypeResolver>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<DeclarationSpecifier<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    choice((
-        type_specifier(declarator_rec, assign_expression_rec, resolver)
-            .map(DeclarationSpecifier::TypeSpecifier),
-        type_qualifier().map(DeclarationSpecifier::TypeQualifier),
-        storage_class_specifier().map(DeclarationSpecifier::StorageSpecifier),
-        function_specifier().map(DeclarationSpecifier::FunctionSpecifier),
-        rust_attrs()
-            .filter(|attrs| !attrs.is_empty())
-            .map(DeclarationSpecifier::GNUAttribute),
-    ))
-    .map_with(|r, e| (r, e.span()))
-}
-
-fn fn_token<'src, I>() -> impl Parser<'src, I, (), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! { Token::Ident(s) if s == "fn" => () }.labelled("fn")
-}
-
-fn type_token<'src, I>() -> impl Parser<'src, I, (), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! { Token::Ident(s) if s == "type" => () }.labelled("type")
-}
-
-fn mut_token<'src, I>() -> impl Parser<'src, I, (), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! { Token::Ident(s) if s == "mut" => () }.labelled("mut")
-}
-
-fn pub_token<'src, I>()
--> impl Parser<'src, I, (Visibility, Option<Span>), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    // Parse "pub(crate)" as valid
-    let pub_crate = just(Token::Ident("pub".to_string()))
-        .then_ignore(
-            just(Token::LParen)
-                .ignore_then(just(Token::Ident("crate".to_string())))
-                .then_ignore(just(Token::RParen)),
-        )
-        .to((Visibility::Crate, None));
-
-    // Parse "pub(self)" as valid
-    let pub_self = just(Token::Ident("pub".to_string()))
-        .then_ignore(
-            just(Token::LParen)
-                .ignore_then(just(Token::Ident("self".to_string())))
-                .then_ignore(just(Token::RParen)),
-        )
-        .to((Visibility::Restricted, None));
-
-    // Parse "pub" alone (no parens) as valid
-    let pub_bare = just(Token::Ident("pub".to_string()))
-        .then(just(Token::LParen).not())
-        .to((Visibility::Public, None));
-
-    // Parse "pub(something)" as invalid - capture span of inner content
-    let pub_invalid = just(Token::Ident("pub".to_string()))
-        .then_ignore(just(Token::LParen))
-        .ignore_then(
-            any::<I, extra::Err<Rich<'src, Token, Span>>>()
-                .filter(|tok: &Token| tok != &Token::RParen)
-                .map_with(|_, meta| meta.span())
-                .repeated()
-                .at_least(1)
-                .collect::<Vec<Span>>()
-                .map(|spans| spans.into_iter().reduce(|a, b| join_spans(a, b)).unwrap()),
-        )
-        .then_ignore(just(Token::RParen))
-        .map(|inner_span| (Visibility::Public, Some(inner_span)));
-
-    chumsky::primitive::choice((pub_crate, pub_self, pub_bare, pub_invalid))
-        .or_not()
-        .map(|opt| opt.unwrap_or((Visibility::Private, None)))
-}
-
-fn identifier<'src, I>()
--> impl Parser<'src, I, Spanned<String>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! {
-        Token::Ident(s) => s,
-    }
-    .labelled("Identifier")
-    .map_with(|r, e| (r, single_token_span(e.slice(), e.span())))
-}
-
-fn parameter_type_list<'src, I, R: TypeResolver>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-    resolver: R,
-) -> impl Parser<'src, I, ParameterList<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    // Like `left_recursion`, but with a typedef-name disambiguation rule: when no
-    // type specifier has been accumulated yet and the next token is a typedef name,
-    // the token must be consumed as a type specifier rather than as a declarator
-    // identifier.  Without this check `const T[5]` (T a typedef) misparsed as
-    // declaration-specifier=["const"], declarator=T[5], leaving no type specifier.
-    let single = custom({
-        let resolver = resolver.clone();
-        let declarator_rec = declarator_rec.clone();
-        let assign_expression_rec = assign_expression_rec.clone();
-        move |inp| {
-            let make_spec = || {
-                declaration_specifier(
-                    declarator_rec.clone(),
-                    assign_expression_rec.clone(),
-                    resolver.clone(),
-                )
-            };
-            let try_decl = || {
-                declarator_rec
-                    .clone()
-                    .then_ignore(look_ahead(Token::RParen).or(look_ahead(Token::Comma)))
-            };
-
-            let mut specs = vec![inp.parse(make_spec())?];
-            loop {
-                let has_type_spec = specs
-                    .iter()
-                    .any(|(s, _)| matches!(s, DeclarationSpecifier::TypeSpecifier(_)));
-
-                // If we have no type specifier yet, peek at the next token.  If it is a
-                // typedef name it must become the type specifier, not a declarator ident.
-                let next_is_typedef_name = if has_type_spec {
-                    false
-                } else {
-                    let checkpoint = inp.save();
-                    let next = inp.next();
-                    inp.rewind(checkpoint);
-                    match next {
-                        Some(Token::Ident(s)) => matches!(
-                            resolver.classify_path(&RustPath::<StatelessResolver>::from_ident((
-                                s,
-                                Span::from_parts(FileId::INVALID, 0..0)
-                            ))),
-                            Ok((TypeQueryResult::Type | TypeQueryResult::Unsure, _))
-                        ),
-                        _ => false,
-                    }
+                    Some(crate::exp::parse_expression(self)?)
                 };
-
-                if !next_is_typedef_name {
-                    let checkpoint = inp.save();
-                    if let Ok(decl) = inp.parse(try_decl()) {
-                        return Ok((specs, decl));
-                    }
-                    inp.rewind(checkpoint);
-                }
-
-                specs.push(inp.parse(make_spec())?);
+                self.expect(&Token::Semicolon, ";")?;
+                Statement::Return(exp)
             }
-        }
-    });
-    single
-        .separated_by(just(Token::Comma))
-        .collect()
-        .then(just(Token::Comma).then(just(Token::Ellipsis)).or_not())
-        .map(|(parameters, ellipsis)| ParameterList {
-            parameters,
-            ellipsis: ellipsis.is_some(),
-            empty_is_variadic: true,
-        })
-        .delimited_by(just(Token::LParen), just(Token::RParen))
-}
-
-fn rust_ty<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<RustTy<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|rec| {
-        let path = rust_path_with_generic_args(rust_generic_arg_ty())
-            .map({
-                let resolver = resolver.clone();
-                move |path| {
-                    let span = rust_path_span(&path.0, path.1);
-                    (resolver.classify_path(&path.0), span)
-                }
-            })
-            .filter(|(result, _)| {
-                let Ok(r) = result else { return false };
-                match r.0 {
-                    TypeQueryResult::Expr => false,
-                    TypeQueryResult::Unsure | TypeQueryResult::Type => true,
-                }
-            })
-            .map(|(resolved, span)| (RustTy::Path((resolved.unwrap().1, span)), span));
-
-        let ptr = just(Token::Star)
-            .ignore_then(choice((just(Token::Const).to(false), mut_token().to(true))))
-            .then(rec.clone())
-            .map(|(mutable, inner)| RustTy::Ptr {
-                mutable,
-                inner: Box::new(inner),
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let reference = just(Token::Amp)
-            .ignore_then(
-                select! { Token::Lifetime(name) => name }
-                    .map_with(|name, e| (name, e.span()))
-                    .or_not(),
-            )
-            .then(
-                mut_token()
-                    .to(true)
-                    .or_not()
-                    .map(|m| m.is_some())
-                    .then(rec.clone()),
-            )
-            .map(|(lifetime, (mutable, inner))| RustTy::Ref {
-                lifetime,
-                mutable,
-                inner: Box::new(inner),
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let never = just(Token::Bang)
-            .to(RustTy::Never)
-            .map_with(|r, e| (r, e.span()));
-
-        let tuple = rec
-            .clone()
-            .separated_by(just(Token::Comma))
-            .allow_trailing()
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::LParen), just(Token::RParen))
-            .map(RustTy::Tuple)
-            .map_with(|r, e| (r, e.span()));
-
-        let slice_or_array = rec
-            .clone()
-            .then(
-                just(Token::Semicolon)
-                    .ignore_then(
-                        any()
-                            .filter(|t| !matches!(t, Token::RBracket))
-                            .map_with(|t, e| (t, e.span()))
-                            .repeated()
-                            .collect()
-                            .map(|tokens| LazyRustConstExpr { tokens }),
-                    )
-                    .map_with(|r, e| (r, e.span()))
-                    .or_not(),
-            )
-            .delimited_by(just(Token::LBracket), just(Token::RBracket))
-            .map(|(inner, len)| {
-                if let Some(len) = len {
-                    RustTy::Array {
-                        inner: Box::new(inner),
-                        len,
+            Some(Token::Semicolon) => {
+                self.pos += 1;
+                Statement::Empty
+            }
+            Some(Token::LBrace) => {
+                let body = self.parse_compound_inner()?;
+                Statement::Compound(body)
+            }
+            _ => {
+                // Label (`ident :`) or expression statement.
+                if matches!(self.peek(0), Some(Token::Ident(_)))
+                    && matches!(self.peek(1), Some(Token::Colon))
+                {
+                    let name = self.parse_identifier()?;
+                    self.expect(&Token::Colon, ":")?;
+                    let statement = self.parse_statement()?;
+                    Statement::Label {
+                        name,
+                        statement: Box::new(statement),
                     }
                 } else {
-                    RustTy::Slice(Box::new(inner))
-                }
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        choice((
-            path,
-            ptr,
-            reference,
-            never,
-            tuple,
-            slice_or_array,
-            rust_primitive_keyword(resolver.clone()),
-            recover_c_type_keyword(),
-        ))
-    })
-}
-
-fn rust_style_type_definition_with_attrs<'src, I, R: TypeResolver>(
-    resolver: R,
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let pub_token = just(Token::Ident("pub".to_string())).or_not().map(|opt| {
-        if opt.is_some() {
-            Visibility::Public
-        } else {
-            Visibility::Private
-        }
-    });
-
-    pub_token
-        .then(type_token())
-        .map(|(visibility, ())| visibility)
-        .then(identifier())
-        .then_ignore(just(Token::Assign))
-        .then(rust_ty(resolver.clone()))
-        .map({
-            let resolver = resolver.clone();
-            move |((visibility, name), ty)| {
-                let name_span = name.1;
-                Declaration::RustTypeAlias {
-                    attrs: attrs.clone(),
-                    ident: (resolver.register_ident(name.0), name_span),
-                    ty,
-                    visibility,
+                    let exp = crate::exp::parse_expression(self)?;
+                    self.expect(&Token::Semicolon, ";")?;
+                    Statement::Expression(exp)
                 }
             }
-        })
-}
-
-fn rust_style_struct_definition_with_attrs<'src, I, R: TypeResolver>(
-    resolver: R,
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let rust_struct_field = pub_token()
-        .then(identifier())
-        .then_ignore(just(Token::Colon))
-        .then(rust_ty(resolver.clone()))
-        .map({
-            let resolver = resolver.clone();
-            move |(((vis, err_span), name), ty)| {
-                if let Some(span) = err_span {
-                    co2_ast::emit_errors(vec![Rich::custom(span, "invalid pub specifier")]);
-                }
-                RustStructField {
-                    name: (resolver.register_ident(name.0), name.1),
-                    visibility: vis,
-                    ty,
-                }
-            }
-        });
-
-    let fields = rust_struct_field
-        .separated_by(just(Token::Comma))
-        .allow_trailing()
-        .collect::<Vec<_>>()
-        .delimited_by(just(Token::LBrace), just(Token::RBrace));
-
-    pub_token()
-        .then(just(Token::Struct).ignore_then(identifier()).then(fields))
-        .map({
-            let resolver = resolver.clone();
-            move |((vis, err_span), (name, fields))| {
-                if let Some(span) = err_span {
-                    co2_ast::emit_errors(vec![Rich::custom(span, "invalid pub specifier")]);
-                }
-                Declaration::RustStruct {
-                    attrs: attrs.clone(),
-                    ident: (resolver.register_ident(name.0), name.1),
-                    fields,
-                    visibility: vis,
-                }
-            }
-        })
-}
-
-fn rust_style_function_definition_with_attrs<'src, I, R: TypeResolver>(
-    resolver: R,
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let rust_param = identifier()
-        .then_ignore(just(Token::Colon))
-        .then(rust_ty(resolver.clone()))
-        .map({
-            let resolver = resolver.clone();
-            move |(name, ty)| RustFunctionParam {
-                name: (resolver.register_ident(name.0), name.1),
-                ty,
-            }
-        });
-
-    let params = rust_param
-        .separated_by(just(Token::Comma))
-        .allow_trailing()
-        .collect::<Vec<_>>()
-        .delimited_by(just(Token::LParen), just(Token::RParen));
-
-    let ret = just(Token::Arrow)
-        .ignore_then(rust_ty(resolver.clone()))
-        .or_not()
-        .map_with(|ret, e| ret.unwrap_or_else(|| (RustTy::Tuple(vec![]), e.span())));
-
-    pub_token()
-        .map(|(visibility, err_span)| {
-            if let Some(span) = err_span {
-                co2_ast::emit_errors(vec![Rich::custom(span, "invalid pub specifier")]);
-            }
-            visibility
-        })
-        .then(fn_token())
-        .map(|(visibility, ())| visibility)
-        .then(identifier())
-        .then(params)
-        .then(ret)
-        .then(lazy_compound_statement())
-        .map({
-            let resolver = resolver.clone();
-            move |((((visibility, name), params), ret_ty), body)| {
-                let name_span = name.1;
-                Declaration::FunctionDefinition {
-                    attrs: Vec::new(),
-                    signature: FunctionDefinitionSignature::Rust(RustFunctionSignature {
-                        attrs: attrs.clone(),
-                        name: (resolver.register_ident(name.0), name_span),
-                        params,
-                        ret_ty,
-                        visibility,
-                    }),
-                    body,
-                }
-            }
-        })
-}
-
-fn rust_style_type_definition<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_style_type_definition_with_attrs(resolver, Vec::new())
-}
-
-fn rust_style_struct_definition<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_style_struct_definition_with_attrs(resolver, Vec::new())
-}
-
-fn rust_style_function_definition<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Declaration<R>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    rust_style_function_definition_with_attrs(resolver, Vec::new())
-}
-
-fn declarator<'src, I, R: TypeResolver>(
-    resolver: R,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|rec| {
-        let ident = identifier()
-            .map({
-                let resolver = resolver.clone();
-                move |(name, span)| {
-                    let ident = resolver.register_ident(name);
-                    (Declarator::Identifier((ident, span)), span)
-                }
-            })
-            .or(empty().map_with(|(), e| (Declarator::Abstract, e.span())));
-        let grouped = rec
-            .clone()
-            .delimited_by(just(Token::LParen), just(Token::RParen));
-
-        let param_list = parameter_type_list(rec, assign_expression_rec, resolver.clone())
-            .map_with(|param_list, e| (param_list, slice_span(e.slice(), e.span())))
-            .map(Err);
-        let subscription_resolver = resolver.clone();
-        let subscription = lazy_subscription()
-            .map(move |subscription| {
-                let span = subscription.1;
-                (
-                    (
-                        subscription_resolver.register_subscription(subscription),
-                        span,
-                    ),
-                    span,
-                )
-            })
-            .map(Ok);
-
-        let direct_declarator = choice((grouped, ident))
-            .then(param_list.or(subscription).repeated().collect())
-            .map(|(mut base, tails): (_, Vec<_>)| {
-                for tail in tails {
-                    let base_span = base.1;
-                    let has_placeholder_span = matches!(base.0, Declarator::Abstract);
-                    match tail {
-                        Ok((subscription, tail_span)) => {
-                            base.0 = Declarator::ArrayDeclarator {
-                                declarator: Box::new((base.0, base.1)),
-                                subscription,
-                            };
-                            base.1 = if has_placeholder_span {
-                                tail_span
-                            } else {
-                                join_spans(base_span, tail_span)
-                            };
-                        }
-                        Err((param_list, tail_span)) => {
-                            base.0 = Declarator::FunctionDeclarator {
-                                declarator: Box::new((base.0, base.1)),
-                                param_list,
-                            };
-                            base.1 = if has_placeholder_span {
-                                tail_span
-                            } else {
-                                join_spans(base_span, tail_span)
-                            };
-                        }
-                    }
-                }
-                base
-            });
-
-        just(Token::Star)
-            .ignore_then(type_qualifier().repeated().collect())
-            .map_with(|qualifiers, e| (qualifiers, e.span()))
-            .repeated()
-            .collect()
-            .then(direct_declarator)
-            .map(|(pointers, mut base): (Vec<(Vec<_>, Span)>, _)| {
-                for (qualifiers, star_span) in pointers.into_iter().rev() {
-                    base.0 = Declarator::PointerDeclarator {
-                        declarator: Box::new((base.0, base.1)),
-                        qualifiers,
-                    };
-                    base.1 = join_spans(star_span, base.1);
-                }
-                base
-            })
-    })
-}
-
-fn struct_declarator<'src, I, R: TypeResolver>(
-    declarator_rec: impl Parser<'src, I, Spanned<Declarator<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-    assign_expression_rec: impl Parser<
-        'src,
-        I,
-        Spanned<Expression<R>>,
-        extra::Err<Rich<'src, Token, Span>>,
-    > + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<StructDeclarator<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    declarator_rec
-        .then(
-            just(Token::Colon)
-                .ignore_then(assign_expression_rec)
-                .or_not(),
-        )
-        .map(|(declarator, bits)| StructDeclarator { declarator, bits })
-        .map_with(|r, e| (r, e.span()))
-}
-
-fn initializer<'src, I, R: TypeResolver>(
-    resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Spanned<Initializer<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|init_rec| {
-        let designator = choice((
-            expression(assignment_expression(resolver.clone(), stmt_rec.clone()))
-                .then_ignore(just(Token::Ellipsis))
-                .then(expression(assignment_expression(
-                    resolver.clone(),
-                    stmt_rec.clone(),
-                )))
-                .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                .map(|(start, end)| Designator::Range(start, end)),
-            expression(assignment_expression(resolver.clone(), stmt_rec.clone()))
-                .delimited_by(just(Token::LBracket), just(Token::RBracket))
-                .map(Designator::Subscript),
-            just(Token::Dot)
-                .ignore_then(identifier())
-                .map(Designator::Field),
-        ))
-        .map_with(|r, e| (r, e.span()));
-
-        let initializer_item = designator
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>()
-            .then_ignore(just(Token::Assign))
-            .or_not()
-            .then(init_rec.clone())
-            .map(|(designators, initializer)| InitializerItem {
-                designators,
-                initializer,
-            })
-            .map_with(|r, e| (r, e.span()));
-
-        let list = initializer_item
-            .separated_by(just(Token::Comma))
-            .allow_trailing()
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::LBrace), just(Token::RBrace))
-            .map(Initializer::List)
-            .map_with(|r, e| (r, e.span()));
-
-        let expr = assignment_expression(resolver, stmt_rec)
-            .map(Initializer::Expr)
-            .map_with(|r, e| (r, e.span()));
-
-        choice((list, expr))
-    })
-}
-
-fn init_declarator_list<'src, I, R: TypeResolver>(
-    resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, Vec<Spanned<InitDeclarator<R>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    // Per C11 6.2.1p7, the scope of each declared identifier begins at the end of its
-    // declarator, before its initializer is evaluated. Process declarators one-by-one,
-    // registering each name into the resolver before parsing the corresponding initializer.
-    // This also makes each name visible in subsequent initializers within the same declaration
-    // (e.g. `int a = x, x = sizeof(x), b = x` sees the inner `x` in `sizeof(x)` and `b = x`).
-    custom(move |inp| {
-        let mut current_resolver = resolver.clone();
-        let mut result = Vec::new();
-
-        loop {
-            // Save position before each declarator attempt. On failure (including the
-            // empty-declarator case for declarations like `enum E {...};`), we rewind here
-            // so the cursor is back to where the caller expects it.
-            let declarator_checkpoint = inp.save();
-            let item_start = inp.cursor();
-
-            let Ok(decl) = inp.parse(
-                declarator(
-                    current_resolver.clone(),
-                    assignment_expression(current_resolver.clone(), stmt_rec.clone()),
-                )
-                .filter(|d| declarator_has_name(&d.0))
-                .filter(|d| function_decl_direct_inner_is_not_function(&d.0)),
-            ) else {
-                inp.rewind(declarator_checkpoint);
-                break;
-            };
-
-            // Scope of identifier begins at the end of its declarator (C11 6.2.1p7).
-            if let Some(ident) = decl.0.ident() {
-                current_resolver = current_resolver.declare_ident_as_local(&ident);
-            }
-
-            let init: Option<Spanned<Initializer<R>>> = inp.parse(
-                just(Token::Assign)
-                    .ignore_then(initializer(current_resolver.clone(), stmt_rec.clone()))
-                    .or_not(),
-            )?;
-            let is_transparent_union = inp.parse(just(Token::TransparentUnionAttr)).is_ok();
-
-            let item_span = inp.span_since(&item_start);
-            result.push((
-                InitDeclarator {
-                    declarator: decl,
-                    initializer: init,
-                    is_transparent_union,
-                },
-                item_span,
-            ));
-
-            let comma_checkpoint = inp.save();
-            if inp.parse(just(Token::Comma)).is_err() {
-                inp.rewind(comma_checkpoint);
-                break;
-            }
-        }
-
-        Ok(result)
-    })
-}
-
-fn declarator_has_name<R: TypeResolver>(decl: &Declarator<R>) -> bool {
-    match decl {
-        Declarator::Identifier(_) => true,
-        Declarator::Abstract => false,
-        Declarator::FunctionDeclarator { declarator, .. }
-        | Declarator::PointerDeclarator { declarator, .. }
-        | Declarator::ArrayDeclarator { declarator, .. } => declarator_has_name(&declarator.0),
-    }
-}
-
-// In C, a function cannot return a function (only a pointer to one). A valid
-// function-definition declarator therefore never has a FunctionDeclarator
-// immediately wrapping another FunctionDeclarator. When a typedef name such as
-// `int8_t` is also a valid identifier token, the declarator parser can greedily
-// misparse `static int8_t (fn_name)(params) { ... }` as a function named
-// `int8_t` whose parameter list is `(fn_name)`. Rejecting the doubly-nested
-// FunctionDeclarator avoids that ambiguity and forces the left-recursion loop
-// to consume `int8_t` as a declaration specifier before trying the declarator.
-fn function_decl_direct_inner_is_not_function<R: TypeResolver>(decl: &Declarator<R>) -> bool {
-    match decl {
-        Declarator::FunctionDeclarator { declarator, .. } => {
-            !matches!(&declarator.0, Declarator::FunctionDeclarator { .. })
-        }
-        _ => true,
-    }
-}
-
-fn declaration<'src, I, R: TypeResolver>(
-    resolver: R,
-    stmt_rec: impl Parser<'src, I, Spanned<Statement<R>>, extra::Err<Rich<'src, Token, Span>>>
-    + Clone
-    + 'src,
-) -> impl Parser<'src, I, (Spanned<Declaration<R>>, R), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let expr = assignment_expression(resolver.clone(), stmt_rec.clone());
-    let static_assert = just(Token::StaticAssert)
-        .ignore_then(just(Token::LParen))
-        .ignore_then(expr.clone())
-        .then(
-            just(Token::Comma)
-                .ignore_then(
-                    select! {
-                        Token::StringLit(s) => s,
-                    }
-                    .repeated()
-                    .at_least(1)
-                    .collect::<Vec<_>>()
-                    .map_with(|parts, e| {
-                        let span = e.span();
-                        let literal = merge_string_literals(parts, span);
-                        let message =
-                            String::from_utf8_lossy(literal.to_bytes().as_ref()).into_owned();
-                        (message, span)
-                    }),
-                )
-                .or_not(),
-        )
-        .then_ignore(just(Token::RParen))
-        .then_ignore(just(Token::Semicolon))
-        .map(|(expr, message)| Declaration::StaticAssert {
-            expr,
-            message: match message {
-                Some(m) => m,
-                None => (String::new(), Span::from_parts(FileId::INVALID, 0..0)),
-            },
-        });
-    let declarator = declarator(resolver.clone(), expr.clone());
-    let function = left_recursion(
-        declarator
-            .clone()
-            .filter(|decl| declarator_has_name(&decl.0))
-            .filter(|decl| decl.0.is_function())
-            .filter(|decl| function_decl_direct_inner_is_not_function(&decl.0))
-            .then(rust_attrs().or_not())
-            .then_ignore(look_ahead(Token::LBrace))
-            .then(lazy_compound_statement()),
-        declaration_specifier(declarator.clone(), expr.clone(), resolver.clone()),
-    )
-    .map(|(declaration_specifiers, ((declarator, attrs), body))| {
-        Declaration::FunctionDefinition {
-            attrs: attrs.unwrap_or_default(),
-            signature: FunctionDefinitionSignature::C {
-                declaration_specifiers,
-                declarator,
-            },
-            body,
-        }
-    });
-
-    let simple = left_recursion(
-        init_declarator_list(resolver.clone(), stmt_rec)
-            .then(rust_attrs().or_not())
-            .then_ignore(just(Token::Semicolon)),
-        declaration_specifier(declarator, expr, resolver.clone()),
-    )
-    .map(|(declaration_specifiers, (declarators, trailing_attrs))| {
-        let mut leading_attrs: Vec<Spanned<RustAttribute>> = declaration_specifiers
-            .iter()
-            .filter_map(|spec| match &spec.0 {
-                DeclarationSpecifier::GNUAttribute(attrs) => Some(attrs.clone()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        leading_attrs.extend(trailing_attrs.unwrap_or_default());
-        Declaration::Declaration {
-            attrs: leading_attrs,
-            declaration_specifiers,
-            declarators,
-        }
-    });
-
-    let parser = if resolver.rust_style_syntax_enabled() {
-        choice((
-            rust_style_function_definition(resolver.clone()),
-            rust_style_type_definition(resolver.clone()),
-            static_assert,
-            simple,
-            function,
-        ))
-        .boxed()
-    } else {
-        choice((static_assert, simple, function)).boxed()
-    };
-
-    parser.map_with(move |v, e| {
-        let nr = resolver.register_decl(&v);
-        ((v, e.span()), nr)
-    })
-}
-
-fn use_tree<'src, I>() -> impl Parser<
-    'src,
-    I,
-    Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>,
-    extra::Err<Rich<'src, Token, Span>>,
-> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|tree| {
-        let path = identifier()
-            .separated_by(just(Token::ColonColon))
-            .at_least(1)
-            .collect::<Vec<_>>();
-
-        let alias = just(Token::Ident("as".to_string()))
-            .ignore_then(identifier())
-            .or_not();
-
-        let star =
-            just(Token::Star).map_with(|_, e| vec![(vec![("*".to_string(), e.span())], None)]);
-
-        let group_or_simple = path
-            .then(
-                just(Token::ColonColon)
-                    .ignore_then(choice((
-                        tree.clone()
-                            .separated_by(just(Token::Comma))
-                            .allow_trailing()
-                            .collect::<Vec<Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>>>()
-                            .delimited_by(just(Token::LBrace), just(Token::RBrace))
-                            .map(|nested_lists| {
-                                nested_lists.into_iter().flatten().collect::<Vec<_>>()
-                            }),
-                        just(Token::Star)
-                            .map_with(|_, e| vec![(vec![("*".to_string(), e.span())], None)]),
-                    )))
-                    .or_not(),
-            )
-            .then(alias)
-            .map(|((prefix, nested), alias)| {
-                if let Some(nested_items) = nested {
-                    let mut flattened = Vec::new();
-                    for (mut nested_path, nested_alias) in nested_items {
-                        let mut full_path = prefix.clone();
-                        full_path.append(&mut nested_path);
-                        flattened.push((full_path, nested_alias));
-                    }
-                    flattened
-                } else {
-                    vec![(prefix, alias)]
-                }
-            });
-
-        let just_group = tree
-            .separated_by(just(Token::Comma))
-            .allow_trailing()
-            .collect::<Vec<Vec<(Vec<Spanned<String>>, Option<Spanned<String>>)>>>()
-            .delimited_by(just(Token::LBrace), just(Token::RBrace))
-            .map(|nested_lists| nested_lists.into_iter().flatten().collect());
-
-        choice((group_or_simple, just_group, star))
-    })
-}
-
-fn use_item<'src, I>()
--> impl Parser<'src, I, Vec<Spanned<UseItem>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    just(Token::Ident("use".to_owned()))
-        .ignore_then(just(Token::ColonColon).or_not())
-        .ignore_then(use_tree())
-        .then_ignore(just(Token::Semicolon))
-        .map_with(|items, e| {
-            items
-                .into_iter()
-                .map(|(path, alias)| {
-                    (
-                        UseItem {
-                            attrs: Vec::new(),
-                            path,
-                            alias,
-                        },
-                        e.span(),
-                    )
-                })
-                .collect()
-        })
-}
-
-fn use_item_with_attrs<'src, I>(
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> impl Parser<'src, I, Vec<Spanned<UseItem>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    just(Token::Ident("use".to_owned()))
-        .ignore_then(just(Token::ColonColon).or_not())
-        .ignore_then(use_tree())
-        .then_ignore(just(Token::Semicolon))
-        .map_with(move |items, e| {
-            items
-                .into_iter()
-                .map(|(path, alias)| {
-                    (
-                        UseItem {
-                            attrs: attrs.clone(),
-                            path,
-                            alias,
-                        },
-                        e.span(),
-                    )
-                })
-                .collect()
-        })
-}
-
-fn inline_mod_body<'src, I>()
--> impl Parser<'src, I, Spanned<Vec<Spanned<Token>>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    recursive(|block| {
-        let content = choice((
-            any()
-                .filter(|t| !matches!(t, Token::LBrace | Token::RBrace))
-                .ignored(),
-            block.ignored(),
-        ))
-        .repeated()
-        .ignored();
-
-        content.delimited_by(just(Token::LBrace), just(Token::RBrace))
-    })
-    .map_with(|(), e| {
-        let slice: &[Spanned<Token>] = e.slice();
-        // slice includes the surrounding { }, strip them to get inner tokens
-        let inner: Vec<Spanned<Token>> = if slice.len() >= 2 {
-            slice[1..slice.len() - 1].to_vec()
-        } else {
-            Vec::new()
         };
-        let span = slice_span(slice, e.span());
-        (inner, span)
-    })
-}
-
-fn mod_item<'src, I>()
--> impl Parser<'src, I, Spanned<ModItem>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let mod_kw = just(Token::Ident("mod".to_owned()));
-
-    let file_mod = mod_kw
-        .clone()
-        .ignore_then(identifier())
-        .then_ignore(just(Token::Semicolon))
-        .map(|name| ModItem {
-            attrs: Vec::new(),
-            name,
-            inline_content: None,
-        });
-
-    let inline_mod = mod_kw
-        .ignore_then(identifier())
-        .then(inline_mod_body())
-        .map(|(name, content)| ModItem {
-            attrs: Vec::new(),
-            name,
-            inline_content: Some(content),
-        });
-
-    choice((file_mod, inline_mod)).map_with(|r, e| (r, e.span()))
-}
-
-fn mod_item_with_attrs<'src, I>(
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> impl Parser<'src, I, Spanned<ModItem>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    let mod_kw = just(Token::Ident("mod".to_owned()));
-
-    let attrs_for_file = attrs.clone();
-    let file_mod = mod_kw
-        .clone()
-        .ignore_then(identifier())
-        .then_ignore(just(Token::Semicolon))
-        .map(move |name| ModItem {
-            attrs: attrs_for_file.clone(),
-            name,
-            inline_content: None,
-        });
-
-    let inline_mod = mod_kw
-        .ignore_then(identifier())
-        .then(inline_mod_body())
-        .map(move |(name, content)| ModItem {
-            attrs: attrs.clone(),
-            name,
-            inline_content: Some(content),
-        });
-
-    choice((file_mod, inline_mod)).map_with(|r, e| (r, e.span()))
-}
-
-fn pragma_pack_action(ident: &str) -> Option<co2_ast::PackAction> {
-    use co2_ast::PackAction;
-    if ident == "__ccc_pack_pop" {
-        return Some(PackAction::Pop);
+        Ok((stmt, self.span_since(start)))
     }
-    if ident == "__ccc_pack_reset" {
-        return Some(PackAction::Reset);
-    }
-    if ident == "__ccc_pack_push_only" {
-        return Some(PackAction::PushOnly);
-    }
-    if let Some(n_str) = ident.strip_prefix("__ccc_pack_push_")
-        && let Ok(n) = n_str.parse::<u32>()
-    {
-        return Some(PackAction::PushSet(n));
-    }
-    if let Some(n_str) = ident.strip_prefix("__ccc_pack_set_")
-        && let Ok(n) = n_str.parse::<u32>()
-    {
-        return Some(PackAction::Set(n));
-    }
-    None
-}
 
-fn break_co2_item<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, (Spanned<Declaration<R>>, R), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    just(Token::Break)
-        .then(just(Token::Ident("co2".to_string())))
-        .then_ignore(just(Token::Semicolon))
-        .map_with(move |_token, e| {
-            let decl = (Declaration::BreakCo2, e.span());
-            let next_resolver = resolver.register_decl(&decl.0);
-            (decl, next_resolver)
+    fn parse_if(&mut self) -> PR<Statement<R>> {
+        self.expect(&Token::If, "if")?;
+        self.expect(&Token::LParen, "(")?;
+        let cond = crate::exp::parse_expression(self)?;
+        self.expect(&Token::RParen, ")")?;
+        let then_branch = self.parse_statement()?;
+        let else_branch = if self.at(&Token::Else) {
+            self.pos += 1;
+            Some(self.parse_statement()?)
+        } else {
+            None
+        };
+        Ok(Statement::If {
+            cond,
+            then_branch: Box::new(then_branch),
+            else_branch: else_branch.map(Box::new),
         })
-}
-
-fn pragma_pack_item<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, (Spanned<Declaration<R>>, R), extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    select! {
-        Token::Ident(s) if pragma_pack_action(&s).is_some() => pragma_pack_action(&s).unwrap(),
-    }
-    .then_ignore(just(Token::Semicolon))
-    .map_with(move |action, e| {
-        let decl = (
-            Declaration::PragmaPack {
-                action: action.clone(),
-            },
-            e.span(),
-        );
-        let next_resolver = resolver.register_decl(&decl.0);
-        (decl, next_resolver)
-    })
-}
-
-fn attach_attrs_to_declaration<R: TypeResolver>(
-    mut decl: Declaration<R>,
-    attrs: Vec<Spanned<RustAttribute>>,
-) -> Declaration<R> {
-    match &mut decl {
-        Declaration::FunctionDefinition {
-            attrs: decl_attrs, ..
-        }
-        | Declaration::Declaration {
-            attrs: decl_attrs, ..
-        }
-        | Declaration::RustTypeAlias {
-            attrs: decl_attrs, ..
-        }
-        | Declaration::RustStruct {
-            attrs: decl_attrs, ..
-        } => *decl_attrs = attrs,
-        Declaration::PragmaPack { .. } | Declaration::BreakCo2 => {}
-        Declaration::StaticAssert { .. } => {}
-    }
-    decl
-}
-
-fn attrs_are_outer(attrs: &[Spanned<RustAttribute>]) -> bool {
-    attrs.iter().all(|(attr, _)| !attr.is_inner())
-}
-
-pub fn translation_unit<'src, I, R: TypeResolver>(
-    resolver: R,
-) -> impl Parser<'src, I, Spanned<TranslationUnit<R>>, extra::Err<Rich<'src, Token, Span>>> + Clone
-where
-    I: ValueInput<'src, Token = Token, Span = Span>
-        + SliceInput<'src, Slice = &'src [Spanned<Token>]>,
-{
-    #[derive(Clone)]
-    enum TranslationUnitItem<R: TypeResolver> {
-        Use(Spanned<UseItem>),
-        Mod(Spanned<ModItem>),
-        Declaration(Spanned<Declaration<R>>),
-        Empty,
     }
 
-    custom(move |inp| {
-        let mut current_resolver = resolver.clone();
-        let mut items = Vec::new();
-        let mut tu_attrs = Vec::new();
-        loop {
-            let checkpoint = inp.save();
-            if inp.next().is_none() {
-                inp.rewind(checkpoint);
-                break;
-            }
-            inp.rewind(checkpoint);
+    fn parse_while(&mut self) -> PR<Statement<R>> {
+        self.expect(&Token::While, "while")?;
+        self.expect(&Token::LParen, "(")?;
+        let cond = crate::exp::parse_expression(self)?;
+        self.expect(&Token::RParen, ")")?;
+        let body = self.parse_statement()?;
+        Ok(Statement::While {
+            cond,
+            body: Box::new(body),
+        })
+    }
 
-            let mut attrs = inp.parse(rust_attrs())?;
-            if let Some(first_outer) = attrs.iter().position(|(attr, _)| !attr.is_inner())
-                && first_outer > 0
-            {
-                tu_attrs.extend(attrs.drain(..first_outer));
-            }
+    fn parse_do_while(&mut self) -> PR<Statement<R>> {
+        self.expect(&Token::Do, "do")?;
+        let body = self.parse_statement()?;
+        self.expect(&Token::While, "while")?;
+        self.expect(&Token::LParen, "(")?;
+        let cond = crate::exp::parse_expression(self)?;
+        self.expect(&Token::RParen, ")")?;
+        self.expect(&Token::Semicolon, ";")?;
+        Ok(Statement::DoWhile {
+            body: Box::new(body),
+            cond,
+        })
+    }
 
-            let item =
-                if !attrs.is_empty() {
-                    if attrs.iter().all(|(attr, _)| attr.is_inner()) {
-                        tu_attrs.extend(attrs);
-                        continue;
-                    }
-                    if !attrs_are_outer(&attrs) {
-                        let attr_span =
-                            attrs.first().zip(attrs.last()).map_or(
-                                Span::from_parts(FileId::INVALID, 0..0),
-                                |(first, last)| join_spans(first.1, last.1),
-                            );
-                        return Err(Rich::custom(
-                            attr_span,
-                            "inner doc comments are only supported before module contents",
-                        ));
-                    }
-                    if let Ok(use_items) = inp.parse(use_item_with_attrs(attrs.clone())) {
-                        for item in use_items {
-                            items.push(TranslationUnitItem::Use(item));
-                        }
-                        TranslationUnitItem::Empty
-                    } else if let Ok(item) = inp.parse(mod_item_with_attrs(attrs.clone())) {
-                        TranslationUnitItem::Mod(item)
-                    } else if let Ok((decl, next_resolver)) = inp.parse(
-                        choice((
-                            rust_style_function_definition_with_attrs(
-                                current_resolver.clone(),
-                                attrs.clone(),
-                            ),
-                            rust_style_type_definition_with_attrs(
-                                current_resolver.clone(),
-                                attrs.clone(),
-                            ),
-                            rust_style_struct_definition_with_attrs(
-                                current_resolver.clone(),
-                                attrs.clone(),
-                            ),
-                        ))
-                        .map_with(|v, e| {
-                            let nr = current_resolver.register_decl(&v);
-                            ((v, e.span()), nr)
-                        }),
-                    ) {
-                        current_resolver = next_resolver;
-                        TranslationUnitItem::Declaration(decl)
-                    } else if let Ok((decl, next_resolver)) = inp.parse(declaration(
-                        current_resolver.clone(),
-                        statement(current_resolver.clone()),
-                    )) {
-                        let decl = (attach_attrs_to_declaration(decl.0, attrs.clone()), decl.1);
-                        current_resolver = next_resolver;
-                        TranslationUnitItem::Declaration(decl)
+    fn parse_for(&mut self) -> PR<Statement<R>> {
+        self.expect(&Token::For, "for")?;
+        self.expect(&Token::LParen, "(")?;
+        let (init, loop_resolver) = {
+            let cp = self.checkpoint();
+            match self.parse_declaration() {
+                Ok(d) => {
+                    let nr = self.resolver.clone();
+                    (Some(ForInit::Declaration(d)), nr)
+                }
+                Err(_) => {
+                    self.restore(cp);
+                    let init = if self.at(&Token::Semicolon) {
+                        None
                     } else {
-                        let attr_span =
-                            attrs.first().zip(attrs.last()).map_or(
-                                Span::from_parts(FileId::INVALID, 0..0),
-                                |(first, last)| join_spans(first.1, last.1),
-                            );
-                        return Err(Rich::custom(
-                            attr_span,
-                            "attributes are only supported on rust items",
-                        ));
-                    }
-                } else if let Ok(use_items) = inp.parse(use_item()) {
-                    for item in use_items {
-                        items.push(TranslationUnitItem::Use(item));
-                    }
-                    TranslationUnitItem::Empty
-                } else if let Ok(item) = inp.parse(mod_item()) {
-                    TranslationUnitItem::Mod(item)
-                } else if let Ok((decl, next_resolver)) =
-                    inp.parse(break_co2_item(current_resolver.clone()))
-                {
-                    current_resolver = next_resolver;
-                    TranslationUnitItem::Declaration(decl)
-                } else if let Ok((decl, next_resolver)) =
-                    inp.parse(pragma_pack_item(current_resolver.clone()))
-                {
-                    current_resolver = next_resolver;
-                    TranslationUnitItem::Declaration(decl)
-                } else if let Ok((decl, next_resolver)) = inp.parse(choice((
-                    rust_style_struct_definition(current_resolver.clone()).map_with(|v, e| {
-                        let nr = current_resolver.register_decl(&v);
-                        ((v, e.span()), nr)
-                    }),
-                    declaration(
-                        current_resolver.clone(),
-                        statement(current_resolver.clone()),
-                    ),
-                ))) {
-                    current_resolver = next_resolver;
-                    TranslationUnitItem::Declaration(decl)
-                } else {
-                    inp.parse(just(Token::Semicolon))?;
-                    TranslationUnitItem::Empty
-                };
-            items.push(item);
-        }
-
-        Ok((items, tu_attrs))
-    })
-    .map_with(|(items, tu_attrs), e| {
-        let mut rust_use_items = Vec::new();
-        let mut rust_mod_items = Vec::new();
-        let mut declarations = Vec::new();
-        for item in items {
-            match item {
-                TranslationUnitItem::Use(item) => rust_use_items.push(item),
-                TranslationUnitItem::Mod(item) => rust_mod_items.push(item),
-                TranslationUnitItem::Declaration(item) => declarations.push(item),
-                TranslationUnitItem::Empty => {}
+                        Some(ForInit::Expression(crate::exp::parse_expression(self)?))
+                    };
+                    self.expect(&Token::Semicolon, ";")?;
+                    (init, self.resolver.clone())
+                }
             }
+        };
+        let cond = if self.at(&Token::Semicolon) {
+            None
+        } else {
+            Some(crate::exp::parse_expression(self)?)
+        };
+        self.expect(&Token::Semicolon, ";")?;
+        let post = if self.at(&Token::RParen) {
+            None
+        } else {
+            Some(crate::exp::parse_expression(self)?)
+        };
+        self.expect(&Token::RParen, ")")?;
+        let outer = self.resolver.clone();
+        self.resolver = loop_resolver;
+        let body = self.parse_statement();
+        self.resolver = outer;
+        Ok(Statement::For {
+            init,
+            cond,
+            post,
+            body: Box::new(body?),
+        })
+    }
+}
+
+// ── External entries ─────────────────────────────────────────────────
+
+/// Parse lazily-captured `{ ... }` body tokens. Fatal on error.
+pub(crate) fn try_parse_compound<R: TypeResolver>(
+    toks: &[Spanned<Token>],
+    end_span: Span,
+    resolver: R,
+) -> Result<Spanned<CompoundStatement<R>>, (Span, String)> {
+    let mut p = P::new(toks, end_span, resolver);
+    match p.parse_compound_inner() {
+        Ok(b) => Ok(b),
+        Err(e) => Err((e.span, e.msg)),
+    }
+}
+
+/// Parse expression tokens with trailing-end enforcement. Fatal on error.
+pub(crate) fn try_parse_expr_full<R: TypeResolver>(
+    toks: &[Spanned<Token>],
+    end_span: Span,
+    resolver: R,
+) -> Result<Spanned<Expression<R>>, (Span, String)> {
+    let mut p = P::new(toks, end_span, resolver);
+    match crate::exp::parse_expression(&mut p) {
+        Ok(e) => {
+            if p.peek(0).is_some() {
+                let f = p.fail_here(format!(
+                    "expected end of expression, found {}",
+                    p.describe()
+                ));
+                return Err((f.span, f.msg));
+            }
+            Ok(e)
         }
-        (
-            TranslationUnit {
-                attrs: tu_attrs,
-                rust_use_items,
-                rust_mod_items,
-                items: declarations,
-            },
-            e.span(),
-        )
-    })
+        Err(e) => Err((e.span, e.msg)),
+    }
 }

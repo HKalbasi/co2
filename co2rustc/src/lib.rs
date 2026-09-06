@@ -153,22 +153,20 @@ fn write_test_host(
 
     let mut source = String::from("#![feature(test)]\n#![language(co2)]\nextern crate test;\n");
     let mut tests = Vec::new();
-    if let Some(ast) = ast {
-        collect_tests_from_translation_unit(
-            &ast.0,
-            &mut Vec::new(),
-            &root_module_dir(co2_file),
-            &mut tests,
-            cpp_args,
+    collect_tests_from_translation_unit(
+        &ast.0,
+        &mut Vec::new(),
+        &root_module_dir(co2_file),
+        &mut tests,
+        cpp_args,
+    );
+    for test in &tests {
+        let _ = writeln!(source, "unsafe extern \"Rust\" {{ fn {}(); }}", test.symbol);
+        let _ = writeln!(
+            source,
+            "fn {}() {{ unsafe {{ {}(); }} }}",
+            test.host_fn, test.symbol
         );
-        for test in &tests {
-            let _ = writeln!(source, "unsafe extern \"Rust\" {{ fn {}(); }}", test.symbol);
-            let _ = writeln!(
-                source,
-                "fn {}() {{ unsafe {{ {}(); }} }}",
-                test.host_fn, test.symbol
-            );
-        }
     }
     source.push_str("fn main() {\n");
     source.push_str("    test::test_main_static(&[\n");
@@ -251,19 +249,18 @@ fn collect_tests_from_translation_unit(
         {
             let preprocessed = co2_preprocessor::preprocess(&module_path_on_disk, cpp_args);
             let source_name = module_path_on_disk.to_string_lossy().into_owned();
-            if let Some(child) = co2_parser::parse_translation_unit(
+            let child = co2_parser::parse_translation_unit(
                 &source_name,
                 &preprocessed,
                 StatelessResolver::new(),
-            ) {
-                collect_tests_from_translation_unit(
-                    &child.0,
-                    module_path,
-                    &child_module_dir(&module_path_on_disk),
-                    tests,
-                    cpp_args,
-                );
-            }
+            );
+            collect_tests_from_translation_unit(
+                &child.0,
+                module_path,
+                &child_module_dir(&module_path_on_disk),
+                tests,
+                cpp_args,
+            );
         }
         module_path.pop();
     }
@@ -352,11 +349,8 @@ fn dump_ast_tree_for_file(
 ) -> std::process::ExitCode {
     let preprocessed = co2_preprocessor::preprocess(co2_file, cpp_args);
     let filename = co2_file.display().to_string();
-    let Some(ast) =
-        co2_parser::parse_translation_unit(&filename, &preprocessed, StatelessResolver::new())
-    else {
-        return std::process::ExitCode::from(5);
-    };
+    let ast =
+        co2_parser::parse_translation_unit(&filename, &preprocessed, StatelessResolver::new());
 
     let cwd = std::env::current_dir().ok();
     let file_names: HashMap<co2_ast::FileId, String> = preprocessed

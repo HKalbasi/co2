@@ -448,11 +448,8 @@ dependencies = [
 name = "co2_parser"
 version = "0.1.0"
 dependencies = [
- "ariadne 0.6.0",
- "chumsky",
  "co2_ast",
  "co2_preprocessor",
- "itertools 0.14.0",
  "la-arena",
 ]
 
