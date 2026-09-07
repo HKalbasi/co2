@@ -920,7 +920,7 @@ impl HirCtx<'_> {
             }
             if !ty_matches_expected(expected, actual.ty) {
                 self.terminate_with_error(
-                    self.to_chumsky_span(actual.span),
+                    self.to_parser_span(actual.span),
                     &format!(
                         "call `{}` type mismatch at arg {idx}: expected {}, got {}",
                         func_name,

@@ -252,14 +252,14 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
                 had_errors,
             } => {
                 let span_converter = |span: co2_ast::Span| self.map_co2_span(&ctx, span);
-                let chumsky_span_converter =
+                let rust_span_converter =
                     |span: rustc_public_generative::rustc_public::ty::Span| {
                         self.map_rust_to_co2_span(&ctx, span)
                     };
                 let mut hir_ctx = HirCtx::new(
                     self.wellknown_defs,
                     &span_converter,
-                    &chumsky_span_converter,
+                    &rust_span_converter,
                     Some(function_name),
                     def.fn_sig().skip_binder().output(),
                     resolver.clone(),
@@ -406,13 +406,13 @@ impl Co2GeneratorState {
     ) -> Body {
         let resolver = resolver.with_owner(def);
         let span_converter = |span: co2_ast::Span| self.map_co2_span(ctx, span);
-        let chumsky_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
+        let rust_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
             self.map_rust_to_co2_span(ctx, span)
         };
         let hir_ctx = HirCtx::new(
             self.wellknown_defs,
             &span_converter,
-            &chumsky_span_converter,
+            &rust_span_converter,
             None,
             CrateItem(def).ty(),
             resolver.clone(),
@@ -464,13 +464,13 @@ impl Co2GeneratorState {
             && len.eval_target_usize().is_err()
         {
             let len_span_converter = |span: co2_ast::Span| self.map_co2_span(ctx, span);
-            let len_chumsky_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
+            let len_rust_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
                 self.map_rust_to_co2_span(ctx, span)
             };
             let len_hir_ctx = HirCtx::new(
                 self.wellknown_defs,
                 &len_span_converter,
-                &len_chumsky_converter,
+                &len_rust_span_converter,
                 None,
                 Ty::usize_ty(),
                 resolver.clone(),
@@ -485,13 +485,13 @@ impl Co2GeneratorState {
             ));
         }
         let span_converter = |span: co2_ast::Span| self.map_co2_span(ctx, span);
-        let chumsky_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
+        let rust_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
             self.map_rust_to_co2_span(ctx, span)
         };
         let hir_ctx = HirCtx::new(
             self.wellknown_defs,
             &span_converter,
-            &chumsky_span_converter,
+            &rust_span_converter,
             None,
             target_ty,
             resolver.clone(),

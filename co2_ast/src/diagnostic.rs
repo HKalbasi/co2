@@ -5,11 +5,51 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use ariadne::{Color, Label, Report, ReportKind, sources};
-use chumsky::error::Rich;
+use annotate_snippets::{
+    AnnotationKind, Group, Level as AnnotateLevel, Renderer, Snippet, renderer::DecorStyle,
+};
 use serde_json::json;
 
 use crate::{FileId, Span, Token};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rich<'a, T = String, S = Span> {
+    span: S,
+    msg: String,
+    _marker: std::marker::PhantomData<(&'a (), T)>,
+}
+
+impl<'a, T, S> Rich<'a, T, S> {
+    pub fn custom<M: ToString>(span: S, msg: M) -> Self {
+        Self {
+            span,
+            msg: msg.to_string(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub fn span(&self) -> &S {
+        &self.span
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.msg
+    }
+
+    pub fn map_token<U>(self, _f: impl FnMut(T) -> U) -> Rich<'a, U, S> {
+        Rich {
+            span: self.span,
+            msg: self.msg,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T, S> std::fmt::Display for Rich<'_, T, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
 
 static ERRORS: Mutex<Vec<Rich<'static, Token, Span>>> = Mutex::new(Vec::new());
 static DIAGNOSTICS_EMITTED: AtomicBool = AtomicBool::new(false);
@@ -81,7 +121,7 @@ pub fn safe_range(span: Span, src_len: usize) -> std::ops::Range<usize> {
 
 /// Widen a byte range so both ends land on UTF-8 character boundaries of `src`.
 ///
-/// `ariadne` slices the source at the raw byte offsets when rendering, and panics
+/// The snippet renderer slices the source at the raw byte offsets when rendering, and panics
 /// if an offset falls inside a multibyte character. Diagnostic spans can legitimately
 /// point inside a multibyte character (e.g. an invalid identifier), so snap the range
 /// outward to the nearest surrounding boundaries purely for rendering.
@@ -189,17 +229,10 @@ enum DiagnosticLevel {
 }
 
 impl DiagnosticLevel {
-    fn report_kind(self) -> ReportKind<'static> {
+    fn annotate_level(self) -> AnnotateLevel<'static> {
         match self {
-            DiagnosticLevel::Error => ReportKind::Error,
-            DiagnosticLevel::Warning => ReportKind::Warning,
-        }
-    }
-
-    fn label_color(self) -> Color {
-        match self {
-            DiagnosticLevel::Error => Color::Red,
-            DiagnosticLevel::Warning => Color::Yellow,
+            DiagnosticLevel::Error => AnnotateLevel::ERROR,
+            DiagnosticLevel::Warning => AnnotateLevel::WARNING,
         }
     }
 
@@ -209,6 +242,25 @@ impl DiagnosticLevel {
             DiagnosticLevel::Warning => "warning",
         }
     }
+}
+
+fn snippet_group<'a>(
+    level: AnnotateLevel<'a>,
+    title: &'a str,
+    path: &'a str,
+    src: &'a str,
+    range: std::ops::Range<usize>,
+    label: &'a str,
+) -> Group<'a> {
+    if src.is_empty() {
+        return Group::with_title(level.primary_title(title));
+    }
+    level.primary_title(title).element(
+        Snippet::source(src)
+            .path(path)
+            .line_start(1)
+            .annotation(AnnotationKind::Primary.span(range).label(label)),
+    )
 }
 
 fn emit_mapped_diagnostics(
@@ -279,47 +331,34 @@ fn emit_human_diagnostic(
     e: &Rich<'_, String, Span>,
     level: DiagnosticLevel,
 ) {
+    let renderer = Renderer::styled().decor_style(DecorStyle::Unicode);
+    let title = e.to_string();
     if let Some(mapped) = get_diagnostic_info(*e.span()) {
         let display_name = relativize_path(&mapped.file_name);
         let render_range = snap_to_char_boundaries(&mapped.source, mapped.start..mapped.end);
-        Report::build(
-            level.report_kind(),
-            (display_name.clone(), render_range.clone()),
-        )
-        .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-        .with_message(e.to_string())
-        .with_label(
-            Label::new((display_name.clone(), render_range))
-                .with_message(e.reason().to_string())
-                .with_color(level.label_color()),
-        )
-        .finish()
-        .eprint(sources([(display_name, mapped.source.to_string())]))
-        .unwrap();
+        let report = [snippet_group(
+            level.annotate_level(),
+            &title,
+            &display_name,
+            &mapped.source,
+            render_range,
+            e.reason(),
+        )];
+        eprintln!("{}", renderer.render(&report));
         return;
     }
 
     let range = snap_to_char_boundaries(src, safe_range(*e.span(), src.len()));
     let display_name = relativize_path(filename);
-    Report::build(level.report_kind(), (display_name.clone(), range.clone()))
-        .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-        .with_message(e.to_string())
-        .with_label(
-            Label::new((display_name.clone(), range))
-                .with_message(e.reason().to_string())
-                .with_color(level.label_color()),
-        )
-        .with_labels(e.contexts().map(|(label, span)| {
-            Label::new((
-                display_name.clone(),
-                snap_to_char_boundaries(src, safe_range(*span, src.len())),
-            ))
-            .with_message(format!("while parsing this {label}"))
-            .with_color(Color::Yellow)
-        }))
-        .finish()
-        .eprint(sources([(display_name, src.to_owned())]))
-        .unwrap();
+    let report = [snippet_group(
+        level.annotate_level(),
+        &title,
+        &display_name,
+        src,
+        range,
+        e.reason(),
+    )];
+    eprintln!("{}", renderer.render(&report));
 }
 
 fn emit_json_diagnostic(
@@ -328,30 +367,23 @@ fn emit_json_diagnostic(
     e: &Rich<'_, String, Span>,
     level: DiagnosticLevel,
 ) {
+    let renderer = Renderer::plain().decor_style(DecorStyle::Unicode);
+    let title = e.to_string();
     if let Some(mapped) = get_diagnostic_info(*e.span()) {
         let range = mapped.start..mapped.end;
         let display_name = relativize_path(&mapped.file_name);
         let (ls, cs) = byte_to_line_col(&mapped.source, mapped.start);
         let (le, ce) = byte_to_line_col(&mapped.source, mapped.end);
-        let mut rendered = Vec::new();
         let render_range = snap_to_char_boundaries(&mapped.source, range.clone());
-        Report::build(
-            level.report_kind(),
-            (display_name.clone(), render_range.clone()),
-        )
-        .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-        .with_message(e.to_string())
-        .with_label(
-            Label::new((display_name.clone(), render_range))
-                .with_message(e.reason().to_string())
-                .with_color(level.label_color()),
-        )
-        .finish()
-        .write(
-            sources([(display_name.clone(), mapped.source.to_string())]),
-            &mut rendered,
-        )
-        .unwrap();
+        let report = [snippet_group(
+            level.annotate_level(),
+            &title,
+            &display_name,
+            &mapped.source,
+            render_range,
+            e.reason(),
+        )];
+        let rendered = renderer.render(&report);
         let label = e.reason().to_string();
         let diagnostic = json!({
             "$message_type": "diagnostic",
@@ -360,7 +392,7 @@ fn emit_json_diagnostic(
             "level": level.json_level(),
             "spans": [json_span(&display_name, range, true, Some(&label), ls, cs, le, ce)],
             "children": [],
-            "rendered": String::from_utf8(rendered).unwrap(),
+            "rendered": rendered,
         });
         eprintln!("{diagnostic}");
         return;
@@ -371,7 +403,7 @@ fn emit_json_diagnostic(
     let (ls, cs) = byte_to_line_col(src, range.start);
     let (le, ce) = byte_to_line_col(src, range.end);
     let primary_label = e.reason().to_string();
-    let mut spans = vec![json_span(
+    let spans = vec![json_span(
         &display_name,
         range.clone(),
         true,
@@ -381,49 +413,16 @@ fn emit_json_diagnostic(
         le,
         ce,
     )];
-    spans.extend(e.contexts().map(|(label, span)| {
-        let context_label = format!("while parsing this {label}");
-        let span_range = safe_range(*span, src.len());
-        let (sl, sc) = byte_to_line_col(src, span_range.start);
-        let (el, ec) = byte_to_line_col(src, span_range.end);
-        json_span(
-            &display_name,
-            span_range,
-            false,
-            Some(&context_label),
-            sl,
-            sc,
-            el,
-            ec,
-        )
-    }));
-    let mut rendered = Vec::new();
     let render_range = snap_to_char_boundaries(src, range.clone());
-    Report::build(
-        level.report_kind(),
-        (display_name.clone(), render_range.clone()),
-    )
-    .with_config(ariadne::Config::new().with_index_type(ariadne::IndexType::Byte))
-    .with_message(e.to_string())
-    .with_label(
-        Label::new((display_name.clone(), render_range))
-            .with_message(e.reason().to_string())
-            .with_color(level.label_color()),
-    )
-    .with_labels(e.contexts().map(|(label, span)| {
-        Label::new((
-            display_name.clone(),
-            snap_to_char_boundaries(src, safe_range(*span, src.len())),
-        ))
-        .with_message(format!("while parsing this {label}"))
-        .with_color(Color::Yellow)
-    }))
-    .finish()
-    .write(
-        sources([(display_name.clone(), src.to_owned())]),
-        &mut rendered,
-    )
-    .unwrap();
+    let report = [snippet_group(
+        level.annotate_level(),
+        &title,
+        &display_name,
+        src,
+        render_range,
+        e.reason(),
+    )];
+    let rendered = renderer.render(&report);
 
     let diagnostic = json!({
         "$message_type": "diagnostic",
@@ -432,7 +431,7 @@ fn emit_json_diagnostic(
         "level": level.json_level(),
         "spans": spans,
         "children": [],
-        "rendered": String::from_utf8(rendered).unwrap(),
+        "rendered": rendered,
     });
     eprintln!("{diagnostic}");
 }

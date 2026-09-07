@@ -60,7 +60,7 @@ type ParserSpan = co2_ast::Span;
 pub struct HirCtx<'a> {
     pub(crate) wellknown_defs: WellknownDefs,
     span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
-    chumsky_span_converter: &'a dyn Fn(RustSpan) -> ParserSpan,
+    rust_span_converter: &'a dyn Fn(RustSpan) -> ParserSpan,
     labels: RefCell<Arena<HirLabel>>,
     named_labels: RefCell<HashMap<String, LabelId>>,
     continue_labels: RefCell<Vec<LabelId>>,
@@ -77,7 +77,7 @@ impl<'a> HirCtx<'a> {
     pub fn new(
         wellknown_defs: WellknownDefs,
         span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
-        chumsky_span_converter: &'a dyn Fn(RustSpan) -> ParserSpan,
+        rust_span_converter: &'a dyn Fn(RustSpan) -> ParserSpan,
         function_name: Option<String>,
         ret_ty: Ty,
         decl_resolver: LocalResolver,
@@ -85,7 +85,7 @@ impl<'a> HirCtx<'a> {
         Self {
             wellknown_defs,
             span_converter,
-            chumsky_span_converter,
+            rust_span_converter,
             labels: RefCell::new(Arena::new()),
             named_labels: RefCell::new(HashMap::new()),
             continue_labels: RefCell::new(Vec::new()),
@@ -127,8 +127,8 @@ impl<'a> HirCtx<'a> {
         (self.span_converter)(span)
     }
 
-    pub(crate) fn to_chumsky_span(&self, span: RustSpan) -> ParserSpan {
-        (self.chumsky_span_converter)(span)
+    pub(crate) fn to_parser_span(&self, span: RustSpan) -> ParserSpan {
+        (self.rust_span_converter)(span)
     }
 
     pub(crate) fn terminate_with_error(&self, span: co2_ast::Span, msg: &str) -> ! {

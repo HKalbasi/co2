@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ariadne::{Color, Config, IndexType, Label, Report, ReportKind, Source};
+use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet, renderer::DecorStyle};
 
 #[derive(Debug, Clone)]
 pub struct TestError {
@@ -62,21 +62,22 @@ pub fn render_ui_error(err: &UiTestError) {
 
             if let Some(source) = source {
                 if span.byte_start < source.len() && span.byte_end <= source.len() {
-                    let mut r = Report::build(
-                        ReportKind::Error,
-                        (name.as_str(), span.byte_start..span.byte_end),
-                    )
-                    .with_config(Config::new().with_index_type(IndexType::Byte));
-                    r.add_label(
-                        Label::new((name.as_str(), span.byte_start..span.byte_end))
-                            .with_color(Color::Red)
-                            .with_message(&issue.reason),
+                    let report = [Level::ERROR.primary_title(&issue.reason).element(
+                        Snippet::source(source.as_str())
+                            .path(name.as_str())
+                            .line_start(1)
+                            .annotation(
+                                AnnotationKind::Primary
+                                    .span(span.byte_start..span.byte_end)
+                                    .label(&issue.reason),
+                            ),
+                    )];
+                    eprintln!(
+                        "{}",
+                        Renderer::styled()
+                            .decor_style(DecorStyle::Unicode)
+                            .render(&report)
                     );
-                    r.finish()
-                        .eprint((name.as_str(), Source::from(source)))
-                        .unwrap_or_else(|_| {
-                            eprintln!("Error: {}\n  at {}", issue.reason, name);
-                        });
                 } else {
                     eprintln!(
                         "Error: {}\n  at {} (byte offsets out of range)",
@@ -95,16 +96,23 @@ pub fn render_ui_error(err: &UiTestError) {
 pub fn render_test_error(path: &Path, err: &TestError) {
     let source = &err.source;
     if let Some((start, end)) = err.span {
-        let mut r = Report::build(ReportKind::Error, (path.display().to_string(), start..end))
-            .with_config(Config::new().with_index_type(IndexType::Byte));
-        r.add_label(
-            Label::new((path.display().to_string(), start..end))
-                .with_color(Color::Red)
-                .with_message(&err.message),
+        let name = path.display().to_string();
+        let report: [Group; 1] = [Level::ERROR.primary_title(&err.message).element(
+            Snippet::source(source.as_str())
+                .path(name.as_str())
+                .line_start(1)
+                .annotation(
+                    AnnotationKind::Primary
+                        .span(start..end)
+                        .label(&err.message),
+                ),
+        )];
+        eprintln!(
+            "{}",
+            Renderer::styled()
+                .decor_style(DecorStyle::Unicode)
+                .render(&report)
         );
-        r.finish()
-            .eprint((path.display().to_string(), Source::from(source)))
-            .unwrap_or_else(|e| eprintln!("{e:#}"));
     } else {
         eprintln!("Error: {}", err.message);
         eprintln!("  at {}", path.display());

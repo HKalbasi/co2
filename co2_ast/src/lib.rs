@@ -12,12 +12,12 @@ mod resolver;
 mod span;
 mod transform;
 
-pub use chumsky::prelude::Rich;
 pub use diagnostic::{
-    DiagnosticAbort, DiagnosticSpan, SourceMap, diagnostic_error_count, diagnostics_were_emitted,
-    emit_errors, emit_errors_and_terminate, emit_warnings, is_diagnostic_abort,
-    panic_with_diagnostic_abort, print_errors_and_terminate, reset_diagnostic_state, safe_range,
-    set_diagnostic_base_path, set_force_json_diagnostics, set_source_map, take_errors,
+    DiagnosticAbort, DiagnosticSpan, Rich, SourceMap, diagnostic_error_count,
+    diagnostics_were_emitted, emit_errors, emit_errors_and_terminate, emit_warnings,
+    is_diagnostic_abort, panic_with_diagnostic_abort, print_errors_and_terminate,
+    reset_diagnostic_state, safe_range, set_diagnostic_base_path, set_force_json_diagnostics,
+    set_source_map, take_errors,
 };
 pub use pretty::{PrettyConfig, PrettyPrint, PrettyPrinter, pretty_print_compound};
 pub use resolver::{StatelessResolver, TypeResolver};

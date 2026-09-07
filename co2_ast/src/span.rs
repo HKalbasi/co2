@@ -5,8 +5,6 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use chumsky::span::Span as SpanTrait;
-
 use crate::diagnostic::get_source_text;
 
 // Type definitions
@@ -23,7 +21,50 @@ impl From<usize> for FileId {
     }
 }
 
-pub type SpanData = chumsky::span::SimpleSpan<usize, FileId>;
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpanData {
+    pub start: usize,
+    pub end: usize,
+    pub context: FileId,
+}
+
+impl SpanData {
+    pub fn new(context: FileId, range: Range<usize>) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+            context,
+        }
+    }
+
+    pub fn into_range(self) -> Range<usize> {
+        self.start..self.end
+    }
+
+    pub fn context(&self) -> FileId {
+        self.context
+    }
+
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    pub fn end(&self) -> usize {
+        self.end
+    }
+}
+
+impl Debug for SpanData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}..{:?}", self.start, self.end)
+    }
+}
+
+impl Display for SpanData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -32,25 +73,17 @@ pub struct Span {
     length: u16,
 }
 
-impl SpanTrait for Span {
-    type Context = <SpanData as SpanTrait>::Context;
-
-    type Offset = <SpanData as SpanTrait>::Offset;
-
-    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
-        Self::new(SpanData::new(context, range))
+impl Span {
+    pub fn context(&self) -> FileId {
+        self.data().context
     }
 
-    fn context(&self) -> Self::Context {
-        self.data().context()
+    pub fn start(&self) -> usize {
+        self.data().start
     }
 
-    fn start(&self) -> Self::Offset {
-        self.data().start()
-    }
-
-    fn end(&self) -> Self::Offset {
-        self.data().end()
+    pub fn end(&self) -> usize {
+        self.data().end
     }
 }
 
