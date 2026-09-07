@@ -1,6 +1,6 @@
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet, hash_map::RandomState},
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     rc::Rc,
@@ -700,7 +700,7 @@ fn deduplicate_tu_items(
 
     let mut errors: Vec<co2_ast::Rich<'_, String, co2_ast::Span>> = Vec::new();
     let mut tu_item_id: usize = 0;
-    let mut name_to_important_def = HashMap::<String, (usize, TuItemKind)>::new();
+    let mut name_to_important_def = FxHashMap::<String, (usize, TuItemKind)>::default();
 
     for (item, _) in &tu.items {
         match item {
@@ -871,7 +871,7 @@ struct LoadedModule {
 }
 
 struct SourceMapSnapshot {
-    files: Arc<HashMap<co2_ast::FileId, (String, Arc<str>)>>,
+    files: Arc<FxHashMap<co2_ast::FileId, (String, Arc<str>)>>,
 }
 
 impl co2_ast::SourceMap for SourceMapSnapshot {
@@ -918,8 +918,8 @@ fn resolve_module_source(module_dir: &Path, module_name: &str) -> Option<PathBuf
 fn register_preprocessed_files(
     ctx: &HirStructureCtx<'_>,
     preprocessed: &PreprocessedSource,
-    rustc_file_ids: &mut HashMap<co2_ast::FileId, FileId>,
-    source_files: &mut HashMap<co2_ast::FileId, (String, Arc<str>)>,
+    rustc_file_ids: &mut FxHashMap<co2_ast::FileId, FileId>,
+    source_files: &mut FxHashMap<co2_ast::FileId, (String, Arc<str>)>,
 ) {
     for (file_id, file) in preprocessed.files() {
         source_files
@@ -936,9 +936,9 @@ fn load_modules(
     parent_def: DefId,
     module_dir: &Path,
     rust_mod_items: &[co2_ast::Spanned<co2_ast::ModItem>],
-    rustc_file_ids: &mut HashMap<co2_ast::FileId, FileId>,
-    source_files: &mut HashMap<co2_ast::FileId, (String, Arc<str>)>,
-    loaded_paths: &mut HashSet<PathBuf>,
+    rustc_file_ids: &mut FxHashMap<co2_ast::FileId, FileId>,
+    source_files: &mut FxHashMap<co2_ast::FileId, (String, Arc<str>)>,
+    loaded_paths: &mut FxHashSet<PathBuf>,
 ) -> Result<Vec<LoadedModule>, ModItem> {
     let mut modules = Vec::with_capacity(rust_mod_items.len());
 
@@ -1867,13 +1867,13 @@ pub fn lower_crate_sig(
     src_static: &'static str,
     file_id: FileId,
     preprocessed: &Arc<PreprocessedSource>,
-    file_ids: &mut HashMap<co2_ast::FileId, FileId, RandomState>,
-    source_files: &mut HashMap<co2_ast::FileId, (String, Arc<str>), RandomState>,
+    file_ids: &mut FxHashMap<co2_ast::FileId, FileId>,
+    source_files: &mut FxHashMap<co2_ast::FileId, (String, Arc<str>)>,
     no_main: bool,
     test: bool,
     on_parse_done: Option<&mut dyn FnMut(Duration)>,
     mut on_body_parsed: Option<&mut dyn FnMut(Duration)>,
-) -> (HirStructure, HashMap<DefId, MirOwnerInfo>, WellknownDefs) {
+) -> (HirStructure, FxHashMap<DefId, MirOwnerInfo>, WellknownDefs) {
     let span = ctx.span_in_file(file_id, 0, 0);
     let deps = ctx.dependencies();
     deps.roots();
@@ -1895,7 +1895,7 @@ pub fn lower_crate_sig(
             .iter()
             .any(|attr| attr.0.is_word("no_main") && attr.0.is_inner());
     let tu = deduplicate_tu_items(tu);
-    let mut loaded_paths = HashSet::new();
+    let mut loaded_paths = FxHashSet::default();
     let loaded_modules = load_modules(
         &ctx,
         ctx.root_crate_def_id(),
@@ -1955,10 +1955,10 @@ pub fn lower_crate_sig(
             array_len_const_counter: 0,
             pending_typedefs: vec![],
             pending_static: vec![],
-            pending_extern: HashMap::new(),
+            pending_extern: FxHashMap::default(),
             foreign_mod,
-            array_len_consts: HashMap::new(),
-            array_len_const_exprs: HashMap::new(),
+            array_len_consts: FxHashMap::default(),
+            array_len_const_exprs: FxHashMap::default(),
             hir_ctx: unsafe {
                 std::mem::transmute::<&HirStructureCtx<'_>, &'static HirStructureCtx<'static>>(ctx)
             },
@@ -1966,20 +1966,20 @@ pub fn lower_crate_sig(
             preprocessed: preprocessed.clone(),
             file_ids: file_ids.clone(),
             struct_manager: StructManager::default(),
-            unrepresentable_typedefs: HashMap::new(),
-            typedef_tys: HashMap::new(),
-            transparent_unions: HashSet::new(),
-            global_value_tys: HashMap::new(),
+            unrepresentable_typedefs: FxHashMap::default(),
+            typedef_tys: FxHashMap::default(),
+            transparent_unions: FxHashSet::default(),
+            global_value_tys: FxHashMap::default(),
             global_struct_tags: Rc::new(RefCell::new(StructAndEnumData::default())),
             global_locals: Rc::new(RefCell::new(im::HashMap::new())),
-            enum_const_values: HashMap::new(),
-            enum_const_defs: HashMap::new(),
-            constexpr_def_exprs: HashMap::new(),
-            constexpr_local_exprs: HashMap::new(),
+            enum_const_values: FxHashMap::default(),
+            enum_const_defs: FxHashMap::default(),
+            constexpr_def_exprs: FxHashMap::default(),
+            constexpr_local_exprs: FxHashMap::default(),
         })),
         hir_ctx: ctx,
         file_ids,
-        mir_owners: HashMap::new(),
+        mir_owners: FxHashMap::default(),
         hir_items: vec![],
     };
 

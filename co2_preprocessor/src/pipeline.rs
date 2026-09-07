@@ -5,7 +5,7 @@
 //! live in `predefined_macros`, pragma handling in `pragmas`, and text
 //! processing (comment stripping, line joining) in `text_processing`.
 
-use std::collections::{HashMap, HashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -149,19 +149,19 @@ pub struct Preprocessor {
     /// Files currently being processed (for recursion detection)
     pub(super) include_stack: Vec<PathBuf>,
     /// Files that have been included with #pragma once
-    pub(super) pragma_once_files: HashSet<PathBuf>,
+    pub(super) pragma_once_files: FxHashSet<PathBuf>,
     /// Declarations to inject into the output (from #include processing).
     pub(super) pending_injections: Vec<String>,
     /// Stack for #pragma push_macro / pop_macro.
     /// Maps macro name -> stack of saved definitions (None = was undefined).
-    pub(super) macro_save_stack: HashMap<String, Vec<Option<MacroDef>>>,
+    pub(super) macro_save_stack: FxHashMap<String, Vec<Option<MacroDef>>>,
     /// Cache for include path resolution.
     /// Maps (include_path, is_system, current_dir_key) to the resolved filesystem path.
     /// This avoids repeated `stat()` calls when the same header is included from
     /// multiple locations with the same include search path configuration.
     /// The current_dir_key is the parent directory of the including file for quoted
     /// includes (since resolution depends on it), or empty for system includes.
-    pub(super) include_resolve_cache: HashMap<(String, bool, PathBuf), Option<PathBuf>>,
+    pub(super) include_resolve_cache: FxHashMap<(String, bool, PathBuf), Option<PathBuf>>,
     /// Include guard detection: maps file paths to their guard macro names.
     ///
     /// After preprocessing an included file, we scan the raw source to detect if
@@ -173,10 +173,10 @@ pub struct Preprocessor {
     ///
     /// On subsequent #include of the same file, if the guard macro is still defined,
     /// we skip re-processing entirely (same optimization as GCC/Clang).
-    pub(super) include_guard_macros: HashMap<PathBuf, String>,
+    pub(super) include_guard_macros: FxHashMap<PathBuf, String>,
     /// Reusable set for directive-level macro expansion (handle_if, handle_elif,
     /// #error). Avoids allocating a new set per directive.
-    directive_expanding: HashSet<String>,
+    directive_expanding: FxHashSet<String>,
     /// Current effective line number for __LINE__ expansion (after #line directives).
     /// Incremented per logical slice, reset on #line.
     effective_line: u64,
@@ -192,7 +192,7 @@ pub struct Preprocessor {
     line_token_remap: Option<LineTokenRemap>,
     /// Cached line-start offset tables per registered file, used to translate
     /// spans through `#line` remaps.
-    line_tables: HashMap<FileId, Arc<Vec<usize>>>,
+    line_tables: FxHashMap<FileId, Arc<Vec<usize>>>,
 
     // ── Single-pass token output accumulators ──────────────────────────
     /// Concatenated raw preprocessed text (no normalization), for raw_src.
@@ -200,9 +200,9 @@ pub struct Preprocessor {
     /// Final token stream with spans resolved to original source positions.
     pub(super) output_tokens: Vec<Spanned<Token>>,
     /// Source file registry for diagnostics.
-    pub(super) source_files: HashMap<FileId, SourceFile>,
+    pub(super) source_files: FxHashMap<FileId, SourceFile>,
     /// Path → FileId lookup.
-    pub(super) file_index: HashMap<PathBuf, FileId>,
+    pub(super) file_index: FxHashMap<PathBuf, FileId>,
     /// Rewrite boundary map for the main source file.
     pub(super) main_rewrite_boundaries: Vec<usize>,
     /// Tokenizer warnings, accumulated during emission.
@@ -225,20 +225,20 @@ impl Preprocessor {
             isystem_include_paths: Vec::new(),
             system_include_paths: Vec::new(),
             include_stack: Vec::new(),
-            pragma_once_files: HashSet::new(),
+            pragma_once_files: FxHashSet::default(),
             pending_injections: Vec::new(),
-            macro_save_stack: HashMap::new(),
-            include_resolve_cache: HashMap::new(),
-            include_guard_macros: HashMap::new(),
-            directive_expanding: HashSet::new(),
+            macro_save_stack: FxHashMap::default(),
+            include_resolve_cache: FxHashMap::default(),
+            include_guard_macros: FxHashMap::default(),
+            directive_expanding: FxHashSet::default(),
             effective_line: 1,
             line_span_file: None,
             line_token_remap: None,
-            line_tables: HashMap::new(),
+            line_tables: FxHashMap::default(),
             raw_text: String::new(),
             output_tokens: Vec::new(),
-            source_files: HashMap::new(),
-            file_index: HashMap::new(),
+            source_files: FxHashMap::default(),
+            file_index: FxHashMap::default(),
             main_rewrite_boundaries: Vec::new(),
             lexer_warnings: Vec::new(),
             lexer_errors: Vec::new(),
@@ -289,7 +289,7 @@ impl Preprocessor {
             self.effective_line = 1;
         }
         let mut pending = PendingExpansion::default();
-        let mut expanding = HashSet::new();
+        let mut expanding = FxHashSet::default();
         let mut next_line = self.effective_line;
 
         for slice in self.logical_slices(source) {
@@ -398,7 +398,7 @@ impl Preprocessor {
         slice: &LogicalSlice,
         slice_line: u64,
         pending: &mut PendingExpansion,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         _next_line: &mut u64,
     ) {
         if pending.is_empty() {
@@ -454,7 +454,7 @@ impl Preprocessor {
     fn expand_pending_with_lines(
         &mut self,
         pending: &PendingExpansion,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
     ) -> String {
         // For pending groups we need per-slice line numbers for __LINE__.
         // Do a pre-replacement of top-level __LINE__ occurrences using the
@@ -549,7 +549,7 @@ impl Preprocessor {
         b.is_ascii_alphanumeric() || b == b'_'
     }
 
-    fn flush_pending(&mut self, pending: &mut PendingExpansion, expanding: &mut HashSet<String>) {
+    fn flush_pending(&mut self, pending: &mut PendingExpansion, expanding: &mut FxHashSet<String>) {
         if pending.is_empty() {
             return;
         }
@@ -1266,7 +1266,7 @@ impl Preprocessor {
             return;
         }
 
-        let files: HashMap<FileId, (String, Arc<str>)> = self
+        let files: FxHashMap<FileId, (String, Arc<str>)> = self
             .source_files
             .iter()
             .map(|(id, file)| (*id, (file.path.display().to_string(), file.source.clone())))
@@ -1910,11 +1910,11 @@ fn should_skip_file(path: &Path) -> bool {
 }
 
 fn global_file_id(path: &Path) -> FileId {
-    static FILE_IDS: OnceLock<Mutex<HashMap<PathBuf, FileId>>> = OnceLock::new();
+    static FILE_IDS: OnceLock<Mutex<FxHashMap<PathBuf, FileId>>> = OnceLock::new();
     static NEXT_FILE_ID: AtomicU32 = AtomicU32::new(0);
 
     let mut guard = FILE_IDS
-        .get_or_init(|| Mutex::new(HashMap::new()))
+        .get_or_init(|| Mutex::new(FxHashMap::default()))
         .lock()
         .unwrap();
     if let Some(file_id) = guard.get(path).copied() {

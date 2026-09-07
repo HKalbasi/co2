@@ -1,9 +1,5 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    rc::Rc,
-    sync::Arc,
-};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use co2_ast::{
     Declaration, DeclarationSpecifier, Declarator, DoTransform as _, EnumSpecifier, Expression,
@@ -177,25 +173,25 @@ pub struct LocalResolverBase {
         InitDeclarator<LocalResolver>,
         co2_ast::Span,
     )>,
-    pub pending_extern: HashMap<String, PendingExtern>,
+    pub pending_extern: FxHashMap<String, PendingExtern>,
     pub foreign_mod: DefId,
-    pub array_len_consts: HashMap<usize, RegisteredArrayLenConst>,
-    pub array_len_const_exprs: HashMap<usize, co2_ast::Spanned<Expression<LocalResolver>>>,
+    pub array_len_consts: FxHashMap<usize, RegisteredArrayLenConst>,
+    pub array_len_const_exprs: FxHashMap<usize, co2_ast::Spanned<Expression<LocalResolver>>>,
     pub hir_ctx: &'static HirStructureCtx<'static>,
     pub file_id: FileId,
     pub preprocessed: Arc<PreprocessedSource>,
-    pub file_ids: Arc<HashMap<co2_ast::FileId, FileId>>,
+    pub file_ids: Arc<FxHashMap<co2_ast::FileId, FileId>>,
     pub(crate) struct_manager: StructManager,
-    pub(crate) unrepresentable_typedefs: HashMap<String, CTy>,
-    pub(crate) typedef_tys: HashMap<DefId, HirTy>,
-    pub(crate) transparent_unions: HashSet<DefId>,
-    pub(crate) global_value_tys: HashMap<DefId, HirTy>,
+    pub(crate) unrepresentable_typedefs: FxHashMap<String, CTy>,
+    pub(crate) typedef_tys: FxHashMap<DefId, HirTy>,
+    pub(crate) transparent_unions: FxHashSet<DefId>,
+    pub(crate) global_value_tys: FxHashMap<DefId, HirTy>,
     pub(crate) global_struct_tags: Rc<RefCell<StructAndEnumData>>,
     pub(crate) global_locals: Rc<RefCell<im::HashMap<String, (DefOrLocal, TypeQueryResult)>>>,
-    pub(crate) enum_const_values: HashMap<DefId, i128>,
-    pub(crate) enum_const_defs: HashMap<DefId, DefId>,
-    pub(crate) constexpr_def_exprs: HashMap<DefId, co2_ast::Spanned<Expression<LocalResolver>>>,
-    pub(crate) constexpr_local_exprs: HashMap<u32, co2_ast::Spanned<Expression<LocalResolver>>>,
+    pub(crate) enum_const_values: FxHashMap<DefId, i128>,
+    pub(crate) enum_const_defs: FxHashMap<DefId, DefId>,
+    pub(crate) constexpr_def_exprs: FxHashMap<DefId, co2_ast::Spanned<Expression<LocalResolver>>>,
+    pub(crate) constexpr_local_exprs: FxHashMap<u32, co2_ast::Spanned<Expression<LocalResolver>>>,
 }
 
 impl std::fmt::Debug for LocalResolverBase {

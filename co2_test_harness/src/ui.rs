@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Output;
@@ -56,7 +56,7 @@ pub fn check_ui(
     mode: Mode,
     output: &Output,
     span_expectations: &[UiSpanExpectation],
-    sources: HashMap<String, String>,
+    sources: FxHashMap<String, String>,
 ) -> Result<()> {
     if output.status.success() {
         bail!("UI test unexpectedly succeeded");
@@ -151,7 +151,7 @@ pub fn check_compile_warnings(
     output: &Output,
     span_expectations: &[UiSpanExpectation],
     directive_expectations: &[String],
-    sources: HashMap<String, String>,
+    sources: FxHashMap<String, String>,
 ) -> Result<()> {
     if !output.status.success() {
         return Ok(());

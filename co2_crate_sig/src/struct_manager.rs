@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 
 use co2_ast::{
     DeclarationSpecifier, Declarator, EnumSpecifier, Enumerator, Expression, Spanned,
@@ -69,8 +69,8 @@ pub(crate) struct PendingEnum {
 
 #[derive(Debug, Default)]
 pub(crate) struct StructManager {
-    pub(crate) definitions: HashMap<DefId, StructData>,
-    pub(crate) enum_defs: HashSet<DefId>,
+    pub(crate) definitions: FxHashMap<DefId, StructData>,
+    pub(crate) enum_defs: FxHashSet<DefId>,
     pub(crate) pending_enum_consts: Vec<PendingEnum>,
     /// Stack of pushed pack alignments (`None` = default).
     pub(crate) pack_stack: Vec<Option<u32>>,

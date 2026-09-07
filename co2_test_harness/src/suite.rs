@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -190,9 +190,9 @@ fn run_test(
 fn collect_compile_annotations(
     test: &TestCase,
     mode: Mode,
-) -> Result<(Vec<UiSpanExpectation>, HashMap<String, String>)> {
+) -> Result<(Vec<UiSpanExpectation>, FxHashMap<String, String>)> {
     let mut annotations = Vec::new();
-    let mut sources = HashMap::new();
+    let mut sources = FxHashMap::default();
     sources.insert(
         test.path
             .file_name()
@@ -629,7 +629,7 @@ fn check_miri_error(
     test: &TestCase,
     output: &Output,
     span_expectations: &[UiSpanExpectation],
-    sources: HashMap<String, String>,
+    sources: FxHashMap<String, String>,
 ) -> Result<()> {
     if output.status.success() {
         bail!("miri-error test unexpectedly succeeded");

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ impl Mode {
 pub struct TestCase {
     pub path: PathBuf,
     pub kind: TestKind,
-    pub directives: HashMap<String, Vec<String>>,
+    pub directives: FxHashMap<String, Vec<String>>,
     pub source: String,
 }
 
@@ -105,7 +105,7 @@ pub fn collect_examples(root: &Path, filters: &[String]) -> Result<Vec<TestCase>
             _ => continue,
         };
 
-        let mut directives = HashMap::new();
+        let mut directives = FxHashMap::default();
         directives.insert("mode".to_string(), vec![mode.to_string()]);
         directives.insert("run-status".to_string(), vec!["0".to_string()]);
 
@@ -206,10 +206,10 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     inner(pattern.as_bytes(), text.as_bytes())
 }
 
-pub fn parse_directives(path: &Path) -> Result<HashMap<String, Vec<String>>> {
+pub fn parse_directives(path: &Path) -> Result<FxHashMap<String, Vec<String>>> {
     let src = fs::read_to_string(path)
         .with_context(|| format!("failed to read test source {}", path.display()))?;
-    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut map: FxHashMap<String, Vec<String>> = FxHashMap::default();
 
     for line in src.lines() {
         let line = line.trim_start();

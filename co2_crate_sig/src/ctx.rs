@@ -1,4 +1,5 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
+use rustc_data_structures::fx::FxHashMap;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use rustc_public_generative::{
     DefData, FileId, HirModuleItem, HirStructureCtx, rustc_public::DefId,
@@ -8,12 +9,12 @@ use crate::{LocalResolverBase, MirOwnerInfo, resolver::ResolveError};
 
 pub(crate) struct CrateSigCtx<'a> {
     pub(crate) hir_ctx: &'a HirStructureCtx<'a>,
-    pub(crate) file_ids: Arc<HashMap<co2_ast::FileId, FileId>>,
+    pub(crate) file_ids: Arc<FxHashMap<co2_ast::FileId, FileId>>,
     pub(crate) resolver: Rc<RefCell<LocalResolverBase>>,
     pub(crate) clone_trait: DefId,
     pub(crate) clone_trait_fn: DefId,
     pub(crate) copy_trait: DefId,
-    pub(crate) mir_owners: HashMap<DefId, MirOwnerInfo>,
+    pub(crate) mir_owners: FxHashMap<DefId, MirOwnerInfo>,
     pub(crate) hir_items: Vec<HirModuleItem>,
 }
 

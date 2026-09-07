@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 
 use co2_ast::{CompoundStatement, Spanned};
 use co2_crate_sig::{LocalResolver, WellknownDefs};
@@ -87,7 +87,7 @@ pub fn lower_static_body_for_ty(
 ) -> HirBody {
     let body_span = hir_ctx.to_rust_span(parser_span);
     let mut locals = Arena::new();
-    let mut local_map: HashMap<usize, LocalId> = HashMap::new();
+    let mut local_map: FxHashMap<usize, LocalId> = FxHashMap::default();
     locals.alloc(HirLocal {
         name: "_ret".to_owned(),
         ty: target_ty,
@@ -139,7 +139,7 @@ pub fn infer_array_len_from_initializer(
     hir_ctx: &HirCtx<'_>,
 ) -> u64 {
     let mut locals = Arena::new();
-    let mut local_map: HashMap<usize, LocalId> = HashMap::new();
+    let mut local_map: FxHashMap<usize, LocalId> = FxHashMap::default();
     infer_array_len_from_initializer_in_scope(
         (initializer, parser_span),
         elem_ty,
@@ -154,7 +154,7 @@ pub(crate) fn infer_array_len_from_initializer_in_scope(
     elem_ty: Ty,
     hir_ctx: &HirCtx<'_>,
     locals: &mut Arena<HirLocal>,
-    local_map: &mut HashMap<usize, LocalId>,
+    local_map: &mut FxHashMap<usize, LocalId>,
 ) -> u64 {
     let fake_ty = Ty::from_rigid_kind(RigidTy::Array(
         elem_ty,
@@ -179,7 +179,7 @@ pub fn eval_usize_initializer(
 ) -> u64 {
     let target_ty = Ty::usize_ty();
     let mut locals = Arena::new();
-    let mut local_map: HashMap<usize, LocalId> = HashMap::new();
+    let mut local_map: FxHashMap<usize, LocalId> = FxHashMap::default();
     let tree = hir_ctx.lower_to_initializer_tree(
         target_ty,
         (initializer, parser_span),
@@ -303,7 +303,7 @@ impl HirCtx<'_> {
         let body_span = self.to_rust_span(parser_span);
         let mut locals = Arena::new();
         let mut params = Vec::new();
-        let mut local_map: HashMap<usize, LocalId> = HashMap::new();
+        let mut local_map: FxHashMap<usize, LocalId> = FxHashMap::default();
 
         locals.alloc(HirLocal {
             name: "_ret".to_owned(),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 
 use co2_ast::{
     BinOp as ParsedBinOp, CompoundStatement, ForInit, Statement, StatementOrDeclaration,
@@ -38,7 +38,7 @@ impl HirCtx<'_> {
         compound: CompoundStatement<LocalResolver>,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) {
         let mut body_stmts = Vec::new();
         for (stmt_or_decl, _) in compound.statements {
@@ -78,7 +78,7 @@ impl HirCtx<'_> {
         parser_span: co2_ast::Span,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) {
         let span = self.to_rust_span(parser_span);
         match stmt {

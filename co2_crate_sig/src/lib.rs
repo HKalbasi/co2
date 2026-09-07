@@ -1,5 +1,7 @@
 #![feature(rustc_private)]
 
+extern crate rustc_data_structures;
+
 mod ast_resolver;
 mod attr;
 mod ctx;

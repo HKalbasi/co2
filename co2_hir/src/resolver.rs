@@ -1,10 +1,10 @@
 use co2_crate_sig::{LocalResolver, WellknownDefs};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
     ty::{FnDef, GenericArgKind, GenericArgs, RigidTy, Span as RustSpan, Ty, TyKind},
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
 
 use la_arena::Arena;
 
@@ -62,7 +62,7 @@ pub struct HirCtx<'a> {
     span_converter: &'a dyn Fn(ParserSpan) -> RustSpan,
     rust_span_converter: &'a dyn Fn(RustSpan) -> ParserSpan,
     labels: RefCell<Arena<HirLabel>>,
-    named_labels: RefCell<HashMap<String, LabelId>>,
+    named_labels: RefCell<FxHashMap<String, LabelId>>,
     continue_labels: RefCell<Vec<LabelId>>,
     break_labels: RefCell<Vec<LabelId>>,
     switch_scopes: RefCell<Vec<SwitchScope>>,
@@ -87,7 +87,7 @@ impl<'a> HirCtx<'a> {
             span_converter,
             rust_span_converter,
             labels: RefCell::new(Arena::new()),
-            named_labels: RefCell::new(HashMap::new()),
+            named_labels: RefCell::new(FxHashMap::default()),
             continue_labels: RefCell::new(Vec::new()),
             break_labels: RefCell::new(Vec::new()),
             switch_scopes: RefCell::new(Vec::new()),

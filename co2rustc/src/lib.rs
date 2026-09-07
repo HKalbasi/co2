@@ -1,13 +1,13 @@
 #![feature(rustc_private)]
 
 extern crate rustc_ast;
+extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_span;
 
 mod detect;
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -353,7 +353,7 @@ fn dump_ast_tree_for_file(
         co2_parser::parse_translation_unit(&filename, &preprocessed, StatelessResolver::new());
 
     let cwd = std::env::current_dir().ok();
-    let file_names: HashMap<co2_ast::FileId, String> = preprocessed
+    let file_names: rustc_data_structures::fx::FxHashMap<co2_ast::FileId, String> = preprocessed
         .files()
         .iter()
         .map(|(id, file)| {

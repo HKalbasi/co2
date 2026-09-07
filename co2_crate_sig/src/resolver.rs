@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use std::fmt;
 
 use co2_ast::{
@@ -37,7 +37,7 @@ impl Default for ModuleData {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ModuleContent {
     pub id: Option<(DefId, TypeQueryResult)>,
-    pub items: HashMap<String, ModuleData>,
+    pub items: FxHashMap<String, ModuleData>,
 }
 
 #[derive(Debug, Clone)]
@@ -221,8 +221,8 @@ impl ModuleData {
                 );
             }
         }
-        let mut function_type_aliases: HashSet<String> = HashSet::new();
-        let mut function_def_names: HashSet<String> = HashSet::new();
+        let mut function_type_aliases: FxHashSet<String> = FxHashSet::default();
+        let mut function_def_names: FxHashSet<String> = FxHashSet::default();
         for (item, _) in &ast.items {
             match item {
                 Declaration::FunctionDefinition { signature, .. } => {
@@ -409,8 +409,8 @@ fn anchored_module_prefix<'a>(
 
 #[derive(Debug)]
 pub struct Resolver {
-    method_receivers: HashMap<DefId, ModuleData>,
-    dependencies: HashMap<String, ModuleData>,
+    method_receivers: FxHashMap<DefId, ModuleData>,
+    dependencies: FxHashMap<String, ModuleData>,
     current: ModuleData,
     scoped_traits: Vec<ScopedTrait>,
     hir_ctx: &'static HirStructureCtx<'static>,
@@ -432,8 +432,8 @@ impl Resolver {
     ) -> Self {
         let hir_ctx = ctx;
         let mut this = Self {
-            method_receivers: HashMap::new(),
-            dependencies: HashMap::new(),
+            method_receivers: FxHashMap::default(),
+            dependencies: FxHashMap::default(),
             current: ModuleData::default(),
             scoped_traits: Vec::new(),
             hir_ctx,
@@ -960,7 +960,7 @@ impl Resolver {
         method: &str,
     ) -> Vec<(String, DefId, String)> {
         let mut out = Vec::new();
-        let mut seen_paths: HashSet<&str> = HashSet::new();
+        let mut seen_paths: FxHashSet<&str> = FxHashSet::default();
         let info = self.dep_info();
         for scoped_trait in &self.scoped_traits {
             if !seen_paths.insert(scoped_trait.path.as_str()) {
@@ -1025,7 +1025,7 @@ impl Resolver {
         Self::collect_method_receivers(&self.current, &mut self.method_receivers);
     }
 
-    fn collect_method_receivers(module: &ModuleData, out: &mut HashMap<DefId, ModuleData>) {
+    fn collect_method_receivers(module: &ModuleData, out: &mut FxHashMap<DefId, ModuleData>) {
         let content = match module {
             ModuleData::Expanded(c) => c,
             ModuleData::Unexpanded(_) => return,

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use rustc_data_structures::fx::FxHashMap;
+use std::collections::BTreeMap;
 
 use co2_ast::{
     BinOp as ParsedBinOp, CharPrefix, Constant, DoTransform as _, Expression, GenericAssociation,
@@ -718,7 +719,7 @@ impl HirCtx<'_> {
         params: &[Spanned<Expression<LocalResolver>>],
         error_span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<Vec<HirExpr>, (co2_ast::Span, String)> {
         let mut lowered_args = Vec::with_capacity(params.len() + 1);
         let receiver = if let Some(adjustment) = adjustment {
@@ -754,7 +755,7 @@ impl HirCtx<'_> {
         generics: &[Spanned<RustTy<co2_ast::StatelessResolver>>],
         params: &[Spanned<Expression<LocalResolver>>],
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<HirExpr, (co2_ast::Span, String)> {
         let method_def = resolved_method.def_id;
         let fn_def = rustc_public_generative::rustc_public::ty::FnDef(method_def);
@@ -995,7 +996,7 @@ impl HirCtx<'_> {
         func: &Spanned<Expression<LocalResolver>>,
         params: &[Spanned<Expression<LocalResolver>>],
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<
         Option<(
             HirExpr,
@@ -1102,7 +1103,7 @@ impl HirCtx<'_> {
         func: &Spanned<Expression<LocalResolver>>,
         params: &[Spanned<Expression<LocalResolver>>],
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<
         Option<(
             HirExpr,
@@ -1329,7 +1330,7 @@ impl HirCtx<'_> {
         initializer: &Spanned<Initializer<LocalResolver>>,
         parser_span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<Ty, (co2_ast::Span, String)> {
         match self.lower_type_name_cty_with_scope(
             type_name,
@@ -1375,7 +1376,7 @@ impl HirCtx<'_> {
         &self,
         (expr, parser_span): Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<HirExpr, (co2_ast::Span, String)> {
         let span = self.to_rust_span(parser_span);
         match expr {
@@ -3619,7 +3620,7 @@ impl HirCtx<'_> {
         &self,
         expr: Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, la_arena::Idx<HirLocal>>,
+        local_map: &mut FxHashMap<usize, la_arena::Idx<HirLocal>>,
     ) -> Result<HirExpr, (co2_ast::Span, String)> {
         let parser_span = expr.1;
         let expr = self.lower_expr(expr, locals, local_map)?;

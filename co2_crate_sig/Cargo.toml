@@ -12,3 +12,6 @@ co2_parser = { path = "../co2_parser" }
 co2_preprocessor = { path = "../co2_preprocessor" }
 im = "15.1.0"
 rustc_public_generative = { path = "../rustc_public_generative" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use rustc_data_structures::fx::FxHashSet;
 
 use co2_ast::{
     BinOp, CharPrefix, Constant, DeclarationSpecifier, Declarator, Expression, GenericAssociation,
@@ -713,7 +713,7 @@ impl LocalResolverBase {
     }
 
     pub(crate) fn peel_constexpr_typedef(&self, mut ty: HirTy) -> HirTy {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = FxHashSet::default();
         loop {
             let HirTyKind::Adt(def, _) = ty.kind else {
                 return ty;
@@ -1864,7 +1864,7 @@ impl LocalResolverBase {
     }
 
     fn peel_typedefs_for_sizeof(&self, mut ty: HirTy) -> HirTy {
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         loop {
             let HirTyKind::Adt(def, _) = ty.kind else {
                 return ty;

@@ -13,8 +13,8 @@
 //! ASCII, this is safe and correct. UTF-8 multi-byte sequences in string/char
 //! literals are copied verbatim without interpretation.
 
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
 
 use super::macro_token::{MacroBodyToken, resolve_params, tokenize_macro_body};
 use super::utils::{
@@ -95,7 +95,7 @@ fn strip_blue_paint(s: &str) -> std::borrow::Cow<'_, str> {
 /// Stores all macro definitions and handles expansion.
 #[derive(Debug, Clone)]
 pub struct MacroTable {
-    macros: HashMap<String, MacroDef>,
+    macros: FxHashMap<String, MacroDef>,
     /// Counter for the __COUNTER__ built-in macro. Increments on each expansion.
     counter: Cell<usize>,
 }
@@ -103,7 +103,7 @@ pub struct MacroTable {
 impl MacroTable {
     pub fn new() -> Self {
         Self {
-            macros: HashMap::new(),
+            macros: FxHashMap::default(),
             counter: Cell::new(0),
         }
     }
@@ -171,15 +171,15 @@ impl MacroTable {
     /// Expand macros in a line of text.
     /// Returns the expanded text.
     pub fn expand_line(&self, line: &str) -> String {
-        let mut expanding = HashSet::new();
+        let mut expanding = FxHashSet::default();
         self.expand_line_reuse(line, &mut expanding)
     }
 
     /// Expand macros in a line of text, reusing the provided `expanding` set.
-    /// The set is cleared before use. This avoids allocating a new HashSet
+    /// The set is cleared before use. This avoids allocating a new FxHashSet
     /// for every line (the previous per-line allocation was a measurable
     /// overhead when preprocessing kernel headers with thousands of lines).
-    pub fn expand_line_reuse(&self, line: &str, expanding: &mut HashSet<String>) -> String {
+    pub fn expand_line_reuse(&self, line: &str, expanding: &mut FxHashSet<String>) -> String {
         self.expand_line_with_line(line, 1, expanding)
     }
 
@@ -188,7 +188,7 @@ impl MacroTable {
         &self,
         line: &str,
         line_number: u64,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
     ) -> String {
         expanding.clear();
         let result = self.expand_text_with_line(line, line_number, expanding);
@@ -236,7 +236,7 @@ impl MacroTable {
         mut expanded: String,
         bytes: &[u8],
         mut i: usize,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         line_number: u64,
     ) -> (String, usize) {
         let len = bytes.len();
@@ -282,7 +282,7 @@ impl MacroTable {
         expanded: &str,
         bytes: &[u8],
         i: usize,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         line_number: u64,
     ) -> Option<(String, usize)> {
         let len = bytes.len();
@@ -323,7 +323,7 @@ impl MacroTable {
         &self,
         text: &str,
         line_number: u64,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
     ) -> String {
         let mut result = String::with_capacity(text.len());
         let bytes = text.as_bytes();
@@ -410,7 +410,7 @@ impl MacroTable {
         bytes: &[u8],
         start: usize,
         result: &mut String,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         line_number: u64,
     ) -> usize {
         let len = bytes.len();
@@ -538,7 +538,7 @@ impl MacroTable {
         ident: &str,
         mac: &MacroDef,
         result: &mut String,
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         line_number: u64,
     ) -> usize {
         let len = bytes.len();
@@ -773,7 +773,7 @@ impl MacroTable {
         &self,
         mac: &MacroDef,
         args: &[String],
-        expanding: &mut HashSet<String>,
+        expanding: &mut FxHashSet<String>,
         line_number: u64,
     ) -> (String, bool) {
         // Step 1-2: Prescan - expand ALL arguments (C11 §6.10.3.1).

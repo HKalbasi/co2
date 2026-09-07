@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 
 use co2_ast::{
     Constant, Declaration, DeclarationSpecifier, Declarator, Expression, InitDeclarator,
@@ -539,7 +539,7 @@ impl HirCtx<'_> {
         decl: Declaration<LocalResolver>,
         out: &mut Vec<HirStmt>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<(), (co2_ast::Span, String)> {
         match decl {
             Declaration::FunctionDefinition { .. } => Err(spanned_error(
@@ -856,7 +856,7 @@ impl HirCtx<'_> {
         declaration_specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         declarator: Spanned<Declarator<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<(Spanned<(usize, String)>, CTy), (co2_ast::Span, String)> {
         let span = declarator.1;
         let base =
@@ -877,7 +877,7 @@ impl HirCtx<'_> {
         declaration_specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         declarator: Spanned<Declarator<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> (Spanned<(usize, String)>, CTy) {
         match self.try_lower_value_decl_type(declaration_specifiers, declarator, locals, local_map)
         {
@@ -891,7 +891,7 @@ impl HirCtx<'_> {
         type_name: TypeName<LocalResolver>,
         span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<Ty, (co2_ast::Span, String)> {
         match self.lower_type_name_cty_with_scope(type_name, span, Some((locals, local_map)))? {
             CTy::Ty(ty) => Ok(ty),
@@ -910,7 +910,7 @@ impl HirCtx<'_> {
         ty2: TypeName<LocalResolver>,
         span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<bool, (co2_ast::Span, String)> {
         let ty1 =
             self.lower_type_name_cty_with_scope(ty1, span, Some((&mut *locals, &mut *local_map)))?;
@@ -922,7 +922,7 @@ impl HirCtx<'_> {
         &self,
         type_name: TypeName<LocalResolver>,
         span: co2_ast::Span,
-        mut typeof_scope: Option<(&mut Arena<HirLocal>, &mut HashMap<usize, LocalId>)>,
+        mut typeof_scope: Option<(&mut Arena<HirLocal>, &mut FxHashMap<usize, LocalId>)>,
     ) -> Result<CTy, (co2_ast::Span, String)> {
         let specifiers = type_name
             .specifier_qualifier_list
@@ -968,7 +968,7 @@ impl HirCtx<'_> {
         &self,
         expr: &Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<CTy, (co2_ast::Span, String)> {
         let ty = self.type_of_expr_for_sizeof(expr, locals, local_map)?;
         match ty.kind() {
@@ -997,7 +997,7 @@ impl HirCtx<'_> {
         specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         span: co2_ast::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> (CTy, Vec<Spanned<DeclarationSpecifier<LocalResolver>>>) {
         self.base_ty_of_decl_with_scope(specifiers, span, Some((locals, local_map)))
     }
@@ -1006,7 +1006,7 @@ impl HirCtx<'_> {
         &self,
         specifiers: Vec<Spanned<DeclarationSpecifier<LocalResolver>>>,
         span: co2_ast::Span,
-        mut typeof_scope: Option<(&mut Arena<HirLocal>, &mut HashMap<usize, LocalId>)>,
+        mut typeof_scope: Option<(&mut Arena<HirLocal>, &mut FxHashMap<usize, LocalId>)>,
     ) -> (CTy, Vec<Spanned<DeclarationSpecifier<LocalResolver>>>) {
         let specifier = match CompressedTypeSpecifier::build(specifiers.clone()) {
             Ok(s) => s,
@@ -1082,7 +1082,7 @@ impl HirCtx<'_> {
         &self,
         expr: &Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<usize, (co2_ast::Span, String)> {
         let value = self.eval_const_expr_in_scope(expr, locals, local_map)?;
         usize::try_from(value).map_err(|_| {
@@ -1097,7 +1097,7 @@ impl HirCtx<'_> {
         &self,
         (expr, span): &Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<i128, (co2_ast::Span, String)> {
         match expr {
             Expression::Constant(Constant::Int(v, _)) => Ok(*v),
@@ -1306,7 +1306,7 @@ impl HirCtx<'_> {
         &self,
         expr: &Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<u64, (co2_ast::Span, String)> {
         if let Expression::Constant(Constant::String(s)) = &expr.0 {
             return Ok(s.storage_size() as u64);
@@ -1319,7 +1319,7 @@ impl HirCtx<'_> {
         &self,
         expr: &Spanned<Expression<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
     ) -> Result<Ty, (co2_ast::Span, String)> {
         let result = self.lower_expr(expr.clone(), locals, local_map)?;
         Ok(result.ty)
@@ -1480,7 +1480,7 @@ impl HirCtx<'_> {
         current: CTy,
         current_const: bool,
         (decl, span): Spanned<Declarator<LocalResolver>>,
-        mut scope: Option<(&mut Arena<HirLocal>, &mut HashMap<usize, LocalId>)>,
+        mut scope: Option<(&mut Arena<HirLocal>, &mut FxHashMap<usize, LocalId>)>,
     ) -> Result<(CTy, Option<Spanned<(usize, String)>>), (co2_ast::Span, String)> {
         match decl {
             Declarator::Abstract => Ok((current, None)),
@@ -1632,7 +1632,7 @@ impl HirCtx<'_> {
                                 self.eval_array_len_expr_in_scope(&expr, locals, local_map)
                             } else {
                                 let mut locals = Arena::new();
-                                let mut local_map = HashMap::new();
+                                let mut local_map = FxHashMap::default();
                                 self.eval_array_len_expr_in_scope(
                                     &expr,
                                     &mut locals,

@@ -10,3 +10,6 @@ workspace = true
 annotate-snippets = "0.12"
 itertools = "0.14.0"
 serde_json = "1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use std::collections::BTreeMap;
 
 use co2_hir::{HirBody, LabelId, LocalId, LocalResolver, WellknownDefs};
 use rustc_public_generative as rustc_gen;
@@ -30,7 +31,7 @@ pub fn build_mir_for_body(
     let span = body.span;
 
     let mut locals = Vec::with_capacity(body.locals.len());
-    let mut local_indices = HashMap::new();
+    let mut local_indices = FxHashMap::default();
     for (idx, (local_id, local)) in body.locals.iter().enumerate() {
         let ty = ctx.normalize_ty_defaults(local.ty);
         locals.push(MirLocalDecl {
@@ -41,14 +42,14 @@ pub fn build_mir_for_body(
         local_indices.insert(local_id, idx);
     }
 
-    let param_indices: HashSet<usize> = body
+    let param_indices: FxHashSet<usize> = body
         .params
         .iter()
         .map(|param_id| local_indices[param_id])
         .collect();
 
     let mut var_debug_info = Vec::new();
-    let mut local_vdi_map = HashMap::new();
+    let mut local_vdi_map = FxHashMap::default();
     for (idx, (_, local)) in body.locals.iter().enumerate() {
         if local.name == "_ret" || local.name.starts_with("__co2_") {
             continue;
@@ -83,7 +84,7 @@ pub fn build_mir_for_body(
         extra_locals: Vec::new(),
         blocks: Vec::new(),
         stmts: Vec::new(),
-        label_blocks: HashMap::new(),
+        label_blocks: FxHashMap::default(),
         label_discriminants: body
             .labels
             .iter()
@@ -177,20 +178,20 @@ pub(crate) struct Builder<'ctx, 'tcx> {
     pub(crate) owner: DefId,
     pub(crate) decl_resolver: Option<co2_hir::LocalResolver>,
     pub(crate) wellknown_defs: WellknownDefs,
-    pub(crate) local_indices: HashMap<LocalId, usize>,
+    pub(crate) local_indices: FxHashMap<LocalId, usize>,
     pub(crate) locals: Vec<MirLocalDecl>,
     pub(crate) extra_locals: Vec<MirLocalDecl>,
     pub(crate) blocks: Vec<rustc_gen::rustc_public::mir::BasicBlock>,
     pub(crate) stmts: Vec<rustc_gen::rustc_public::mir::Statement>,
-    pub(crate) label_blocks: HashMap<LabelId, usize>,
-    pub(crate) label_discriminants: HashMap<LabelId, u128>,
+    pub(crate) label_blocks: FxHashMap<LabelId, usize>,
+    pub(crate) label_discriminants: FxHashMap<LabelId, u128>,
     pub(crate) pending_gotos: Vec<(usize, LabelId)>,
     pub(crate) pending_indirect_gotos: Vec<usize>,
     pub(crate) span: RustSpan,
     pub(crate) last_stmt_span: Option<RustSpan>,
     pub(crate) c_variadic_local: Option<usize>,
     pub(crate) var_debug_info: Vec<VarDebugInfo>,
-    pub(crate) local_vdi_map: HashMap<usize, usize>,
+    pub(crate) local_vdi_map: FxHashMap<usize, usize>,
     pub(crate) scope_stack: Vec<u32>,
     pub(crate) next_scope: u32,
 }

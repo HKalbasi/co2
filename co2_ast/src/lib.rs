@@ -1,3 +1,7 @@
+#![feature(rustc_private)]
+
+extern crate rustc_data_structures;
+
 use std::{
     ascii::escape_default,
     borrow::Cow,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 
 use co2_ast::{Designator, Expression, Initializer, InitializerItem, Span, Spanned};
 use co2_crate_sig::LocalResolver;
@@ -40,7 +40,7 @@ impl InitializerCursor {
         base_ty: Ty,
         span: rustc_public_generative::rustc_public::ty::Span,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
         grow_for_infer: bool,
     ) -> Result<Self, (co2_ast::Span, String)> {
         let mut current_ty = base_ty;
@@ -346,7 +346,7 @@ impl HirCtx<'_> {
         expected_ty: Ty,
         (initializer, span): Spanned<Initializer<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
         grow_for_infer: bool,
     ) -> InitializerTree {
         match self.try_lower_to_initializer_tree(
@@ -366,7 +366,7 @@ impl HirCtx<'_> {
         expected_ty: Ty,
         initializer: Spanned<Initializer<LocalResolver>>,
         locals: &mut Arena<HirLocal>,
-        local_map: &mut HashMap<usize, LocalId>,
+        local_map: &mut FxHashMap<usize, LocalId>,
         grow_for_infer: bool,
     ) -> Result<InitializerTree, (co2_ast::Span, String)> {
         let span = self.to_rust_span(initializer.1);

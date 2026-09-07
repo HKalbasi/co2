@@ -1,5 +1,5 @@
+use rustc_data_structures::fx::FxHashMap;
 use std::{
-    collections::HashMap,
     fmt::{Debug, Display},
     ops::Range,
     sync::{Mutex, OnceLock},
@@ -103,7 +103,7 @@ const INTERNED_TAG: u16 = u16::MAX;
 
 struct InternTable {
     data: Vec<SpanData>,
-    dedup: HashMap<SpanData, u32>,
+    dedup: FxHashMap<SpanData, u32>,
 }
 
 fn intern_table() -> &'static Mutex<InternTable> {
@@ -111,7 +111,7 @@ fn intern_table() -> &'static Mutex<InternTable> {
     TABLE.get_or_init(|| {
         Mutex::new(InternTable {
             data: Vec::new(),
-            dedup: HashMap::new(),
+            dedup: FxHashMap::default(),
         })
     })
 }

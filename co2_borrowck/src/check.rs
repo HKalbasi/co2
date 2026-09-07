@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use rustc_data_structures::fx::FxHashSet;
+
 use polonius_engine::{AllFacts, Atom};
 use rustc_public_generative::rustc_public::mir::{Body, RETURN_LOCAL, TerminatorKind};
 use rustc_public_generative::rustc_public::ty::{
@@ -343,7 +345,7 @@ fn collect_diagnostics(
     }
     // A leak can be reported at several return points of the same function;
     // keep a single warning per (span, message).
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = FxHashSet::default();
     warnings.retain(|w| seen.insert((w.span, w.message.clone())));
     warnings
 }

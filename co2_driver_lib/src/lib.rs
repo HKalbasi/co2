@@ -1,11 +1,12 @@
 #![feature(rustc_private)]
 
 extern crate rustc_ast;
+extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_middle;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use co2_hir::{
 };
 use co2_preprocessor::PreprocessedSource;
 use la_arena::Arena;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_public_generative::rustc_public::ty::IntTy;
 use rustc_public_generative::rustc_public::{
     CrateDefType, CrateItem, DefId,
@@ -53,7 +55,7 @@ pub struct Co2RustdocCallbacks {
 }
 
 struct Co2SourceMap {
-    files: Arc<HashMap<co2_ast::FileId, (String, Arc<str>)>>,
+    files: Arc<FxHashMap<co2_ast::FileId, (String, Arc<str>)>>,
 }
 
 fn pending_compile_cell() -> &'static Mutex<Option<PendingCompile>> {
@@ -72,9 +74,9 @@ pub fn set_borrowck_enabled() {
 
 struct Co2GeneratorState {
     file_id: rustc_gen::FileId,
-    file_ids: Arc<HashMap<co2_ast::FileId, rustc_gen::FileId>>,
-    reverse_file_ids: Arc<HashMap<rustc_gen::FileId, co2_ast::FileId>>,
-    pending_mirs: HashMap<DefId, MirOwnerInfo>,
+    file_ids: Arc<FxHashMap<co2_ast::FileId, rustc_gen::FileId>>,
+    reverse_file_ids: Arc<FxHashMap<rustc_gen::FileId, co2_ast::FileId>>,
+    pending_mirs: FxHashMap<DefId, MirOwnerInfo>,
     wellknown_defs: WellknownDefs,
 }
 
@@ -103,8 +105,10 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             .take()
             .expect("missing pending compile input");
 
-        let mut file_ids = HashMap::with_capacity(pending.preprocessed.files().len());
-        let mut source_files = HashMap::with_capacity(pending.preprocessed.files().len());
+        let mut file_ids = FxHashMap::default();
+        file_ids.reserve(pending.preprocessed.files().len());
+        let mut source_files = FxHashMap::default();
+        source_files.reserve(pending.preprocessed.files().len());
         for (co2_file_id, file) in pending.preprocessed.files() {
             file_ids.insert(
                 *co2_file_id,
@@ -153,7 +157,7 @@ impl rustc_gen::CrateGeneratorState for Co2GeneratorState {
             files: Arc::new(source_files),
         }));
 
-        let reverse_file_ids: HashMap<rustc_gen::FileId, co2_ast::FileId> =
+        let reverse_file_ids: FxHashMap<rustc_gen::FileId, co2_ast::FileId> =
             file_ids.iter().map(|(&k, &v)| (v, k)).collect();
         let reverse_file_ids = Arc::new(reverse_file_ids);
 
@@ -464,9 +468,10 @@ impl Co2GeneratorState {
             && len.eval_target_usize().is_err()
         {
             let len_span_converter = |span: co2_ast::Span| self.map_co2_span(ctx, span);
-            let len_rust_span_converter = |span: rustc_public_generative::rustc_public::ty::Span| {
-                self.map_rust_to_co2_span(ctx, span)
-            };
+            let len_rust_span_converter =
+                |span: rustc_public_generative::rustc_public::ty::Span| {
+                    self.map_rust_to_co2_span(ctx, span)
+                };
             let len_hir_ctx = HirCtx::new(
                 self.wellknown_defs,
                 &len_span_converter,

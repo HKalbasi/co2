@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_data_structures::fx::FxHashMap;
 use std::path::{Path, PathBuf};
 
 use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet, renderer::DecorStyle};
@@ -21,7 +21,7 @@ impl std::error::Error for TestError {}
 #[derive(Debug, Clone)]
 pub struct UiTestError {
     pub path: PathBuf,
-    pub sources: HashMap<String, String>,
+    pub sources: FxHashMap<String, String>,
     pub issues: Vec<UiTestIssue>,
 }
 
@@ -101,11 +101,7 @@ pub fn render_test_error(path: &Path, err: &TestError) {
             Snippet::source(source.as_str())
                 .path(name.as_str())
                 .line_start(1)
-                .annotation(
-                    AnnotationKind::Primary
-                        .span(start..end)
-                        .label(&err.message),
-                ),
+                .annotation(AnnotationKind::Primary.span(start..end).label(&err.message)),
         )];
         eprintln!(
             "{}",

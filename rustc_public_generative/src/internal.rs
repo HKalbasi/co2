@@ -12,7 +12,6 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -407,7 +406,7 @@ impl DefinedCrateInfo {
                 .and_then(|parent| my_def_id_to_rustc_def_id(tcx, parent).as_local())
                 .unwrap_or(crate_def)
         };
-        let is_pub_map: std::collections::HashMap<_, _> = self
+        let is_pub_map: FxHashMap<_, _> = self
             .items
             .iter()
             .map(|item| (item.def_id(), item.visibility))
@@ -1986,38 +1985,38 @@ pub fn allocate_def_id(
 }
 
 thread_local! {
-    static CACHE_TO: RefCell<HashMap<DefId, RustcDefId>> = RefCell::new(HashMap::new());
-    static CACHE_FROM: RefCell<HashMap<RustcDefId, DefId>> = RefCell::new(HashMap::new());
+    static CACHE_TO: RefCell<FxHashMap<DefId, RustcDefId>> = RefCell::new(FxHashMap::default());
+    static CACHE_FROM: RefCell<FxHashMap<RustcDefId, DefId>> = RefCell::new(FxHashMap::default());
     static DEF_DISAMBIGUATORS: RefCell<LocalDefIdMap<PerParentDisambiguatorState>> =
         RefCell::new(LocalDefIdMap::default());
 }
 
 fn my_def_id_to_rustc_def_id(tcx: TyCtxt<'_>, def_id: DefId) -> RustcDefId {
+    if let Some(r) = CACHE_TO.with_borrow(|ct| ct.get(&def_id).copied()) {
+        return r;
+    }
+    let r = rustc_public::rustc_internal::internal(tcx, def_id);
     CACHE_TO.with_borrow_mut(|ct| {
-        CACHE_FROM.with_borrow_mut(|cf| {
-            if let Some(r) = ct.get(&def_id) {
-                return *r;
-            }
-            let r = rustc_public::rustc_internal::internal(tcx, def_id);
-            ct.insert(def_id, r);
-            cf.insert(r, def_id);
-            r
-        })
-    })
+        ct.insert(def_id, r);
+    });
+    CACHE_FROM.with_borrow_mut(|cf| {
+        cf.insert(r, def_id);
+    });
+    r
 }
 
 fn rustc_def_to_my_def(_tcx: TyCtxt<'_>, def_id: RustcDefId) -> DefId {
+    if let Some(r) = CACHE_FROM.with_borrow(|cf| cf.get(&def_id).copied()) {
+        return r;
+    }
+    let r = rustc_public::rustc_internal::stable(def_id);
+    CACHE_FROM.with_borrow_mut(|cf| {
+        cf.insert(def_id, r);
+    });
     CACHE_TO.with_borrow_mut(|ct| {
-        CACHE_FROM.with_borrow_mut(|cf| {
-            if let Some(r) = cf.get(&def_id) {
-                return *r;
-            }
-            let r = rustc_public::rustc_internal::stable(def_id);
-            cf.insert(def_id, r);
-            ct.insert(r, def_id);
-            r
-        })
-    })
+        ct.insert(r, def_id);
+    });
+    r
 }
 
 impl<S: CrateGeneratorState> GenerateCallbacks<S> {
@@ -4038,8 +4037,8 @@ fn augment_resolutions_with_items(
     items: &[DefinedItemInfo],
     tcx: TyCtxt<'_>,
 ) {
-    let mut module_children: HashMap<LocalDefId, Vec<rustc_middle::metadata::ModChild>> =
-        HashMap::new();
+    let mut module_children: FxHashMap<LocalDefId, Vec<rustc_middle::metadata::ModChild>> =
+        FxHashMap::default();
     for item in items {
         let Some(local_def_id) = my_def_id_to_rustc_def_id(tcx, item.def_id()).as_local() else {
             continue;
@@ -4111,8 +4110,8 @@ fn augment_resolutions_with_items(
     }
 
     // Build a parent-to-children index for resolving intra-doc links.
-    let mut children_by_module: HashMap<LocalDefId, Vec<(String, LocalDefId, DefKind)>> =
-        HashMap::new();
+    let mut children_by_module: FxHashMap<LocalDefId, Vec<(String, LocalDefId, DefKind)>> =
+        FxHashMap::default();
     for item in items {
         let Some(child_def_id) = my_def_id_to_rustc_def_id(tcx, item.def_id()).as_local() else {
             continue;
@@ -4362,7 +4361,7 @@ fn extract_intra_doc_links(text: &str) -> Vec<String> {
 /// Walk the module tree through `children_by_module` to resolve a
 /// multi-segment path starting from `start_module`.
 fn resolve_multi_segment_path(
-    children_by_module: &HashMap<LocalDefId, Vec<(String, LocalDefId, DefKind)>>,
+    children_by_module: &FxHashMap<LocalDefId, Vec<(String, LocalDefId, DefKind)>>,
     start_module: LocalDefId,
     segments: &[&str],
 ) -> Option<(DefKind, RustcDefId)> {

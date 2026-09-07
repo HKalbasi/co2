@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+#![feature(rustc_private)]
+
+extern crate rustc_data_structures;
+
+use rustc_data_structures::fx::FxHashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -31,18 +35,18 @@ pub struct PreprocessedSource {
     pub raw_src: Arc<str>,
     pub tokens: Arc<Vec<Spanned<Token>>>,
     pub main_file_idx: FileId,
-    files: Arc<HashMap<FileId, SourceFile>>,
+    files: Arc<FxHashMap<FileId, SourceFile>>,
     main_rewrite_boundaries: Arc<Vec<usize>>,
 }
 
 impl PreprocessedSource {
-    pub fn files(&self) -> &HashMap<FileId, SourceFile> {
+    pub fn files(&self) -> &FxHashMap<FileId, SourceFile> {
         &self.files
     }
 }
 
 struct PreprocessorSourceMap {
-    files: Arc<HashMap<FileId, (String, Arc<str>)>>,
+    files: Arc<FxHashMap<FileId, (String, Arc<str>)>>,
 }
 
 impl SourceMap for PreprocessorSourceMap {
